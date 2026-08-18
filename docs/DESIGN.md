@@ -2,7 +2,9 @@
 
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述（目录结构 / DDL / 接口）只在一处维护、另一处引用，避免漂移
-> 版本：v0.5 · 2026-08-18 · 随决策持续更新（与 PRD v0.4 同步）
+> 版本：v0.7 · 2026-08-18 · 随决策持续更新（与 PRD v0.6 同步）
+> v0.7：架构审查二轮落档——**Phase 1 回归单进程**（§6 运维模式：worker + APScheduler 同 asyncio 循环，`python -m app.worker` 起全套，drain_queue 随 scheduler 在场、C1 自愈；CLI 仍只走 services 不起 worker）；**重试分类落 schema**（§5.1 `processing_jobs` 加 `consecutive_timeouts/last_error_class`；§6 失败 SQL 按瞬时/永久分路径：瞬时不自增 attempt、永不死信、退避封顶 15m，永久自增 + `max_attempts` 死信；§4.4/§6/§11 **401/403 归永久类**）；**近似去重向量改 body↔body 同粒度**（§6 去重段：查询向量与候选都用 `kind='body'` 行，不再 mean(title,body) 对 mixed 池排序）；**embed_summary 优先级 4→6**（§6 优先级表，让 27B 生成链先排空再切 8B 嵌入、杜绝 gen↔embed 模型抖动）；**init_db 统一走 Alembic**（§5.4/§14：init_db = CREATE EXTENSION + `alembic upgrade head`，schema 唯一真源 = 迁移）；**supersede 竞态纠偏**（§6 状态机原子性段 + summaries upsert 带 `content_hash` 版本判定）；**dedupe_of 多跳扁平化**（§6 去重命中：沿链回溯到终极 winner、loser 改指、mention_count 转移）；**HNSW + model 过滤对策**（§5.2：active 模型走 partial HNSW 索引）；**worker 续租随处理协程**（§6：续租与处理同 task、httpx 必带超时，防 lease 永不过期）；**article_versions 写入时机**（§5.1：raw_text always / raw_html 按需 + P3 保留）；**`tc summarize` 语义 + `tc topic add` 触发近窗 reclassify**（PRD §4 F11 / §6）；**选型/路径/日志补全**（§2 语言检测 pycld3、§9 config 路径 `TC_CONFIG`、§13 日志双 sink、§6 fetch_failures 成功归零）
+> v0.6：近似去重闭环（§6：title+body 向量 / 取消路径 supersede / 阈值 0.95 + 同语言 + 可逆 + 日志 / config 补 `dedup.{threshold,window_days,k}`）；`complete_summarize` 入队 wiki（§6）；topics 入队移到摘要后（§6，单触发 + token 省 + 跨语言判定稳）；超时转永久类死信规则（§6 重试矩阵：healthcheck 正常 + 同 job 连续 3 次超时 → 永久死信）；backpressure 全量入库 + 仅限 LLM 入队 + drain_queue 补队（§6）；embed_summary 优先级降到 4（§6 攒批、避免 gen↔embed 模型交替）；HNSW `ef_search` 注释纠错（§5.1，查询期 GUC 不在建索引 WITH）；pg_dump 走 `docker compose exec postgres`（§10）；主题变更重算默认窗口限制（§6 + §9 `topics.reclassify_recent_days`）；§6 ingest 全局 semaphore + 每域限速规格落档；§9 补全配置键（`ingestion.global_concurrency/per_host_interval_ms/dedup.{threshold,window_days,k}` + `topics.reclassify_recent_days`）；§1/§4.2/§5.2/§9/§15 维度表述统一为「原生 4096 经 `dimensions=1536` 截断」
 > v0.5：架构审查落档——重试按瞬时/永久错误分类（§6/§11）、检索 P1 即 RRF（§7）、跨源向量近似去重（§6）、CPU 密集走 to_thread（§2）、`complete_embed` 钩子（§6）、`tc backup` 主触发备份（§10）、supersede 同事务（§6）、tsv 两阶段刷新（§5.3）、HNSW 调参（§5.1）等
 
 ---
@@ -38,7 +40,7 @@
 - 单进程、全异步（httpx + SQLAlchemy 2.0 async + asyncpg）；队列 = Postgres 表 `processing_jobs`，worker 用 `SELECT ... FOR UPDATE SKIP LOCKED` 领取，无需 Redis/Celery
 - **LLM 全部走本地 oMLX**（`http://localhost:8000`，OpenAI 兼容 RESTful，**本机不鉴权**，已实测），三模型分工：
   - 生成：`Qwen3.8-27B-MLX-4bit`（实测可用，质量更佳；备选 9B INSTRUCT 更轻量；`THINKING` 变体加载失败待修复）
-  - 嵌入：`Qwen3-Embedding-8B-4bit-DWQ`（实测输出 1536 维）
+  - 嵌入：`Qwen3-Embedding-8B-4bit-DWQ`（原生 4096 维，经 `dimensions=1536` 服务端截断，§4.2/§5.2）
   - 重排（P2）：`Qwen3-Reranker-4B-mxfp8`（实测 `/v1/rerank` Cohere 风格可用）
 - 增量处理：仅新/变更文章入流水线；LLM 产物按 `(article, task, model, content_hash)` 缓存
 - 检索双通道：向量语义（pgvector HNSW）+ 关键词全文（tsvector + GIN，jieba 预切词）
@@ -57,6 +59,7 @@
 | HTTP 客户端 | httpx | 抓取 + 调 oMLX |
 | 清洗/抓取 | selectolax + trafilatura | 主内容提取 |
 | 中文分词 | jieba | FTS 预切词 |
+| 语言检测 | pycld3 | `cleaner.py` 判定 `articles.lang`（决定是否走 translate / 限同语言近似去重，§6）；纯 Python 可退 lingua 或 fasttext，P1 用 pycld3 |
 | 调度 | APScheduler (AsyncIOScheduler) | 定时抓取/报告 |
 | 前端 | Jinja2 + HTMX + ECharts（本地 vendored） | 离线可用 |
 | LLM 客户端 | httpx 直连 oMLX | 无官方 SDK 依赖 |
@@ -106,8 +109,9 @@ topic_collection/
 │   │   ├── graph.py            # ECharts JSON（P2）
 │   │   ├── reports.py          # 日报/周报（P2）
 │   │   └── cli.py              # typer 薄封装（Phase 1 主入口）
-│   ├── pipeline.py             # 队列 + worker + recover
-│   ├── scheduler.py            # APScheduler 任务
+│   ├── pipeline.py             # 队列 + worker 领取逻辑 + recover
+│   ├── worker.py               # 入口：单进程 asyncio loop 挂 worker task + APScheduler（Phase 1，§6 运维模式）
+│   ├── scheduler.py            # APScheduler 任务定义（被 worker.py / main.py lifespan 拉起）
 │   └── api/                    # (Phase 2) WebUI
 │       ├── deps.py             # session/settings/llm 依赖注入
 │       ├── dashboard.py        # /, /settings
@@ -170,12 +174,12 @@ class GenerateResult: text: str; finish_reason: str; usage: dict | None; latency
 
 ### 4.4 `LLMClient` 门面
 
-并发信号量（默认 1）、每调用超时、指数退避重试（401/5xx/超时）、`healthy` 标志与**单次健康探测**。重试/超时只在此层处理，services 不碰传输。**两层重试分工**：客户端=秒级抖动重试（单次调用内）；job 级 `lock_until` 退避（§6）=分钟级长中断（oMLX 整体不可用），互不冲突。**并发=1 是待验证假设**：oMLX 按请求切换模型会抖动加载是真，但 MLX 可在统一内存同时常驻多模型（27B-4bit ≈14GB + 8B 嵌入 ≈5GB，64GB+ Mac 装得下，无需切换、无抖动）——若实测同时常驻可行，信号量改 per-capability 一槽（gen 一个、embed 一个），embed 不被 27B 的 20–60s 阻塞、语义索引吞吐翻倍。P1 先按 1，§16 记为已知限制。
+并发信号量（默认 1）、每调用超时、指数退避重试（5xx/超时/连接拒绝）、`healthy` 标志与**单次健康探测**。重试/超时只在此层处理，services 不碰传输。**两层重试分工**：客户端=秒级抖动重试（单次调用内）；job 级 `lock_until` 退避（§6）=分钟级长中断（oMLX 整体不可用），互不冲突。**错误分类**：401/403/400 是永久/配置错误（鉴权失败、请求格式错），**不走指数退避**、直接抛永久类由 job 层按 `max_attempts` 死信；只 5xx/超时/连接拒绝归瞬时、走退避。**并发=1 是待验证假设**：oMLX 按请求切换模型会抖动加载是真，但 MLX 可在统一内存同时常驻多模型（27B-4bit ≈14GB + 8B 嵌入 ≈5GB，64GB+ Mac 装得下，无需切换、无抖动）——若实测同时常驻可行，信号量改 per-capability 一槽（gen 一个、embed 一个），embed 不被 27B 的 20–60s 阻塞、语义索引吞吐翻倍。P1 先按 1，§16 记为已知限制。
 
-**`healthy` 标志归属**：是 `LLMClient` 实例的**进程内**内存状态，**不跨进程共享**。Phase 1 worker/scheduler/CLI 三进程分离时，worker 看不到 scheduler 的探测结果。Phase 1 修复方案：
-- **worker**：作为 oMLX 的唯一消费者，**自己探测**——领取空手且 `lock_until` 都未到期时、或连续 N 次 LLM 调用失败时，发一次 `GET /v1/models`（或 `POST /v1/embeddings` 探活），决定 sleep 退避时长
-- **scheduler**：仅负责 Dashboard 横幅（§10），不参与门控决策
-- Phase 2 单进程时回到原设计：scheduler 内定时探测 + `LLMClient.healthy` 全局可见
+**`healthy` 标志归属**：是 `LLMClient` 实例的**进程内**内存状态。**Phase 1 单进程**（§6 运维模式：worker + scheduler 同 asyncio 循环）下 worker 与 scheduler 共享同一个 `LLMClient`，`healthy` 全局可见，无需跨进程同步——简化为：
+- **scheduler**：跑定时 healthcheck 任务（§10，每 5m `GET /v1/models`）更新 `LLMClient.healthy` 与 Dashboard 横幅
+- **worker**：作为 oMLX 的唯一消费者，**仍自带自探测兜底**——领取空手且 `lock_until` 都未到期时、或连续 N 次 LLM 调用失败时，发一次 `GET /v1/models`（或 `POST /v1/embeddings` 探活）刷新 `healthy`、决定 sleep 退避时长；不盲信 scheduler 5m 一次的快照（掉线可能在两次探测之间发生）
+- **CLI**：短命进程，不持有常驻 `LLMClient`；`tc status` 调用时即时探测一次报告健康，不与常驻进程共享状态（CLI 命令本身不走 worker，§6 运维模式）
 
 **`--check-llm` 启动校验覆盖全部配置模型**：不只查主 `llm.model`，还对 `llm.models` 里每个 per-task 覆盖（summarize/translate/entities/topics/wiki/report）+ `embed.model` + `rerank.model` 逐个 `GET /v1/models` 比对——拼错的覆盖模型名只会在该 job 运行时 404，启动期就暴露能省一整轮退避排查。
 
@@ -236,6 +240,10 @@ CREATE TABLE article_versions (
   content TEXT NOT NULL,
   created_at TIMESTAMPTZ DEFAULT now()
 );
+-- 写入时机（§13 保留策略）：
+--   raw_text：always（清洗后正文，体积可控、供重处理/重切词，每篇文章 1 行）
+--   raw_html：按需（仅 unparseable / content_hash 变更需重抓时留档，正常文章不存原始 HTML 省体积）
+-- 保留：P3 加 retention 任务按策略（时间/体积/状态）裁剪；P1 暂不清理但须知晓增长边界
 
 CREATE TABLE article_embeddings (
   id BIGSERIAL PRIMARY KEY,
@@ -248,7 +256,7 @@ CREATE TABLE article_embeddings (
   UNIQUE (article_id, kind, model)   -- upsert 保留最新；可多模型共存，search 固定查 config 指定的 active embed model（§7），切模型须 scripts/backfill 全量重嵌（§5.2）
 );
 CREATE INDEX emb_hnsw_idx ON article_embeddings
-  USING hnsw (vector vector_cosine_ops)  -- 建议 ef_construction=128、ef_search=64 以达 P95<100ms（§13）；按量级与召回实测微调
+  USING hnsw (vector vector_cosine_ops)  -- 建索引期只设 ef_construction=128（HNSW WITH 仅接受 m / ef_construction；ef_search 是查询期 GUC，`SET hnsw.ef_search=64`）
 
 CREATE TABLE processing_jobs (
   id BIGSERIAL PRIMARY KEY,
@@ -258,7 +266,9 @@ CREATE TABLE processing_jobs (
   status TEXT NOT NULL DEFAULT 'queued'
     CHECK (status IN ('queued','running','succeeded','failed','superseded')),
   content_hash TEXT,                 -- 入队时的文章内容版本
-  attempt INT DEFAULT 0, max_attempts INT DEFAULT 3,
+  attempt INT DEFAULT 0, max_attempts INT DEFAULT 3,   -- attempt 仅在永久类错误自增（§6 失败 SQL 分路径）
+  error_class TEXT,                  -- 'transient' | 'permanent' | 'timeout'：瞬时不自增 attempt、永不死信；永久/超时达阈值死信
+  consecutive_timeouts INT DEFAULT 0, -- 同 job 同 content_hash 连续超时计数；成功清零，达 llm.max_timeout_retries 且 healthcheck ok → 永久死信（§6 矩阵）
   priority INT DEFAULT 5,
   payload_json JSONB, result_json JSONB, error TEXT,
   lock_until TIMESTAMPTZ,            -- SKIP LOCKED 领取 + 退避门控
@@ -350,6 +360,7 @@ CREATE TABLE fetch_events (
 - `article_embeddings` UNIQUE 含 `model`，可多模型共存；但 `search(q)` 语义通道固定查 config 指定的 **active embed model**（`WHERE model = <active>`，§7），跨模型 top-k 量纲不一不可混
 - 切嵌入模型 = `scripts/backfill` 全量重嵌（按 article 重跑 embed_core/embed_summary）+ config 切 active model；旧向量可选清理或留作 A/B（留则 search 仍只查 active，不混入）
 - PRD §11 `scripts/backfill` 入口；backfill 期间 search 用旧 active 直到切换点，避免半新半旧
+- **HNSW + `WHERE model=<active>` 过滤对策**：§5.1 的 `emb_hnsw_idx` 建在全表 `vector` 上，pgvector HNSW 不原生支持高效过滤检索——多模型共存（留旧模型做 A/B）时 `WHERE model=<active>` 会先做近似最近邻再过滤，候选池被过滤后实际召回数可能不足、需放大 `ef_search` 补偿、P95 上升。**对策（推荐）**：active 模型走 **partial HNSW 索引** `CREATE INDEX ... ON article_embeddings USING hnsw (vector vector_cosine_ops) WHERE model = '<active>'`，切 active model 时重建该 partial 索引；旧模型向量不进该索引、不影响检索性能，仍可做 A/B（走全表扫或各自 partial 索引）。单 active 模型（不留 A/B）时全表索引即可，partial 是为「A/B 共存 + 检索不降速」兜底。文档化：A/B 期间若不建 partial 索引，检索性能预期下降、需调高 `ef_search`
 
 ### 5.3 全文检索（中文友好）
 
@@ -388,11 +399,11 @@ volumes:
 使用流程：
 ```bash
 docker compose up -d                  # 起库
-python -m scripts.init_db             # 建表 + CREATE EXTENSION vector（幂等）
+python -m scripts.init_db             # CREATE EXTENSION vector + alembic upgrade head（幂等）
 docker compose down                   # 停库（数据保留在 pgdata 卷）
 ```
 - DSN 与 §9 一致：`postgresql+asyncpg://tc:tc@localhost:5432/topic_collection`
-- 扩展由 `scripts/init_db` 执行 `CREATE EXTENSION IF NOT EXISTS vector;`，`pgvector/pgvector:pg17` 镜像已内置该扩展，无需额外安装
+- **schema 唯一真源 = Alembic 迁移**：`scripts/init_db` 只做两件事——① `CREATE EXTENSION IF NOT EXISTS vector;`（`pgvector/pgvector:pg17` 镜像已内置，无需额外安装）；② `alembic upgrade head`（建表全走迁移，**不写裸 DDL**）。§5.1 的 DDL 是「迁移产物的参考快照」、不是另一条建表路径——裸 `CREATE TABLE` 会与首迁移冲突（表已存在报错 / alembic 版本表对不上），且与 §14 切片一「Alembic 迁移 + 扩展/维度校验」重复造轮子
 
 ---
 
@@ -400,8 +411,9 @@ docker compose down                   # 停库（数据保留在 pgdata 卷）
 
 ```
 fetch → normalize → dedup(url_hash/content_hash) → clean → 入队 processing_jobs
-       → LLM 各阶段(summarize/embed_core/embed_summary/topics/wiki) → 图谱/词条 → tsv/向量索引
-       → (embed 建好后) 跨源向量近似去重：title+summary 向量对近 N 天文章 cosine ≥ ~0.92 → dedupe_of 合并 mention_count
+       → LLM 各阶段(embed_core → summarize → embed_summary → topics → wiki) → 图谱/词条 → tsv/向量索引
+       → 跨源向量近似去重(§6)：embed_core 落地后、summarize 入队前用 title+body 向量
+         对近 window_days 文章做 cosine ≤ 1-threshold → 命中走 supersede + dedupe_of 合并
 ```
 **事务边界**：每篇文章的 `insert article → enqueue jobs` 在同一事务（崩溃不留孤儿文章）；supersede 旧 job 与新 job 入队同事务（见下）。
 
@@ -410,14 +422,20 @@ fetch → normalize → dedup(url_hash/content_hash) → clean → 入队 proces
 **入队规则（按任务）**：
 | 任务 | 优先级 | 触发 | 模型 |
 |---|---|---|---|
-| `embed_core` | 高 | 新文章（title+body） | Qwen3-Embedding-8B |
-| `embed_summary` | 高 | `summarize` 成功后（summary）**或手动 `tc retry summarize`**——**必须走同一条钩子 `complete_summarize()`，不能只有自动流水线触发**（否则手动重生成后 summary 向量停在旧版本） | Qwen3-Embedding-8B |
-| `summarize` | 高 | 新文章 | Qwen3.8-27B |
-| `topics` | 中 | 新文章（未命中关键词）+ 主题变更（重算） | Qwen3.8-27B |
-| `wiki` | 低 | 摘要落地后（实体 P2） | Qwen3.8-27B |
+| `embed_core` | 1 | 新文章（title+body） | Qwen3-Embedding-8B |
+| `summarize` | 2 | 新文章；**近似去重命中后跳过**（活跃 job 走 supersede，§6 去重段） | Qwen3.8-27B |
+| `topics` | 3 | **`summarize` 落地后 + 关键词未命中**（LLM 读 `summary_zh` 而非外文全文，token 省一个量级、跨语言主题判定更稳）；主题变更（重算，限窗口见 §6） | Qwen3.8-27B |
+| `wiki` | 4 | 摘要落地后（实体 P2） | Qwen3.8-27B |
+| `embed_summary` | 6 | `summarize` 成功后（summary）**或手动 `tc retry summarize`**——**必须走同一条钩子 `complete_summarize()`，不能只有自动流水线触发**（否则手动重生成后 summary 向量停在旧版本） | Qwen3-Embedding-8B |
 | `translate` | 低 | lang≠zh 且用户触发 | Qwen3.8-27B |
 
-**backpressure**：单次 fetch 每个 feed 入队上限 `ingestion.max_items_per_fetch`（默认 50），超限截断并记 fetch_events 水位告警——并发=1 下千条 feed 首抓会积压数小时（27B 20–60s/篇），不限流会让 `fetch_interval_hours` 越积越多；分批回灌，P3 再做更精细的水位调度。
+**backpressure**：单次 fetch 每个 feed **入库不限**（文章全量写 `articles`，入库便宜、丢文章无法挽回），**仅限 LLM job 入队数** `ingestion.max_items_per_fetch`（默认 50），超限截断**入队**并记 `fetch_events` 水位告警——并发=1 下千条 feed 首抓会积压数小时（27B 20–60s/篇），不限流会让 `fetch_interval_hours` 越积越多。`drain_queue`（§10）每 30s 额外扫描一次：`status='pending' 且无任何活跃 processing_jobs 的文章` 补入队，作为「本轮被截断 + 历史漏队（重启/异常）+ 任何入队丢失场景」的自愈兜底。分批回灌策略 P3 再做更精细的水位调度。
+
+**抓取并发（不打爆对端 / 不被对端封）**：
+- **全局并发**：`ingestion.global_concurrency`（默认 8）`asyncio.Semaphore`——多 feed 同时抓取时不瞬时起百连接
+- **每域限速**：`ingestion.per_host_interval_ms`（默认 500ms）——同一 host 上一次抓取结束后至少等 N ms 再发起下一次，避免被 RSS 服务端识别为机器人/触发 429/被临时封
+- **实现位置**：`app/ingest/feeds.py`（RSS）/ `app/ingest/api.py`（P2）/ `app/ingest/scrape.py`（P3），per-host 间隔用每 host `last_request_at: dict[str, float]` + `await asyncio.sleep(...)` 守护
+- **降级**：host 持续返回 429/5xx → 进 `feeds.fetch_failures` 计数，达 `feed_disable_after` 自动禁用（§6 重试矩阵）
 
 **Phase 1 wiki 词条 `related_json` 规范**：Phase 1 不抽实体（`entities` task 不入队），`related_json` = 同主题 article 列表（来自 `article_topics`，按 `score DESC, published_at DESC` 取前 5）；P2 实体抽取上线后，`related_json` 合并"同主题 + 共现实体"两组链接
 
@@ -426,7 +444,7 @@ fetch → normalize → dedup(url_hash/content_hash) → clean → 入队 proces
 - **慢路径（LLM 分类）**：**未命中任何关键词**的文章才进 `classify_topics` job——给定全部启用主题+关键词打分 0–1，`score ≥ 0.6`（可配 `topics.llm_threshold`）记 `method='llm'`
 - **一致性**：`UNIQUE(article_id, topic_id)` 一篇文章对一主题仅一行；两路径按 (article, topic) **互斥**——关键词已命中的主题不再 LLM 复议（故不存在"关键词命中但 LLM 判低分"的冲突）；关键词命中的文章整体跳过 LLM 分类（P1 接受的召回取舍：不会跨主题发现未命中关键词的主题，P3 可补跑全量）
 - **聚合排序**：`aggregate_topic()` 按 `score DESC, published_at DESC`；展示标注 method 来源（keyword/llm），可筛可解释
-- **主题变更重算**：主题/关键词增改后重跑 `match_keywords()`——不再命中的旧 `method='keyword'` 行删除；未命中关键词的文章重新入队 `classify_topics`（幂等 + 活跃态唯一约束保护）
+- **主题变更重算（触发 = `tc topic add` / `tc topic edit` 同步执行）**：主题/关键词增改后**在 CLI 命令返回前同步重跑** `match_keywords()`——不再命中的旧 `method='keyword'` 行删除；未命中关键词的文章重新入队 `topics`（幂等 + 活跃态唯一约束保护）。**默认仅重算最近 `topics.reclassify_recent_days`（默认 30 天）文章**——历史几千篇 × 27B 的隐性回填成本极高，全量交给 P3 `tc reclassify --all`（PRD §15 #3 兜底 + §16 已知限制）。`tc topic add` 是高频写操作，同步触发近窗重算（match_keywords 是纯内存 jieba 匹配、毫秒级）可接受；`topics` job 入队后由常驻 worker 异步消费（§6 运维模式），CLI 不阻塞等 LLM
 
 **入队语义（幂等 + 防重复，§5.1 部分唯一索引支撑）**：
 - 幂等：`INSERT ... ON CONFLICT (article_id, task) WHERE status IN ('queued','running') DO NOTHING`，重复入队静默丢弃
@@ -440,7 +458,7 @@ fetch → normalize → dedup(url_hash/content_hash) → clean → 入队 proces
     VALUES ($1, $2, 'queued', $3, $4, ...) ON CONFLICT DO NOTHING;
   COMMIT;
   ```
-- 优先级数值约定：`embed_core=1`、`embed_summary=1`、`summarize=2`、`topics=3`、`wiki=4`、`translate=5`
+- 优先级数值约定：`embed_core=1`、`summarize=2`、`topics=3`、`wiki=4`、`translate=5`、`embed_summary=6`——**27B 生成链（1→4）整体低于 8B 嵌入链（1 除外，6）**：worker 按 `ORDER BY priority, created_at` 领取，会先把 `embed_core`(1) 排空（新文章 title+body 向量就绪，供 dedup 与检索），再消费 `summarize/topics/wiki`(2/3/4)——27B 常驻一次处理完所有生成任务，**最后才切到 `embed_summary`(6)**——8B 常驻一次补完所有 summary 向量。**刻意把 embed_summary 压到 6 而非与 wiki 同级 4**：同优先级 + `created_at` 排序会让 wiki 与 embed_summary 交错领取（27B→8B→27B→8B 模型来回加载，正是要避免的 gen↔embed 抖动）；拉开到 6 后生成链先整体排空再切嵌入，单进程并发=1 下抖动最小。`embed_core=1` 是例外：新文章入队时 summary 还不存在、embed_core 是 dedup 触发的前置，必须最先。P2 切 per-capability 分槽（§4.4/§16）后 gen/embed 各占一槽、不再交替，此数值差异意义减弱，但仍是显式声明便于调优
 
 **关键词通道的中文补全（`summarize` 成功后刷新 tsv）**：
 - 入库时 `articles.tsv` 只覆盖 `title + content_text` 的 jieba tokens，英文文章对中文查询关键词召回是 0
@@ -454,7 +472,8 @@ fetch → normalize → dedup(url_hash/content_hash) → clean → 入队 proces
   1. `INSERT INTO summaries ... ON CONFLICT (article_id, lang, model) DO UPDATE SET ...`（§5.1）
   2. `UPDATE articles SET tsv=to_tsvector('simple', jieba_join(...)) WHERE id=$1`（关键词通道补全，上一段）
   3. 入队 `embed_summary` job（幂等 `ON CONFLICT DO NOTHING`）
-  4. 入队 `classify_topics` job（关键词未命中的文章走 LLM 慢路径，§6）
+  4. 入队 `topics` job（**仅当关键词未命中**——`match_keywords()` 返回空集的文章走 LLM 慢路径，§6 主题分类规则；摘要后触发读 `summary_zh` 比外文全文 token 省、跨语言判定更稳，故双触发问题自然消解：ingest 时不再入队 topics，仅此一处）
+  5. 入队 `wiki` job（**必须**——入队规则表 wiki 触发是「摘要落地后」，漏了 wiki 永远不入队，PRD §15 #5 验收挂；幂等 `ON CONFLICT DO NOTHING`）
 - **调用方**：
   - **自动**：worker 处理 `summarize` 任务成功后调用
   - **手动**：`tc retry <article_id> summarize` 走同一条钩子（不能用 LLM 重新跑完后只 UPDATE summaries，否则 `embed_summary` 不会补入队 → summary 向量停在旧版本；F2 P0 必踩的坑）
@@ -487,17 +506,22 @@ RETURNING *;
 - lifespan 启动**单个 asyncio worker task**：`循环 { 领取(SKIP LOCKED) → 无任务 sleep ~1s → 处理完继续 }`；领取与处理都在 await 点让出事件循环，不阻塞 fetch / HTTP
 - 入队到开始 ≤ 当前在飞任务时长 + ~1s（并发=1 下在飞任务即 LLM 调用时长）
 - **scheduler 的 drain_queue 不参与领取**（避免双领取者歧义），只做维护，见 §10
-- LLM 掉线期间所有 queued 带未来 lock_until → 领取空手返回后 worker **自探测 oMLX**（`GET /v1/models` 一次，§4.4）决定 sleep 退避时长，不空转打 oMLX；Phase 1 三进程分离时 `LLMClient.healthy` 不跨进程共享，必须本地探测
-- **领取门控（可选，推荐 Phase 1 开）**：领取前先自探测，不 healthy 则直接 sleep 退避、**不领新 job**——避免掉线期间新 job（`lock_until NULL`，本会被立刻领取）被领走消耗 attempt、3 次后进死信。配合下一节「瞬时错误不进死信」双保险，保 PRD §15 #7「恢复后自动续跑」
+- LLM 掉线期间所有 queued 带未来 lock_until → 领取空手返回后 worker **自探测 oMLX**（`GET /v1/models` 一次，§4.4）决定 sleep 退避时长，不空转打 oMLX；Phase 1 单进程下 `LLMClient.healthy` 与 scheduler 共享，但 worker 仍以自探测为准（不盲信 scheduler 5m 快照）
+- **领取门控（可选，推荐 Phase 1 开）**：领取前先自探测，不 healthy 则直接 sleep 退避、**不领新 job**——避免掉线期间新 job（`lock_until NULL`，本会被立刻领取）被领走后立刻失败回滚（瞬时虽不自增 attempt、不进死信，但每个被领走又失败的 job 都会带上未来 `lock_until` 退避，等于把一堆本可立即排队的新 job 提前推到退避队列、拉长恢复后的消费时延）。配合下一节「瞬时错误不自增 attempt、不进死信」双保险，保 PRD §15 #7「恢复后自动续跑」
 
 **状态机原子性（lock_until 租约模型 + 事务合并）**：
 - **领取 → 持租约**：见上一段 SQL，pick-and-claim 单条原子同事务；`lock_until` 既是 queued 退避门控、也是 running 存活凭证，**语义统一**
-- **续租**：长 LLM 任务（>3 分钟）处理中定期 `UPDATE lock_until=now()+INTERVAL '5 minutes' WHERE id=$1 AND status='running'`；并发=1 下 27B 长文 20–60s 实际不需要续租，但封装层统一处理以防未来 P2 切高并发或长任务
+- **续租（随处理协程，不另起 watchdog）**：长 LLM 任务（>3 分钟）处理中定期 `UPDATE lock_until=now()+INTERVAL '5 minutes' WHERE id=$1 AND status='running'`——**续租逻辑必须与 LLM 调用跑在同一个 asyncio task 内**（在 `await llm.generate()` 外层包一个续租循环，或用 `asyncio.wait_for` + 周期性 `UPDATE`）。**不要**另起独立 watchdog 协程去续租：那样当 LLM 调用 hang（httpx 不返回）时，watchdog 仍会持续续租、lease 永不过期，单 worker concurrency=1 下整条流水线**永久卡死**、`recover_interrupted()` 也救不回来（lease 一直在未来）。续租随处理协程则 hang 时停续租、lease 到期、下次启动 `recover_interrupted()` 回收。**`httpx` 调用必须带 `timeout=`**（GenerateRequest.timeout_s 默认 180s，§4.1）——这是防 hung 的第一道闸，续租随处理协程是第二道。并发=1 下 27B 长文 20–60s 实际不需要续租，但封装层统一处理以防未来 P2 切高并发或长任务
 - **完成（产物落库 + 状态推进同事务 + running 守卫）**：
   ```sql
   BEGIN;
   -- 1) 产物 upsert（summaries / entities / wiki_pages 等）—— 与状态推进原子
-  INSERT INTO summaries (...) VALUES (...) ON CONFLICT (article_id, lang, model) DO UPDATE SET ...;
+  --    summaries 带 content_hash 版本判定：仅当新 content_hash ≠ 已存 content_hash 才覆盖
+  --    （防 supersede 竞态：旧 job 的 LLM 结果若在 supersede 之后才提交，不会覆盖新 job 的结果）
+  INSERT INTO summaries (article_id, lang, model, content_hash, summary_text, ...) VALUES (...)
+  ON CONFLICT (article_id, lang, model) DO UPDATE
+  SET content_hash=EXCLUDED.content_hash, summary_text=EXCLUDED.summary_text, ...
+  WHERE summaries.content_hash IS DISTINCT FROM EXCLUDED.content_hash;
   -- 2) tsv 刷新（§6 关键词通道补全）
   UPDATE articles SET tsv=to_tsvector('simple', ...) WHERE id=$1;
   -- 3) 状态推进（带 WHERE status='running' 守卫）
@@ -505,26 +529,61 @@ RETURNING *;
   WHERE id=$1 AND status='running';
   COMMIT;
   ```
-  守卫意义：job 被 supersede 后，旧 LLM 结果若还先落库一瞬，单 worker 下最终会被新结果覆盖，但**测试与排障都因此变得很难**；事务合并后连这个窗口都没有
-- **失败**：`UPDATE processing_jobs SET status='queued', lock_until=now()+INTERVAL '<退避时长>', attempt=attempt+1, error=$2 WHERE id=$1 AND status='running'`，到点自动被 SKIP LOCKED 领取
+  - **content_hash 版本判定的作用**：单 worker 下 supersede 竞态窗口本就窄，但「事务合并后窗口消失」的旧表述偏乐观——若 worker 已进入 complete 事务（产物 upsert 已执行）时，content 变更路径的 supersede `UPDATE ... WHERE status IN ('queued','running')` 会被行锁阻塞至 worker 提交；worker 提交后 job 已 `succeeded`、supersede 落 0 行，**旧摘要已落库**，待新 content 的 job 重跑才覆盖。加 `WHERE summaries.content_hash IS DISTINCT FROM EXCLUDED.content_hash` 后：旧 job 提交的 content_hash 与新 job 的不同时，旧结果不会覆盖新结果（新 job 先落库则旧 job 的 upsert 被 WHERE 挡掉、保持新版本）；新旧 content_hash 相同时本就该覆盖（幂等重跑）。**最终自愈 + 窗口收窄 + 测试可断言**，不再是「看不见的窗口」
+  守卫意义：job 被 supersede 后，旧 LLM 结果若还先落库一瞬，单 worker 下最终会被新结果覆盖，但**测试与排障都因此变得很难**；事务合并 + 上面的 `content_hash` 版本判定后，旧 job 的 upsert 被版本守卫挡掉、不再短暂覆盖新结果——窗口不仅收窄、且可在测试里断言（详见上一段 content_hash 版本判定说明）
+- **失败（按 error_class 分路径，§5.1 新增列支撑）**：
+  - **瞬时（5xx/超时/连接拒绝，含 oMLX 整体掉线）**：`error_class='transient'`，**`attempt` 不自增**（死信预算不消耗）、`consecutive_timeouts` 仅在「超时」子类 +1（连接拒绝/5xx 不增），`status` 保持 `queued`、`lock_until=now()+INTERVAL '<退避>'`（1m→5m→15m 封顶），到点自动被 SKIP LOCKED 领取续跑——**永不进死信**
+  - **超时转永久（病态文章）**：当 `consecutive_timeouts >= llm.max_timeout_retries`（默认 3）**且** healthcheck 正常（证明不是基础设施掉线）→ 升级为 `error_class='permanent'`、`attempt+1`、达 `max_attempts` 后 `failed` 死信；healthcheck 不过则维持瞬时、`consecutive_timeouts` 不增（§6 矩阵）
+  - **永久（401/403/400/JSON 解析失败/内容不可解析）**：`error_class='permanent'`、`attempt+1`、`error=$2`；`attempt >= max_attempts` → `status='failed'` 死信；未达阈值则 `status='queued'`、`lock_until=now()+INTERVAL '<短退避>'` 重试（永久类退避短、快速耗尽 attempt）
+  - 通用 SQL（瞬时，attempt 不自增）：`UPDATE processing_jobs SET status='queued', lock_until=now()+INTERVAL '<退避>', error_class='transient', error=$2 WHERE id=$1 AND status='running'`
+  - 通用 SQL（永久，attempt 自增 + 死信判定）：`UPDATE processing_jobs SET status=CASE WHEN attempt+1>=max_attempts THEN 'failed' ELSE 'queued' END, lock_until=CASE WHEN attempt+1>=max_attempts THEN NULL ELSE now()+INTERVAL '30s' END, attempt=attempt+1, error_class='permanent', error=$2, consecutive_timeouts=0 WHERE id=$1 AND status='running'`
 - **进程中断**：崩溃/杀进程时 `status='running'` 且 `lock_until` 留在未来 —— **租约过期才算真死**
-- **recover（租约回收）**：`UPDATE processing_jobs SET status='queued', lock_until=NULL, error=COALESCE(error,'')||'[recovered]' WHERE status='running' AND lock_until < now()` —— **谁跑都安全**（多 worker / scheduler 启动时跑也只会回收已过期的行，不动活任务；Phase 1 三进程分离不再有误伤风险）
-- **归属**：**仅 worker 启动时跑** `recover_interrupted()`（scheduler 不跑，避免双领取者歧义）；Phase 1 运维模式下 worker 是唯一常驻消费者（§6 运维模式 / §10）
-- 启动顺序：init_db → 探测 oMLX → `recover_interrupted()` → 启动 worker（见 §8 / §10）；**`recover_interrupted()` 在 worker 启动时跑**（§6 recover 归属）
+- **recover（租约回收）**：`UPDATE processing_jobs SET status='queued', lock_until=NULL, error=COALESCE(error,'')||'[recovered]' WHERE status='running' AND lock_until < now()` —— **谁跑都安全**（多 worker / scheduler 启动时跑也只会回收已过期的行，不动活任务；Phase 1 单进程下 worker 是唯一常驻消费者，无跨进程误伤）
+- **归属**：**仅 worker 启动时跑** `recover_interrupted()`（scheduler 不跑，避免双领取者歧义）；Phase 1 单进程下 worker 是唯一常驻消费者（§6 运维模式 / §10），recover 与 worker 同进程、无跨进程误伤
+- 启动顺序：init_db → 探测 oMLX → `recover_interrupted()` → 启动 worker（同进程内 scheduler 也在此时拉起，见 §6 运维模式 / §10）；**`recover_interrupted()` 在 worker 启动时跑**（§6 recover 归属）
 
 **运维模式（Phase 1 vs Phase 2）**：
-- **Phase 2（WebUI 上线后）**：FastAPI lifespan 在 `app/main.py:create_app()` 启动顺序 = init_db（校验 vector 扩展/维度）→ 探测 oMLX 三端点 → `recover_interrupted()` → 启动 scheduler + worker task（同一进程）
-- **Phase 1（无 WebUI，CLI 入口）**：worker 单独常驻，通过 `python -m app.worker`（或 `make worker`）启动；scheduler 同样独立 `python -m app.scheduler`。CLI 命令（`tc fetch` / `tc summarize` / `tc search` ...）走 services 层但不启动 worker——入队后必须有 worker 在跑才能真正消费。开发期推荐两个终端：`make worker` + `tc fetch` / `tc search` 等
+- **Phase 1（无 WebUI，CLI 入口）**：**单进程**——`python -m app.worker`（或 `make worker`）在一个 asyncio 事件循环里同时常驻 **worker task + APScheduler（AsyncIOScheduler）**。没有 FastAPI lifespan 不等于要拆进程：APScheduler 的 `AsyncIOScheduler` 跑在同一 loop 上即可承担 fetch_all / drain_queue / cleanup_fetch_events / pg_backup 等定时任务，worker task 见下文「worker 运行模型」也是 loop 上的自驱协程，二者通过 await 点协作、互不阻塞。**drain_queue 随 scheduler 天然在场**（§10），高量 feed 被截断的 pending 文章自动被补入队——这是 Phase 1 选单进程而非拆进程的核心理由（否则 worker 单独常驻时 drain_queue 缺位、pending 文章永久滞留，§6 backpressure / §14 高量 feed 风险被打脸）。CLI 命令（`tc fetch` / `tc summarize` / `tc search` ...）走 services 层、**不启动 worker**——入队后靠常驻 `make worker` 进程消费（开发期「两个终端」：`make worker` + `tc ...`）。**不拆成 worker/scheduler/CLI 三进程**（PRD §3 Out of Scope「单应用进程」scope 的本意；多进程只会制造 `LLMClient.healthy` 不共享、drain_queue 缺位等自找的坑）
+- **Phase 2（WebUI 上线后）**：FastAPI lifespan 在 `app/main.py:create_app()` 启动顺序 = init_db（校验 vector 扩展/维度）→ 探测 oMLX 三端点 → `recover_interrupted()` → 启动 scheduler + worker task（**同一进程**，与 Phase 1 一致；WebUI 只是再加一层 uvicorn 路由）
 
-**去重**：URL hash 相同 → 复用旧文章，`mention_count+1`；URL 不同但 content_hash 相同 → 记 `dedupe_of`。**跨源近似去重（嵌入建好后）**：同事件多源转载/改写 URL 与 content_hash 都不同，但语义近似——新文章 embed 落库后，用其 title+summary 向量对近 N 天文章做 `ORDER BY vector <=> $1 LIMIT k`，cosine ≥ ~0.92 则判为同事件，记 `dedupe_of` 合并 mention_count，主题视图/日报不重复占位（PRD §15 #16）。**去重在 LLM 花钱前完成**（精确去重）；近似去重在 embed 后、summarize 前若已命中可跳过该文 LLM。
+**去重（精确 + 近似两阶段，闭环设计）**：
+
+- **精确去重（LLM 花钱前）**：
+  - `url_hash` 相同 → 复用旧文章，`mention_count+1`，**不创建新行**
+  - URL 不同但 `content_hash` 相同 → 记 `dedupe_of` 指向原文，**不创建新行**
+  - 这一步先于 LLM 入队完成；URL/content_hash 不同的同事件转载/改写留给下一阶段
+
+- **跨源近似去重（embed_core 落地后、summarize 入队前）**——同事件多源转载/改写 URL 与 content_hash 都不同但语义近似：
+  - **触发位置**：`complete_embed(article_id, kind='title'|'body')` 钩子里，`embed_core` 两条向量（title + body）全部 upsert 成功后，**入队 `summarize` 之前**判定——省掉 27B 一次调用，是这一步存在的全部理由
+  - **查询向量 = 本文章的 `kind='body'` 行**（同粒度匹配，见下）；**注意：此时 summary 向量还不存在**（旧版说「title+summary」是错的）
+  - **候选池过滤到 `kind='body'`**：检索 `article_embeddings` 时 **必须 `WHERE kind='body' AND model=<active embed model>`**——不能用 mean(title,body) 查询向量去对 mixed(title/body/summary) 候选池排序：mean 与候选的单 title / 单 summary 行不在同一语义点上，top-k 与 0.95 阈值判定基准飘忽、同一候选的 title 行和 body 行距离差大还会占两个 top-k 位。统一 body↔body 同粒度比较，语义自洽、阈值有意义
+  - **检索窗口**：`ingestion.dedup.window_days`（默认 30 天）内的活跃文章，`WHERE kind='body' AND model=<active> AND article_id IN (SELECT id FROM articles WHERE lang = $1 AND id != $article_id AND dedupe_of IS NULL AND fetched_at > now()-INTERVAL '<window>')`，按 `vector <=> $1` 排序取 top `ingestion.dedup.k`（默认 10）
+  - **判定阈值**：pgvector `<=>` 是**余弦距离**（= 1 - 余弦相似度），SQL 条件 `vector <=> $1 <= 1 - threshold`，**别写反**（写成 `>=` 相当于「最不像的也合并」，静默吞文章）。默认 `ingestion.dedup.threshold` = **0.95**（相似度），即距离 ≤ 0.05 命中
+  - **body 截断的已知边界**：`embed_core` 的 body 向量按 §5.2 截断 8K，超长同事件文若前 8K 开头不同，body↔body 距离偏大、该命中也可能漏判——P1 接受（保守漏判优于误合并）；P2 正文分块 + 池化后可缓解
+  - **命中 → 取消后续 LLM**：
+    1. `dedupe_of = <winner_article_id>`、`mention_count` 合并到原文（多跳扁平化，见下）；
+    2. 同一事务里对该文章的 `summarize` / `topics` / `wiki` 三个 task 走 supersede（`UPDATE processing_jobs SET status='superseded' WHERE article_id=$1 AND task IN ('summarize','topics','wiki') AND status IN ('queued','running')`），消除 TOCTOU 窗口（§6 supersede 同事务原则）；
+    3. 写 `fetch_events(event_type='dedup_merge', ok=true, ...)`，payload 含 winner/loser article_id、cosine 距离、lang，**所有合并事后可审计**
+  - **多跳扁平化**：winner 自身可能也是别人的 loser（`dedupe_of` 非空）。命中时先**沿 `dedupe_of` 链回溯到终极 winner**（`dedupe_of IS NULL` 的根文章），把本文章直接指向终极 winner；同时把所有直接指向「中间 winner」的 loser 改指终极 winner、`mention_count` 累计转移到终极 winner——避免链式回溯查询、`WHERE dedupe_of IS NULL` 能一次取到所有独立文章
+  - **P1 保守的误合并防护**：
+    - **阈值 0.95 起步**：0.92 是经验下界，但「Weekly Digest #N」「Issue #N」类模板化标题易超阈值被静默合并——0.95 显著降低误合并概率；P1 跑一段真实数据后再考虑放松（body↔body 比纯 title 更不易被模板化标题误判，但正文模板化段落同样有此风险）
+    - **限同语言**：仅当候选与本文章 `lang` 相同时合并。跨语言（同事件的英文原文 + 中文报道）只做候选标记入 `fetch_events`，不合并——避免读者关心的「同一事件的中英文版本各自保留」
+    - **可逆**：`dedupe_of` 置 NULL 即恢复独立；CLI `tc article <id> undedupe`（P2 WebUI 按钮）
+  - **配置**（§9）：
+    - `ingestion.dedup.threshold`（默认 0.95）
+    - `ingestion.dedup.window_days`（默认 30）
+    - `ingestion.dedup.k`（默认 10）
+  - **覆盖**：跨源同事件转载/改写 → 主题视图与日报不重复占位（PRD §15 #16）
 
 **重试/降级矩阵**：
 | 失败 | 处理 |
 |---|---|
-| 抓取网络错误 | 记录 fetch_events，下次周期再试；连续 `ingestion.feed_disable_after`（默认 5）次自动禁用 feed；陈旧 `fetch_events` 按 `fetch_events_retention_days`（默认 90 天）定期清理 |
+| 抓取网络错误 | 记录 fetch_events，下次周期再试；连续 `ingestion.feed_disable_after`（默认 5）次自动禁用 feed；**抓取成功时 `fetch_failures` 归零**（`UPDATE feeds SET fetch_failures=0, last_error=NULL WHERE id=$1`，§5.1 计数列需显式重置，否则一次失败永远卡在禁用边缘）；陈旧 `fetch_events` 按 `fetch_events_retention_days`（默认 90 天）定期清理 |
 | 文章不可解析 | status=unparseable，保留原文，跳过 LLM |
-| LLM 401/5xx/超时（瞬时） | job 保持 `queued`，`lock_until` = 退避 1m→5m→**15m 封顶**，**无限重试不进死信**——掉线是基础设施问题不是内容问题，attempt 预算不消耗；worker 领取门控（§6）避免掉线期间领新 job；到点自动被 SKIP LOCKED 领取续跑 |
-| LLM JSON 解析失败 / 内容不可解析（永久） | `max_attempts=3` 后 `failed` 死信，记 error；文章详情可手动 `tc retry`（走 `complete_*` 钩子） |
+| LLM 5xx/超时/连接拒绝（瞬时） | job 保持 `queued`，`lock_until` = 退避 1m→5m→**15m 封顶**，**无限重试不进死信**——掉线是基础设施问题不是内容问题，**attempt 不自增、预算不消耗**（§6 失败处理 SQL 分路径）；worker 领取门控（§6）避免掉线期间领新 job；到点自动被 SKIP LOCKED 领取续跑 |
+| **LLM 401/403/400（永久/配置）** | 鉴权失败或请求格式错——**不走退避**，job `error_class='permanent'`、`attempt+1`，达 `max_attempts`（默认 3）后 `failed` 死信并记 error；本机默认不鉴权所以平时不触发，一旦开鉴权 token 错就快速失败、横幅明确报错而非伪装成「LLM 掉线无限续跑」（§4.4/§11） |
+| **同 job 同 content_hash 连续 K 次（默认 3）超时**（病态文章）| healthcheck 正常但单篇持续 180s 超时（极长/恶意输入/编码炸弹），属**内容问题非基础设施问题**——`consecutive_timeouts+1`，达 `llm.max_timeout_retries` 且 healthcheck 正常 → 转永久类死信 `failed`，记 error；不与瞬时无限续跑混账。掉线场景不受影响（healthcheck 不过仍维持瞬时，consecutive_timeouts 不增）|
+| LLM JSON 解析失败 / 内容不可解析（永久） | `error_class='permanent'`、`attempt+1`，达 `max_attempts=3` 后 `failed` 死信，记 error；文章详情可手动 `tc retry`（走 `complete_*` 钩子） |
 | 内容变更（活跃 job 期间） | 旧 job→`superseded`，入队新 job（幂等，见上） |
 | LLM JSON 解析失败 | structured.parse_with_repair（去围栏→找平衡{}→带错重问一次）→ 仍失败 low_confidence |
 | 进程中断 | 启动时 `recover_interrupted()` **按租约回收**：`status='running' AND lock_until<now()` → `queued`（过期的才算死，跨进程安全）；瞬时类 job 即便反复中断也不进死信 |
@@ -582,7 +641,7 @@ data_dir: ./data
 db:
   dsn: postgresql+asyncpg://tc:tc@localhost:5432/topic_collection   # 见 §5.4 docker-compose
   pool_size: 5
-  vector_dim: 1536            # 实测 Qwen3-Embedding-8B 输出维度
+  vector_dim: 1536            # 模型原生 4096 维，经 oMLX /v1/embeddings 的 dimensions=1536 服务端截断；DDL 与本键必须一致（§5.2，启动期校验）
 web: { host: 127.0.0.1, port: 7111 }   # 必须 ≠ oMLX 端口 (8000)，避免与本地 LLM 端口冲突
 llm:
   backend: omlx               # omlx | ollama
@@ -592,6 +651,7 @@ llm:
   # 备选：Qwen3.5-9B-Claude-4.6-HighIQ-INSTRUCT-HERETIC-UNCENSORED-MLX-mxfp8（更轻量）
   # THINKING 变体（Qwen3.5-9B-…-THINKING-HERETIC-UNCENSORED）oMLX 加载失败，修复后可用
   max_concurrency: 1            # 默认 1；待实测 oMLX 同时常驻 27B+8B 嵌入可行则升 2（gen/embed 分槽，§4.4/§16）
+  max_timeout_retries: 3        # 同 job 同 content_hash 连续超时 N 次转永久类死信（防病态文章无限续跑；§6 重试矩阵/§11）
   models: { summarize: <model>, translate: <model>, entities: <model>,
             topics: <model>, wiki: <model>, report: <model> }   # 默认=generation model；--check-llm 启动时全量校验（§4.4）
   embed:
@@ -605,13 +665,22 @@ ingestion:
   user_agent: "TopicCollection/0.1 (+local personal KB)"
   max_scrape_bytes: 5242880
   feed_disable_after: 5          # feed 连续失败 N 次自动禁用（§6）
-  max_items_per_fetch: 50         # 单次 fetch per-feed 入队上限（backpressure，§6/§11）
+  max_items_per_fetch: 50         # 单次 fetch per-feed 入队上限（backpressure，文章全量入库、仅限 LLM job 入队；§6）
+  global_concurrency: 8           # 抓取全局 asyncio.Semaphore 上限（§6）
+  per_host_interval_ms: 500       # 同一 host 上一次抓取结束到下一次起手的最小间隔（§6，避免被 RSS 服务端识别为机器人/触发 429）
   fetch_events_retention_days: 90 # fetch_events 审计表保留天数（cleanup_fetch_events 日任务清理，§10）
-topics: { llm_threshold: 0.6 }   # classify_topics LLM 打分阈值（关键词快路径不经过此值）
+  dedup:                          # 跨源向量近似去重（§6，embed_core 后 summarize 前）
+    threshold: 0.95               # 余弦相似度阈值（pgvector <=> 是距离，条件 <= 1-threshold，别写反）
+    window_days: 30               # 候选检索窗口（仅合并近 N 天内的文章）
+    k: 10                         # 候选 top-k
+    same_lang_only: true          # 限同语言合并（英文原文不会被中文报道吞掉）
+topics:
+  llm_threshold: 0.6              # topics LLM 打分阈值（关键词快路径不经过此值）
+  reclassify_recent_days: 30      # 主题变更重算窗口——超过此天数的历史文章不重跑（避免隐性全量回填，全量交给 P3 tc reclassify --all；§6/PRD §15 #3）
 schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 ```
 
-环境变量覆盖：`TC_LLM_BACKEND` / `TC_DB_DSN` / `TC_WEB_PORT`（pydantic-settings）；`TC_LLM_API_KEY` 仅当开启鉴权时使用。
+环境变量覆盖：`TC_LLM_BACKEND` / `TC_DB_DSN` / `TC_WEB_PORT` / **`TC_CONFIG`**（config.yaml 路径，默认 `./config/config.yaml`，解决 CWD 敏感问题——从任意目录跑 `tc ...` 都能定位配置；同理 `TC_FEEDS` 覆盖 feeds.yaml 路径）（pydantic-settings）；`TC_LLM_API_KEY` 仅当开启鉴权时使用。
 
 **`config/feeds.yaml`**（订阅源清单，**独立文件，今后加源只改这一个文件**）：
 
@@ -648,11 +717,11 @@ feeds:
 |---|---|---|
 | fetch_all | 每 `fetch_interval_hours` | 遍历 enabled feeds 抓取→去重→入队 |
 | drain_queue | 每 30s | 维护：清理 superseded / 死信；**不参与领取**（worker 常驻自驱，见 §6） |
-| **pg_backup** | **每日 03:00** | **`pg_dump` 压缩到 `data/backups/tc-YYYYMMDD.sql.gz`，保留 14 天**——个人知识沉淀库数据比代码值钱，pgdata 卷不是备份（§14 Day 1）。**主触发 = `tc backup` CLI**（PRD §4 F11），scheduler 此项为可选自动化；Phase 1 不依赖 scheduler 常驻，用户须定期手动 `tc backup` 或常驻 scheduler |
+| **pg_backup** | **每日 03:00** | **`docker compose exec postgres pg_dump -U tc -d topic_collection` \| gzip → `data/backups/tc-YYYYMMDD.sql.gz`，保留 14 天**——个人知识沉淀库数据比代码值钱，pgdata 卷不是备份（§14 Day 1）。**走 `docker compose exec`**：宿主机不一定装了 PG 客户端，pgvector 镜像内自带 `pg_dump`，exec 直接用最稳。**主触发 = `tc backup` CLI**（PRD §4 F11），scheduler 此项为自动化补充；Phase 1 单进程下 scheduler 随 worker 常驻（§6 运维模式），pg_backup 自动化默认在岗，但用户仍须定期手动 `tc backup` 确认备份产出 |
 | **cleanup_fetch_events** | **每日 04:00** | 清理 `fetch_events` 中超过 `fetch_events_retention_days`（默认 90 天）的行（drain_queue 30s 太频不适合做清理，独立日任务） |
 | daily_report | 每日 08:00 | 日报（P2） |
 | weekly_report | 周一 08:00 | 周报（P2） |
-| healthcheck | 每 5m | LLM 健康探测，**仅 scheduler** 更新 Dashboard 横幅；worker 自探测见 §4.4 / §6 |
+| healthcheck | 每 5m | LLM 健康探测，更新 `LLMClient.healthy` 与 Dashboard 横幅；Phase 1 单进程下与 worker 共享 `healthy`，worker 仍保留自探测兜底（§4.4 / §6，掉线可能发生在两次探测之间） |
 
 ---
 
@@ -660,9 +729,11 @@ feeds:
 
 | 场景 | 行为 | UI 呈现 |
 |---|---|---|
-| oMLX 全挂 | **瞬时类任务**（生成/嵌入）保持 queued + lock_until 退避 1m→5m→15m 封顶、**无限续跑不进死信**；worker 领取门控（§6）掉线期间不领新 job；文章可浏览原文 | 概览红色横幅「LLM 离线」（scheduler 探测驱动） |
-| oMLX 瞬时错误但任务已领取 | 不消耗 attempt 预算（瞬时类无 max_attempts）；到点自动续跑 | 任务详情显示退避倒计时 |
-| 永久错误（JSON/不可解析） | `max_attempts=3` 后 `failed` 死信 | 文章详情可手动重试 |
+| oMLX 全挂 | **瞬时类任务**（生成/嵌入，5xx/超时/连接拒绝）保持 queued + lock_until 退避 1m→5m→15m 封顶、**attempt 不自增、无限续跑不进死信**；worker 领取门控（§6）掉线期间不领新 job；文章可浏览原文 | 概览红色横幅「LLM 离线」（scheduler 探测驱动，Phase 1 单进程与 worker 共享 healthy） |
+| oMLX 瞬时错误但任务已领取 | `error_class='transient'`、**attempt 不自增**（死信预算不消耗）；到点自动续跑 | 任务详情显示退避倒计时 |
+| **LLM 401/403/400（永久/配置）** | `error_class='permanent'`、`attempt+1`、短退避，达 `max_attempts=3` 后 `failed` 死信——鉴权/配置错快速暴露而非伪装成掉线 | 横幅明确报「鉴权失败」而非「LLM 离线」 |
+| **病态文章反复超时**（healthcheck 正常） | `consecutive_timeouts` 累加，达 `llm.max_timeout_retries`（默认 3）且 healthcheck 正常 → 转永久类死信 `failed`；掉线时 healthcheck 不过、计数不增、不与掉线混账 | 文章详情可手动重试或标记 unparseable |
+| 永久错误（JSON/不可解析/401/403/400） | `error_class='permanent'`、`attempt+1`，达 `max_attempts=3` 后 `failed` 死信 | 文章详情可手动重试 |
 | 高量 feed 首抓积压 | `max_items_per_fetch` 截断 + 水位告警记 fetch_events | fetch_events 状态徽标 |
 | 仅嵌入不可用 | 语义通道关闭 | 搜索页提示「仅关键词模式」 |
 | feed 连续失败 | 自动禁用 | Feed 列表状态徽标 |
@@ -690,7 +761,7 @@ feeds:
 - **HNSW 性能（D3）**：`ef_construction=128/ef_search=64` 下 P95 < 100ms 基准（万级向量）
 - **db**：pytest + 临时 Postgres（docker compose 测试库）；向量维度校验用例
 - **降级**：mock `/v1/embeddings` 404 → 断言语义通道降级
-- **结构化日志（D4）**：job 级日志规约 `job_id/task/attempt/latency_ms/error_class`，卡住的 running job 可凭日志定位（`status` 命令的排障底座）
+- **结构化日志（D4）**：**双 sink**——① 结构化 JSON（job 级规约 `job_id/task/attempt/latency_ms/error_class`，写 `logs/tc-YYYYMMDD.jsonl`，供 `tc status` 排障与 grep）② 人类可读 Rich 控制台滚动日志（PRD §13，开发期终端实时看）。二者经同一 `logging` 配置分流到不同 handler、不互斥；卡住的 running job 可凭 JSON 日志定位（`tc status` 的排障底座）。`error_class` 与 §5.1 `processing_jobs.error_class` 对齐（transient/permanent/timeout）
 
 ---
 
@@ -702,7 +773,7 @@ feeds:
 **切片一：端到端跑通闭环**（对应验收 1/7/8）
 > 这一片把 FakeLLM 集成测试搭起来——27B 真跑一篇 20–60s，开发迭代必须靠 mock，不然改一行提示词等一分钟
 - [ ] 1.1 脚手架：`pyproject.toml` + `docker-compose.yml`(pgvector) + config（`config.yaml` + `feeds.yaml`） + `scripts/init_db` + **退路 Python 3.12/3.13 备好**（§2）
-- [ ] 1.2 `app/db`：models + **Alembic 迁移（DDL §5，维度定死 `vector(1536)` + `db.vector_dim=1536`，§5.2 切片一前必须敲定）+ 扩展/维度校验** + jieba 预切词（§5.3 `to_tsvector('simple', 拼接文本)` 写入，**不要**用 `array_to_tsvector`）
+- [ ] 1.2 `app/db`：models + **Alembic 迁移（DDL §5 为参考快照，schema 唯一真源 = 迁移；维度定死 `vector(1536)` + `db.vector_dim=1536`，§5.2 切片一前必须敲定）+ 扩展/维度校验** + jieba 预切词（§5.3 `to_tsvector('simple', 拼接文本)` 写入，**不要**用 `array_to_tsvector`）；`scripts/init_db` = `CREATE EXTENSION vector` + `alembic upgrade head`（不写裸 DDL，§5.4）
 - [ ] 1.3 `app/llm`：base Protocol + omlx.py（生成/嵌入/端点探测；embed 封装层含 **instruct prefix**，query 加 / document 不加，§4.2）+ client（并发/重试/健康 + 单次探测 §4.4）+ prompts + structured（含 `parse_with_repair`，§6）+ **FakeLLM mock**（开发期 + 集成测试用，三端点内存实现，固定回放 fixture）
 - [ ] 1.4 `app/ingest`：feeds.py（feedparser + ETag/304）+ dedup.py
 - [ ] 1.5 `app/services/cleaner.py`：HTML→Markdown + 语言检测
@@ -725,7 +796,7 @@ feeds:
 - [ ] 3.4 验收：PRD §15 验收 3（主题跨源聚合）/ 5（Wiki 按**关键词**全文搜索，主题/实体浏览 P2）
 
 **横切**：
-- [ ] X.1 `app/scheduler.py`：fetch_all + drain_queue + pg_backup（**可选自动化，主触发是 `tc backup` CLI**，§10）+ cleanup_fetch_events（§10）
+- [ ] X.1 `app/scheduler.py`：fetch_all + drain_queue + pg_backup（**自动化补充，主触发是 `tc backup` CLI**，§10）+ cleanup_fetch_events（§10）
 - [ ] X.2 测试：FakeLLM 集成用例（切片一就要有）+ 单元用例（dedup / cleaner / structured / fts / pipeline 并发）+ **重试分类用例（A1）** + **跨源近似去重用例（B4）**（§13）
 - [ ] X.3 验收：对照 PRD §15 Phase 1 条目（1/3/5/7/8/9/16）走通
 

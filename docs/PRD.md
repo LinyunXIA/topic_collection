@@ -1,7 +1,8 @@
 # PRD：Topic Collection —— 主题信息采集 + 摘要 / 翻译 / 知识图谱 / LLM Wiki
 
-版本：v0.4（2026-08-18）· 状态：评审通过，进入 Phase 1 MVP 规划
+版本：v0.6（2026-08-18）· 状态：评审通过，进入 Phase 1 MVP 规划
 > 工程细节（目录结构 / DDL / LLM 接口 / 流水线）以 [DESIGN.md](DESIGN.md) 为权威
+> v0.6：架构审查二轮落档——**Phase 1 回归单进程**（§5 架构决策：worker + APScheduler 同 asyncio 循环，`make worker` 起全套，drain_queue 随 scheduler 在场、高量 feed 不滞留；CLI 走 services 不起 worker）；**重试分类落 schema**（§14 风险表：瞬时 5xx/超时 attempt 不自增、无限续跑退避封顶 15m 不进死信；永久 401/403/JSON 失败 max_attempts 死信；**401/403 归永久**）；**近似去重向量 body↔body 同粒度**（§5/§15 #16）；**embed_summary 优先级 4→6**（§5）；**init_db 统一走 Alembic**（§11）；**`tc summarize` 作用域明确** + **`tc topic add` 同步触发近 30 天 reclassify**（§4 F11/§15 #3）；与 DESIGN v0.7 同步
 > v0.4：架构审查落档——重试按瞬时/永久错误分类（§14/§15 #7）、检索 P1 即 RRF（§5）、跨源向量近似去重（§3/§5）、CPU 密集走 to_thread（§13）、`tc backup` CLI 主触发备份（§4 F11/§11）等；与 DESIGN v0.5 同步
 
 ---
@@ -25,7 +26,7 @@
 | 产品形态 | Phase 1 以 **CLI** 为核心可用入口（fetch/summarize/search/list）；**WebUI Dashboard 整体移入 Phase 2**；定时任务/报告 Phase 2 |
 | LLM Wiki | 可搜索的知识库站点（文章归档、自动分类、交叉链接、全文检索） |
 | 知识图谱 | 实体-关系三元组 + 图可视化（ECharts） |
-| LLM 能力 | 仅本地推理：oMLX（`http://localhost:8000`，OpenAI 兼容 RESTful，**本机不鉴权**）本地提供 3 模型——生成 `Qwen3.8-27B-MLX-4bit`（备选 9B INSTRUCT；THINKING 待修复）、嵌入 `Qwen3-Embedding-8B`（1536 维）、重排 `Qwen3-Reranker-4B`（§8） |
+| LLM 能力 | 仅本地推理：oMLX（`http://localhost:8000`，OpenAI 兼容 RESTful，**本机不鉴权**）本地提供 3 模型——生成 `Qwen3.8-27B-MLX-4bit`（备选 9B INSTRUCT；THINKING 待修复）、嵌入 `Qwen3-Embedding-8B-4bit-DWQ`（**原生 4096 维，经 `dimensions=1536` 服务端截断**）、重排 `Qwen3-Reranker-4B`（§8） |
 | 输出语言 | 中文（摘要/Wiki 默认中文，原文保留；翻译默认译为简体中文） |
 | 数据库 | PostgreSQL + pgvector（向量语义检索 + tsvector 中文全文检索） |
 
@@ -53,7 +54,7 @@
 - 知识沉淀：PostgreSQL 存储、实体-关系图谱、可搜索 Wiki、交叉链接
 - 展示：本地 Web Dashboard（Feed 管理、文章列表/详情、图谱、Wiki、话题、报告、设置）
 - 自动化：定时抓取 + 流水线消费 + 日报/周报
-- 本地 LLM 抽象：oMLX（主）+ Ollama / 进程内降级，可切换
+- 本地 LLM 抽象：oMLX（主）+ Ollama（备选，可切换）；嵌入**无进程内降级**——oMLX 不可用时关闭语义通道、仅关键词（DESIGN §4.3）
 
 ### Out of Scope（本版本）
 - 多用户/账号/鉴权
@@ -78,7 +79,7 @@
 | F8 | 日报/周报 | 每日/每周自动生成报告（主题热度、精华摘要、源健康、图谱增长） | P2 |
 | F9 | 开放 API 连接器 | 配置化连接 HN / GitHub / arXiv 等（骨架 P2，广度 P3） | P2/P3 |
 | F10 | 网页抓取 | 礼貌抓取 + 主内容提取（readability、反爬礼仪、增量抓取） | P3 |
-| F11 | CLI（Phase 1 主入口） | `feeds import` / `topic add` / `topic list` / `fetch` / `summarize` / `list [--topic]` / `search` / `article <id>` / **`status`**（队列深度 / 失败任务 / LLM 健康，**无 WebUI 期间唯一可观测性**） / **`retry <article_id> <task>`**（走 `complete_*()` 钩子，详见 DESIGN §6）；**`backup`**（`pg_dump` 备份主触发，DESIGN §10，数据比代码值钱）；report/graph 导出留 Phase 2；**`reclassify`**（P3，主题关键词快路径跳过 LLM 分类的兜底全量重跑，§15 #3） | P0 |
+| F11 | CLI（Phase 1 主入口） | `feeds import` / `topic add`（**同步触发近 30 天 `match_keywords()` 重算 + 未命中关键词文章入队 `topics`，§6/§15 #3**） / `topic list` / `fetch` / `summarize`（**作用域 = 全部 `status='pending'`（无 summary）的文章；可选 `--article <id>` 单篇强制重生成走 `complete_summarize()` 钩子，§6**） / `list [--topic]` / `search` / `article <id>` / **`status`**（队列深度 / 失败任务 / LLM 健康，**无 WebUI 期间唯一可观测性**） / **`retry <article_id> <task>`**（走 `complete_*()` 钩子，详见 DESIGN §6）；**`backup`**（`pg_dump` 备份主触发，DESIGN §10，数据比代码值钱）；report/graph 导出留 Phase 2；**`reclassify`**（P3，主题关键词快路径跳过 LLM 分类的兜底全量重跑，§15 #3） | P0 |
 | F12 | 告警 | 主题命中、Feed 故障、LLM 掉线时通知（桌面/邮件） | P3 |
 
 ---
@@ -111,14 +112,14 @@
 ```
 
 **关键架构决策**
-- 单应用进程 + 外部 PostgreSQL 服务；FastAPI 承载 Web UI、APScheduler（AsyncIOScheduler）、流水线 worker（asyncio 任务）
+- **单应用进程 + 外部 PostgreSQL 服务**（PRD §3 Out of Scope 本意）：Phase 1 无 WebUI 时 `python -m app.worker`（`make worker`）在一个 asyncio 循环里常驻 **worker task + APScheduler**——不拆 worker/scheduler/CLI 三进程（多进程只会制造 `LLMClient.healthy` 不共享、drain_queue 缺位等自找的坑）；Phase 2 加 uvicorn WebUI 路由同进程。CLI（`tc ...`）走 services 层、不启动 worker。FastAPI 承载 Web UI、APScheduler（AsyncIOScheduler）、流水线 worker（asyncio 任务）
 - 全异步：httpx 抓取、SQLAlchemy 2.0 async + asyncpg
 - **队列 = Postgres 表**（`processing_jobs`），worker 用 `SELECT ... FOR UPDATE SKIP LOCKED` 领取任务，可跨重启、Dashboard 可观测，无需 Redis/Celery；活跃态 `(article_id, task)` 部分唯一索引 + `ON CONFLICT DO NOTHING` 幂等入队，内容变更时旧 job 标 `superseded`（详见 DESIGN §5.1/§6）
 - **PostgreSQL + pgvector**：`article_embeddings.vector(1536)` 支撑语义检索，`tsvector + GIN` 支撑中文全文检索；开发环境已确认用 **Docker Compose** 起 pgvector（`docker compose up -d`，pgvector 官方镜像，见 DESIGN §5.4）
-- **生成/嵌入/重排全走 oMLX**（`http://localhost:8000` 已实测）：OpenAI 兼容 **RESTful** 三端点——`POST /v1/chat/completions`（生成 `Qwen3.8-27B-MLX-4bit`，备选 9B INSTRUCT）、`POST /v1/embeddings`（嵌入 `Qwen3-Embedding-8B-4bit-DWQ`，1536 维）、`POST /v1/rerank`（重排 `Qwen3-Reranker-4B-mxfp8`，P2）；本机不鉴权；Ollama/进程内为可切换备选
+- **生成/嵌入/重排全走 oMLX**（`http://localhost:8000` 已实测）：OpenAI 兼容 **RESTful** 三端点——`POST /v1/chat/completions`（生成 `Qwen3.8-27B-MLX-4bit`，备选 9B INSTRUCT）、`POST /v1/embeddings`（嵌入 `Qwen3-Embedding-8B-4bit-DWQ`，**原生 4096 维，经 `dimensions=1536` 服务端截断**）、`POST /v1/rerank`（重排 `Qwen3-Reranker-4B-mxfp8`，P2）；本机不鉴权；Ollama 为生成备选可切换
 - **增量处理**：仅新/变更文章入流水线；每个 LLM 产物按 `(article, task, model, content_hash)` 缓存
 
-**数据流水线**：`fetch → normalize → dedup（URL hash / content hash，LLM 花钱前）→ clean → 按任务入队 processing_jobs → LLM 各阶段（summarize/translate/entities/topics/wiki/embed_core/embed_summary）→ 图谱与 Wiki 构建 → 向量 + tsvector 索引`；**每篇文章的 insert→enqueue 同一事务**（崩溃不留孤儿文章，DESIGN §6）；**embed 建好后对近 N 天文章做向量近似去重**（title+summary 向量 cosine ≥ ~0.92 → `dedupe_of` 合并 mention_count，跨源同事件转载/改写不重复占位，DESIGN §6）
+**数据流水线**：`fetch → normalize → dedup（URL hash / content hash，LLM 花钱前）→ clean → 按任务入队 processing_jobs → LLM 各阶段（embed_core → summarize → embed_summary → topics → wiki）→ 图谱与 Wiki 构建 → 向量 + tsvector 索引`；**每篇文章的 insert→enqueue 同一事务**（崩溃不留孤儿文章，DESIGN §6）；**embed_core 落地后、summarize 入队前对近 `dedup.window_days`（默认 30 天）文章做向量近似去重**（用 **body↔body 同粒度**向量——查询向量与候选都取 `kind='body'` 行，余弦相似度 ≥ `dedup.threshold`（默认 0.95）→ 命中走 supersede + `dedupe_of` 合并 mention_count（多跳扁平化到终极 winner）、限同语言、可逆、记 `fetch_events` 日志，DESIGN §6 / PRD §15 #16）
 - 每个抓取源独立 try/catch；连续失败 N 次自动禁用并提示
 - LLM 掉线 → 任务保持 `queued` + `lock_until` 退避重试（worker 领取条件自动跳过未到期行，到点自动续跑），healthcheck 门控防打爆；文章仍可浏览原文
 - 启动时 `recover_interrupted()` **按 lock_until 租约回收**过期 `running` 任务（租约未到=活任务，不动；跨进程安全，详见 DESIGN §6）
@@ -132,9 +133,9 @@
 |---|---|---|
 | `app/config.py` | 加载 `config.yaml` + 环境变量覆盖，pydantic-settings 类型化配置 | `get_settings() -> Settings` |
 | `app/db/` | 引擎/会话、SQLAlchemy 模型、pgvector + tsvector 索引、Alembic 迁移 | `init_db()`, `get_session()`, `run_migrations()` |
-| `app/ingest/` | 采集：RSS 抓取（ETag/304）、API 连接器（配置驱动）、礼貌爬虫、去重；**全局并发 semaphore + 每域限速 queue**（源多不打爆对端，DESIGN §6） | `fetch_feed()`, `fetch_api()`, `scrape()`, `canonicalize_url()/content_hash()` |
+| `app/ingest/` | 采集：RSS 抓取（ETag/304）、API 连接器（配置驱动）、礼貌爬虫、去重；**全局并发 semaphore（`ingestion.global_concurrency`）+ 每域限速（`ingestion.per_host_interval_ms`）**——源多不打爆对端、不被对端识别为机器人封禁（DESIGN §6） | `fetch_feed()`, `fetch_api()`, `scrape()`, `canonicalize_url()/content_hash()` |
 | `app/services/cleaner.py` | HTML→文本→Markdown 清洗、样板去除、编码修复、语言检测 | `clean_html(html) -> CleanedContent` |
-| `app/llm/` | 本地 LLM 抽象：Provider Protocol、oMLX/Ollama 生成后端、嵌入（oMLX `/v1/embeddings`，备选进程内）、重排（oMLX `/v1/rerank`，P2）、facade（重试/并发/健康检查）、提示词模板、JSON 修复 | `LLMProvider.generate()/embed()/rerank()`, `LLMClient` |
+| `app/llm/` | 本地 LLM 抽象：Provider Protocol、oMLX/Ollama 生成后端、嵌入（oMLX `/v1/embeddings`，**无降级**）、重排（oMLX `/v1/rerank`，P2）、facade（重试/并发/健康检查）、提示词模板、JSON 修复 | `LLMProvider.generate()/embed()/rerank()`, `LLMClient` |
 | `app/services/llm_tasks.py` | 各 LLM 阶段（幂等、缓存、类型化错误） | `summarize/translate/extract_entities/classify_topics/generate_wiki_entry/generate_report/embed_core/embed_summary` |
 | `app/services/entities.py` | 实体去重合并、别名、关系计数与置信度 | `upsert_entities()`, `link_relations()`, `resolve()` |
 | `app/services/topics.py` | 主题 CRUD、关键词预匹配、跨源聚合查询 | `match_keywords()`, `aggregate_topic()` |
@@ -144,7 +145,7 @@
 | `app/pipeline.py` | 队列消费、任务分发、退避/死信、状态流转 | `enqueue()`, `worker_loop()`, `process_job()`, `recover_interrupted()` |
 | `app/api/` | FastAPI 路由 + Jinja2/HTMX WebUI（**Phase 2**） | `GET /`, `/feeds`, `/articles/{id}`, `/wiki/{slug}`, `/graph`, `/search`, … |
 | `app/scheduler.py` | APScheduler：定时抓取、排空队列、日报/周报 | `setup_scheduler(app_state)` |
-| `app/services/cli.py` | CLI 薄封装（**Phase 1 主入口**） | typer 命令：feeds import / topic add / topic list / fetch / summarize / list / search / article，逻辑全部复用 services |
+| `app/services/cli.py` | CLI 薄封装（**Phase 1 主入口**） | typer 命令：**feeds import / topic add / topic list / fetch / summarize / list [--topic] / search / article <id> / status**（队列深度 + 失败任务 + LLM 健康，无 WebUI 期间唯一可观测性）/ **retry <article_id> <task>**（走 `complete_*()` 钩子，DESIGN §6）/ **backup**（`pg_dump` 主触发，§4 F11/DESIGN §10）/ **reclassify**（P3，主题关键词快路径跳过 LLM 分类的兜底全量重跑，§15 #3）；逻辑全部复用 services |
 
 ---
 
@@ -156,7 +157,7 @@ PostgreSQL 15+ + `pgvector` 扩展 + SQLAlchemy 2.0（asyncpg）+ Alembic。核�
 |---|---|---|
 | `feeds` | 全部数据源（rss/api/scrape） | `type, url, enabled, config_json, etag, last_modified, fetch_status, fetch_failures` |
 | `articles` | 归一化文章 | `feed_id, source_url, url_hash UNIQUE, content_hash, title, lang, status(pending/processing/done/unparseable/error), dedupe_of, mention_count`；另有 `tsv tsvector`（GIN 索引） |
-| `article_embeddings` | 多粒度向量（标题/摘要/正文） | `article_id, kind, model, content_hash, dim, vector vector(1536)` — UNIQUE(article_id, kind, model)，upsert 保留最新，HNSW 索引；正文 embed 截断 8K（见 DESIGN §5.2） |
+| `article_embeddings` | 多粒度向量（标题/摘要/正文） | `article_id, kind, model, content_hash, dim, vector vector(1536)` — UNIQUE(article_id, kind, model)，upsert 保留最新，HNSW 索引；**1536 维** = 模型原生 4096 经 oMLX `dimensions=1536` 服务端截断（HNSW 2000 维上限，DESIGN §5.2）；正文 embed 截断 8K（见 DESIGN §5.2） |
 | `article_versions` | 原始内容留档（供重处理） | `kind(raw_html/raw_text), content` |
 | `summaries` | 中文摘要缓存 | `summary_text, key_points_json, confidence, content_hash, UNIQUE(article_id, lang, model)` — upsert 保留最新 |
 | `translations` | 翻译缓存 | `src_lang, tgt_lang, translated_title, translated_content, content_hash` — UNIQUE(article_id, src_lang, tgt_lang, model) |
@@ -170,7 +171,7 @@ PostgreSQL 15+ + `pgvector` 扩展 + SQLAlchemy 2.0（asyncpg）+ Alembic。核�
 | `fetch_events` | 源健康审计 | `ok, error, item_count` |
 
 **检索（双通道，中文友好）**：
-- **向量语义检索**：`article_embeddings.vector(1536)`（实测 `Qwen3-Embedding-8B` 输出 1536 维），**HNSW** 索引，余弦距离 `ORDER BY vector <=> $1`；对标题/摘要/正文分别建 embedding——检索主依赖 title+summary，正文超长截断 8K 只作补充（DESIGN §5.2），供语义搜索与相似文章推荐。
+- **向量语义检索**：`article_embeddings.vector(1536)`（`Qwen3-Embedding-8B-4bit-DWQ` 原生 4096 维，经 `dimensions=1536` 服务端截断，DESIGN §5.2），**HNSW** 索引，余弦距离 `ORDER BY vector <=> $1`；对标题/摘要/正文分别建 embedding——检索主依赖 title+summary，正文超长截断 8K 只作补充（DESIGN §5.2），供语义搜索与相似文章推荐。
 - **关键词全文检索**：`articles.tsv tsvector` + **GIN** 索引；中文用 **jieba 预切词**后写入 `tsvector('simple', ...)` 提升召回（避免依赖需编译的 `zhparser` 扩展）。
 - **混合检索**：`search(q)` = 向量 top-k ∪ 关键词 top-k → **P1 即用 RRF 融合**（`1/(k+rank)`，k≈60，量纲无关、~10 行，比原始加权求和更简单且正确——cosine 与 ts_rank 量纲不可比，直接相加无意义）；P2 在 RRF 之上叠 oMLX Reranker（DESIGN §7）。
 - 单用户量级（数万篇）Postgres 单机足够，不引入 Elasticsearch / Meilisearch。
@@ -272,7 +273,7 @@ data_dir: ./data
 db:
   dsn: postgresql+asyncpg://tc:tc@localhost:5432/topic_collection
   pool_size: 5
-  vector_dim: 1536           # 实测 Qwen3-Embedding-8B 输出维度
+  vector_dim: 1536           # 模型原生 4096 维，经 oMLX /v1/embeddings 的 dimensions=1536 服务端截断（DESIGN §5.2）
 web: { host: 127.0.0.1, port: 7111 }   # 必须 ≠ oMLX 端口 (8000)，避免与本地 LLM 端口冲突
 llm:
   backend: omlx              # omlx | ollama
@@ -321,7 +322,7 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 
 ## 13. 非功能需求
 
-- **性能**：单机数万篇文章量级流畅；LLM 并发=1 后台处理不阻塞 UI；Dashboard 秒级响应；**CPU 密集任务（jieba 切词、HTML→Markdown、trafilatura 解析）一律走 `asyncio.to_thread`，不阻塞 async 事件循环**（DESIGN §2）；抓取设全局并发 semaphore + 每域限速（DESIGN §6）；向量检索走 HNSW，调 `ef_search`/`ef_construction` 以达 P95 < 100ms（DESIGN §5.1）
+- **性能**：单机数万篇文章量级流畅；LLM 并发=1 后台处理不阻塞 UI；Dashboard 秒级响应；**CPU 密集任务（jieba 切词、HTML→Markdown、trafilatura 解析）一律走 `asyncio.to_thread`，不阻塞 async 事件循环**（DESIGN §2）；抓取设全局并发 semaphore（`ingestion.global_concurrency`）+ 每域限速（`ingestion.per_host_interval_ms`，DESIGN §6）；向量检索走 HNSW，**建索引期 `ef_construction=128`（DDL WITH）、查询期 `SET hnsw.ef_search=64`**——二者不可混（DESIGN §5.1），目标 P95 < 100ms
 - **运行时依赖**：Docker Compose 起 PostgreSQL 15+（`pgvector/pgvector:pg17` 镜像，已确认）；DB 仅本机回环访问（`127.0.0.1`），凭据由配置/环境变量管理
 - **可靠性**：源失败自动禁用+审计；LLM 掉线优雅降级（文章仍可浏览原文）；任务可重试/恢复/死信；增量处理幂等
 - **隐私/安全**：全部本地运行，无数据出机；Dashboard 默认绑定 `127.0.0.1`；不保存任何云凭据
@@ -335,9 +336,9 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 | 风险 | 影响 | 对策 |
 |---|---|---|
 | 本地 LLM 中文质量 | 摘要/实体偏弱 | 首选 Qwen3.8-27B（实测质量更佳）；提示词带示例；置信度评分；手动「重新生成」+ 人工编辑词条兜底 |
-| LLM 速度（27B） | 流水线积压 | 并发=1 后台 worker；仅增量处理；预热模型（备选 9B INSTRUCT 更轻量可降级）；**重试按错误类拆**——瞬时错误（连接拒绝/5xx/超时，含整段掉线）无限续跑、退避封顶 15m、不进死信；永久错误（JSON 解析失败/不可解析）3 次死信（DESIGN §6/§11） |
-| LLM 掉线积压 | 期间任务积压、恢复前不消费 | 见上一行：瞬时类不耗尽 attempt、不进死信，恢复后自动续跑（§15 #7） |
-| 高量 feed 首抓积压 | 并发=1 下千条积压数小时，fetch_interval 越积越多 | `max_items_per_fetch` 截断 + 水位告警记 fetch_events；分批回灌（DESIGN §6/§11） |
+| LLM 速度（27B） | 流水线积压 | 并发=1 后台 worker；仅增量处理；预热模型（备选 9B INSTRUCT 更轻量可降级）；**重试按错误类拆**——瞬时错误（连接拒绝/5xx/超时，含整段掉线）`attempt` 不自增、无限续跑、退避封顶 15m、不进死信；永久错误（**401/403/400** 鉴权配置错 / JSON 解析失败 / 不可解析）`attempt` 自增、`max_attempts=3` 死信（DESIGN §6/§11） |
+| LLM 掉线积压 | 期间任务积压、恢复前不消费 | 见上一行：瞬时类不自增 attempt、不进死信，恢复后自动续跑（§15 #7）；worker 领取门控掉线期间不领新 job |
+| 高量 feed 首抓积压 | 并发=1 下千条积压数小时，fetch_interval 越积越多 | `max_items_per_fetch` 截断 LLM 入队（文章全量入库）+ 水位告警记 fetch_events；**drain_queue 每 30s 扫 pending 文章补入队**（Phase 1 单进程随 scheduler 在场，DESIGN §6/§10/§11） |
 | 生成/嵌入并发 | 全局=1 让便宜 embed 被 27B 阻塞，语义索引吞吐受限 | P1 暂按 1；待实测 oMLX 同时常驻 27B+8B 可行则升 gen/embed 分槽（B1，DESIGN §4.4/§16） |
 | LLM JSON 漂移 | 三元组损坏 | json_mode/schema + 修复解析 + 重问一次；低置信度也入库并在 UI 标注 |
 | 中文检索召回 | 搜不到 | jieba 预切词写入 `tsvector('simple')`；必要时补充同义词表；混合检索兜底 |
@@ -349,7 +350,7 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 | 向量存储增长 | 磁盘/入库变慢 | 主存 title+summary、正文截断 8K；按策略裁剪归档（P3）；周期性 `REINDEX` |
 | 凭据泄露（若开鉴权） | token 写进 repo/DB | 默认不鉴权无需 token；若开启则 `api_key_env` 只存环境变量名，config.yaml 不含真实值 |
 | 嵌入/重排端点不可用 | 语义检索不可用 | oMLX `/v1/embeddings` 不可用 → **语义通道关闭、仅关键词**（Dashboard 提示）；嵌入无进程内降级（维度/向量空间不匹配，§8/DESIGN §4.3）；`/v1/rerank` 不可用 → 降级进程内 `bge-reranker-v2-m3` → 保持 RRF 融合（P2） |
-| oMLX 掉线 | 流水线停摆 | 网络错/5xx（瞬时）→ 保持 queued + `lock_until` 退避重试、**不进死信、退避封顶 15m**、恢复后自动续跑；JSON/不可解析（永久）3 次死信可手动重试（§14/§15 #7）；Dashboard 健康横幅；配置一键切回 Ollama 备选 |
+| oMLX 掉线 | 流水线停摆 | 网络错/5xx/超时（瞬时）→ 保持 queued + `lock_until` 退避重试、**`attempt` 不自增、不进死信、退避封顶 15m**、恢复后自动续跑；401/403/JSON/不可解析（永久）`attempt` 自增、3 次死信可手动重试（§14/§15 #7）；Dashboard 健康横幅；配置一键切回 Ollama 备选 |
 
 ---
 
@@ -365,7 +366,7 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 4. 知识图谱页可看到实体节点与关系边，点击节点跳回相关文章（Phase 2）
 5. Wiki 可按关键词全文搜索（含中文关键词），且每篇新文章都已自动生成 Wiki 词条页；按主题/实体浏览的完整 Wiki 归 Phase 2
 6. 日报/周报能按计划生成并在 Dashboard 查看/导出（Phase 2）
-7. 拔掉 LLM 服务后，系统不崩溃：文章可浏览、**瞬时类任务保持 queued 退避、无限续跑至恢复（不因掉线耗尽 attempt 进死信，退避封顶 15m）**，恢复后自动续跑；永久类任务（不可解析/JSON 失败）3 次后死信可手动重试（DESIGN §6/§11）
+7. 拔掉 LLM 服务后，系统不崩溃：文章可浏览、**瞬时类任务保持 queued 退避、无限续跑至恢复（`attempt` 不自增、不因掉线进死信，退避封顶 15m）**，恢复后自动续跑；永久类任务（401/403 鉴权配置错 / 不可解析 / JSON 失败）3 次后死信可手动重试（DESIGN §6/§11）
 8. 全程本地运行，无任何数据发送到云端
 9. 语义检索生效：用与原文字面不同但语义相近的查询词，仍能召回相关文章（pgvector）；混合检索 **P1 即用 RRF 融合**（量纲无关），P2 叠 Reranker（§5/DESIGN §7）
 10. 配置化 API 连接器（Phase 3）：不改代码，仅通过 `feeds.yaml` 配置（endpoint + 参数 + JSONPath 映射）即可接入 arXiv / GitHub / 通用 OpenAPI 等源并进入流水线
@@ -374,7 +375,7 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 13. 告警（Phase 3）：主题命中新文章、Feed 连续失败、LLM 掉线三类事件，按配置触发通知（桌面 / 邮件）
 14. 分任务多模型 A/B（Phase 3）：同一任务（如 `summarize`）可配置多模型并行产出并对比（如 27B vs 9B），结果可标注来源与手动切换
 15. 存储归档（Phase 3）：按策略（时间 / 体积 / 状态）归档并裁剪旧文章、原始 HTML 与向量，归档后 DB 体积下降且检索仍可用
-16. 跨源同一事件转载/改写经**向量近似去重**合并（`dedupe_of`），主题视图与日报不重复占位（Phase 1；嵌入建好后生效，DESIGN §6）
+16. 跨源同一事件转载/改写经**向量近似去重**合并（`dedupe_of`，多跳扁平化到终极 winner），主题视图与日报不重复占位（Phase 1；嵌入建好后生效，body↔body 同粒度匹配，DESIGN §6）
 
 ---
 
