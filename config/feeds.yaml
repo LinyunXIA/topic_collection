@@ -2,15 +2,17 @@
 # 新增订阅：在此加一项 → tc feeds import → tc fetch
 
 feeds:
-  - name: "示例 RSS"
+  - name: "Hacker News"
     type: rss
-    url: "https://example.com/feed.xml"
+    url: "https://hnrss.org/frontpage"
     enabled: true
 
-  # - name: "Hacker News API"         # P2 API 连接器示例
-  #   type: api
-  #   url: "https://hacker-news.firebaseio.com/v0/"
+  - name: "TechCrunch AI"
+    type: rss
+    url: "https://techcrunch.com/category/artificial-intelligence/feed/"
+    enabled: true
+
+  # - name: "示例 RSS"
+  #   type: rss
+  #   url: "https://example.com/feed.xml"
   #   enabled: false
-  #   config:
-  #     path: topstories
-  #     mapper: { title: .title, url: .url, published: .time }
