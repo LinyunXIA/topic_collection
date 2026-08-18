@@ -2,7 +2,13 @@
 
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述（目录结构 / DDL / 接口）只在一处维护、另一处引用，避免漂移
-> 版本：v0.8 · 2026-08-18 · 随决策持续更新（与 PRD v0.7 同步）
+> 版本：v0.9 · 2026-08-18 · 随决策持续更新（与 PRD v0.7 同步）
+> v0.9：**架构审查四轮——SQL 逻辑错误 + done 判定补洞 + 文档同步清理**——
+>   **硬伤 6（mention_count 合并错行）**——§6 dedup 命中步骤 1 SQL 拆两条：loser 只置 `status='done', dedupe_of=winner`，新增步骤 1.5 将 loser 的 `mention_count` 累加到 winner（原 SQL 错写为 loser 自身翻倍，winner 一分没拿）；§6 多跳扁平化段文字说明一致；
+>   **硬伤 7（processing→done 判定两个洞）**——§6 状态机 `processing→done` 规则简化为「每次 job 进入终态后检查：该文章不存在任何 queued/running job → 置 done」，与任务集合无关，不再维护非可选 task 清单；`complete_summarize` 职责 ⑥ + `complete_embed` 职责 ④ + 永久失败死信路径各加 done 检查；覆盖关键词命中（topics 缺席自动满足）与失败路径（无钩子触发）两个漏洞；
+>   **中等 6（recover SQL 覆盖 error 字段）**——§6 recover SQL 不再写 `error='[recovered x N]'`，原始错误保留在 error 字段、recover 次数由 `recover_count` 追踪；
+>   **中等 7（unparseable job 跳过→循环）**——§6 `pending→unparseable` 段 worker 发现 unparseable 文章时标记 job `status='superseded'` 而非跳过（跳过导致 running→recover→再领取→再跳过循环）；
+>   **文档**——§13 测试清单补 D5（summaries upsert content_hash 版本守卫断言）、D6（loser done + drain_queue 不复活断言）；§13 D4 日志规约删 `error_class` 的 `timeout` 枚举（§5.1 已删）；PRD §11 config YAML 砍成示意 + 指向 DESIGN §9（连续三轮同步漂移，彻底消灭副本）
 > v0.8：**架构审查三轮——SQL/谓词层逻辑错误集中落档**——
 >   **硬伤 1（summaries upsert 谓词方向反）**——§6 状态机原子性段 SQL `WHERE summaries.content_hash IS DISTINCT FROM EXCLUDED.content_hash` 改为 `WHERE EXCLUDED.content_hash = (SELECT content_hash FROM articles WHERE id = EXCLUDED.article_id)`（比对**文章当前版本**而非存量摘要）；守卫意义段同步说明旧谓词只挡幂等重写、放行过期覆盖，方向反；§13 加 D5 测试断言；
 >   **硬伤 2（pick-and-claim 自增 attempt 抵消瞬时不耗预算）**——§6 worker 领取 SQL 删除 `attempt=attempt+1`（v0.5 残留），attempt 完全归永久失败路径所有；§14 1.6 任务描述加注「领取 SQL 不自增 attempt」；
@@ -430,8 +436,8 @@ fetch → normalize → dedup(url_hash/content_hash) → clean → 入队 proces
 **文章状态机**：`pending → processing → done | unparseable | error`（部分任务失败仍可 `done`，详情页可重试单个任务）
 - **迁移触发点（规格明确，否则实现会一直停在 pending，触发硬伤 3）**：
   - `pending → processing`：worker pick-and-claim 首个该文章 job 时同事务 `UPDATE articles SET status='processing' WHERE id=$1 AND status='pending'`（status 守卫：processing 不会被重复推进，job 锁就够，但显式 status 守卫便于测试断言）
-  - `processing → done`：**所有**非可选 task（embed_core / summarize / topics / wiki）终态为 `succeeded` 或 `failed`（dead-letter）或被 supersede **且** `dedupe_of IS NULL`（非 loser）时，worker 在最后一个 task 的 complete 钩子里同事务 `UPDATE articles SET status='done' WHERE id=$1 AND status='processing'`；embed_summary / translate 失败不阻塞 done（embed_summary 失败只缺 summary 向量，title+body 仍可语义检索；translate 是用户触发可选）
-  - `pending → unparseable`：cleaner 阶段 `articles.status='unparseable'` 同事务写入，**跳过所有 LLM 入队**（§6 cleaner / 入队规则表）；worker 领取前查询 articles.status，发现 unparseable 直接跳过（避免给烂文章发空任务）
+  - `processing → done`：**每次** job 进入终态（`succeeded` / `failed` / `superseded`）后，同事务检查：该文章不存在任何 `queued` 或 `running` job → `UPDATE articles SET status='done' WHERE id=$1 AND status='processing'`（**且** `dedupe_of IS NULL`，非 loser）。适用所有路径：关键词命中（topics job 失去入队资格，天然缺席 → 该 job 落地后无剩余 queued/running → 自动 done）、任务失败（fail 后无剩余 → 自动 done）、supersede（旧 job superseded 后若新 job 已不存在 → 自动 done）；embed_summary / translate 失败不阻塞 done（缺席即终态）。**不再维护"非可选 task 清单"**——与任务集合无关的规则不会因新增/删除 task 而产生遗漏
+  - `pending → unparseable`：cleaner 阶段 `articles.status='unparseable'` 同事务写入，**跳过所有 LLM 入队**（§6 cleaner / 入队规则表）；worker 领取前查询 articles.status，发现 unparseable **直接标记 `status='superseded'`**（不跳过——跳过的 job 会停在 `running` 直到租约过期被 `recover_interrupted` 回收、再领取再跳过，循环；实际上 unparseable 文章不入队任何 job，此防御分支极少触发，但既然写了就写完整）
   - `processing → error`：保留（当前未触发，留 P3）
   - **近似去重命中时 loser 直接 `done`**：`complete_embed(article_id, kind='body')` 判定命中后，**同一事务**：
     1. `UPDATE articles SET status='done', dedupe_of=$winner WHERE id=$1 AND status='processing'`——loser 不再是 `pending`，drain_queue 谓词按 `status='pending'` 过滤不再补队，**这是阻断 loser 周期性复活的关键**（详见 backpressure 段）；
@@ -501,6 +507,7 @@ fetch → normalize → dedup(url_hash/content_hash) → clean → 入队 proces
   3. 入队 `embed_summary` job（幂等 `ON CONFLICT DO NOTHING`）
   4. 入队 `topics` job（**仅当关键词未命中**——`match_keywords()` 返回空集的文章走 LLM 慢路径，§6 主题分类规则；摘要后触发读 `summary_zh` 比外文全文 token 省、跨语言判定更稳，故双触发问题自然消解：ingest 时不再入队 topics，仅此一处）
   5. 入队 `wiki` job（**必须**——入队规则表 wiki 触发是「摘要落地后」，漏了 wiki 永远不入队，PRD §15 #5 验收挂；幂等 `ON CONFLICT DO NOTHING`）
+  6. **检查文章是否可置 `done`**（§6 状态机）：`SELECT NOT EXISTS (SELECT 1 FROM processing_jobs WHERE article_id=$1 AND status IN ('queued','running'))` → true 时 `UPDATE articles SET status='done' WHERE id=$1 AND status='processing' AND dedupe_of IS NULL`——**每次 job 终态后执行**（关键词命中的文章 topics job 不存在、剩余 job 全部终态 → 自动 done；任务失败路径也覆盖，不再依赖"最后一个 task"概念）
 - **调用方**：
   - **自动**：worker 处理 `summarize` 任务成功后调用
   - **手动**：`tc retry <article_id> summarize` 走同一条钩子（不能用 LLM 重新跑完后只 UPDATE summaries，否则 `embed_summary` 不会补入队 → summary 向量停在旧版本；F2 P0 必踩的坑）
@@ -511,6 +518,7 @@ fetch → normalize → dedup(url_hash/content_hash) → clean → 入队 proces
   1. `INSERT INTO article_embeddings ... ON CONFLICT (article_id, kind, model) DO UPDATE SET vector=..., content_hash=..., dim=... WHERE EXCLUDED.content_hash = (SELECT content_hash FROM articles WHERE id = EXCLUDED.article_id)`——同 summaries 的 content_hash 版本守卫，防旧 job 覆盖新向量（§6 状态机原子性，方向修对：仅当本 job 对应内容仍是当前版本才落库）
   2. **`embed_core` 完成后做近似去重判定**（仅 `kind='body'` 钩子里触发；`kind='title'` 与 `embed_summary` 跳过）：`SELECT id, vector FROM article_embeddings WHERE kind='body' AND model=<active> AND article_id IN (SELECT id FROM articles WHERE lang=(SELECT lang FROM articles WHERE id=$1) AND id!=$1 AND dedupe_of IS NULL AND fetched_at>now()-INTERVAL '<window>') ORDER BY vector <=> $body_vec LIMIT <k>` → 若 `distance <= 1 - threshold` 命中 → 进入 dedup 命中事务（§6 dedup 命中段：loser status='done' + dedupe_of + 删 article_topics + supersede summarize/topics/wiki + fetch_events），**不再入队 `summarize`**。**职责 ① ② 都在同一事务**——要么 embed 落库 + 去重判定走完、要么都不发生
   3. `UPDATE processing_jobs SET status='succeeded', lock_until=NULL WHERE id=$1 AND status='running'`（带 running 守卫，§6 状态机原子性）
+  4. **检查文章是否可置 `done`**（§6 状态机）：`SELECT NOT EXISTS (SELECT 1 FROM processing_jobs WHERE article_id=$1 AND status IN ('queued','running'))` → true 时 `UPDATE articles SET status='done' WHERE id=$1 AND status='processing' AND dedupe_of IS NULL`
 - **调用方**：worker 处理 `embed_core`/`embed_summary` 成功后调用；`tc retry <article_id> embed_core|embed_summary` 走同一钩子——否则手动重嵌只 upsert 向量而不推进 job 状态/不守卫 supersede、与 F2 P0 同类坑。**手动 retry embed_core 会重跑去重判定**：新向量可能命中不同的 winner，旧 job 的 dedupe_of 应当被新 winner 覆盖（手动 retry 通常因人工修了 content）
 - **kind 映射**：`embed_core` 写 `title`+`body` 两行、`embed_summary` 写 `summary` 一行（§5.2）；钩子按 job payload 的 kind 集合循环 upsert
 - **维度校验**：result 向量维度 ≠ `db.vector_dim`(1536) → 阻断写入并告警（§4.2/§5.2，防 HNSW 失配）
@@ -572,8 +580,9 @@ RETURNING *;
   - **永久（401/403/400/JSON 解析失败/内容不可解析）**：`error_class='permanent'`、`attempt+1`、`error=$2`；`attempt >= max_attempts` → `status='failed'` 死信；未达阈值则 `status='queued'`、`lock_until=now()+INTERVAL '<短退避>'` 重试（永久类退避短、快速耗尽 attempt）
   - 通用 SQL（瞬时，attempt 不自增）：`UPDATE processing_jobs SET status='queued', lock_until=now()+INTERVAL '<退避>', error_class='transient', error=$2 WHERE id=$1 AND status='running'`
   - 通用 SQL（永久，attempt 自增 + 死信判定）：`UPDATE processing_jobs SET status=CASE WHEN attempt+1>=max_attempts THEN 'failed' ELSE 'queued' END, lock_until=CASE WHEN attempt+1>=max_attempts THEN NULL ELSE now()+INTERVAL '30s' END, attempt=attempt+1, error_class='permanent', error=$2, consecutive_timeouts=0 WHERE id=$1 AND status='running'`
+  - **`status='failed'`（死信）后同事务执行 done 检查**（§6 状态机）：`SELECT NOT EXISTS (SELECT 1 FROM processing_jobs WHERE article_id=$1 AND status IN ('queued','running'))` → true 时 `UPDATE articles SET status='done' WHERE id=$1 AND status='processing' AND dedupe_of IS NULL`——与 complete_* 钩子里的 done 检查对称；死信是终态，做完不再入队后续 task，此时若无剩余 queued/running job，文章可直接 done（覆盖「最后一 job 永久失败」场景）
 - **进程中断**：崩溃/杀进程时 `status='running'` 且 `lock_until` 留在未来 —— **租约过期才算真死**
-- **recover（租约回收）**：`UPDATE processing_jobs SET status='queued', lock_until=NULL, recover_count=recover_count+1, error='[recovered x'||(recover_count+1)||']' WHERE status='running' AND lock_until < now()` —— **谁跑都安全**（多 worker / scheduler 启动时跑也只会回收已过期的行，不动活任务；Phase 1 单进程下 worker 是唯一常驻消费者，无跨进程误伤）。**用 `recover_count` 计数器而非 `error` 字段 append**（§5.1 新增列；旧版 `error=COALESCE(error,'')||'[recovered]'` 反复 recover 时 error 字段无限增长、UI 渲染爆掉）
+- **recover（租约回收）**：`UPDATE processing_jobs SET status='queued', lock_until=NULL, recover_count=recover_count+1 WHERE status='running' AND lock_until < now()` —— **谁跑都安全**（多 worker / scheduler 启动时跑也只会回收已过期的行，不动活任务；Phase 1 单进程下 worker 是唯一常驻消费者，无跨进程误伤）。**不动 `error` 字段**——原始错误信息保留在 `error` 字段供排障，recover 次数由 `recover_count` 计数器追踪（§5.1 新增列；旧版 `error='[recovered x N]'` 整体覆盖 error 字段，原始错误信息丢失、多次 recover 后 error 字段反复覆写无诊断价值）
 - **归属**：**仅 worker 启动时跑** `recover_interrupted()`（scheduler 不跑，避免双领取者歧义）；Phase 1 单进程下 worker 是唯一常驻消费者（§6 运维模式 / §10），recover 与 worker 同进程、无跨进程误伤
 - 启动顺序：init_db → 探测 oMLX → `recover_interrupted()` → 启动 worker（同进程内 scheduler 也在此时拉起，见 §6 运维模式 / §10）；**`recover_interrupted()` 在 worker 启动时跑**（§6 recover 归属）
 
@@ -596,7 +605,8 @@ RETURNING *;
   - **判定阈值**：pgvector `<=>` 是**余弦距离**（= 1 - 余弦相似度），SQL 条件 `vector <=> $1 <= 1 - threshold`，**别写反**（写成 `>=` 相当于「最不像的也合并」，静默吞文章）。默认 `ingestion.dedup.threshold` = **0.95**（相似度），即距离 ≤ 0.05 命中
   - **body 截断的已知边界**：`embed_core` 的 body 向量按 §5.2 截断 8K，超长同事件文若前 8K 开头不同，body↔body 距离偏大、该命中也可能漏判——P1 接受（保守漏判优于误合并）；P2 正文分块 + 池化后可缓解
   - **命中 → 取消后续 LLM（同一事务，全部或全部不发生）**：
-    1. `UPDATE articles SET status='done', dedupe_of=<ultimate_winner_id>, mention_count=mention_count + (SELECT mention_count FROM articles WHERE id=$1) WHERE id=$1 AND status='processing'`——**loser 直接 done**（不是 superseded+pending，是真 done），drain_queue 谓词 `status='pending'` 不再触发补队、loser 永不复活（详见 §6 文章状态机 / backpressure 段）
+    1. `UPDATE articles SET status='done', dedupe_of=<ultimate_winner_id> WHERE id=$1 AND status='processing'`——**loser 直接 done**（不是 superseded+pending，是真 done），drain_queue 谓词 `status='pending'` 不再触发补队、loser 永不复活（详见 §6 文章状态机 / backpressure 段）
+    1.5. `UPDATE articles SET mention_count = mention_count + (SELECT mention_count FROM articles WHERE id=$1) WHERE id=<winner>`——**mention_count 累计转移到 winner**（loser 的热度汇聚到原始文章；原 SQL 错写为 loser 自身翻倍，winner 一分没拿到）
     2. `UPDATE processing_jobs SET status='superseded' WHERE article_id=$1 AND task IN ('summarize','topics','wiki') AND status IN ('queued','running')`，消除 TOCTOU 窗口（§6 supersede 同事务原则）
     3. `DELETE FROM article_topics WHERE article_id=$1`——**双保险**：loser 在 match_keywords 判定写入 article_topics（keyword 行）后被 dedup 命中，dedupe_of 置位但 topic 行还在；删掉避免主题视图重复占位、验收 #16 挂（详见中等 5）
     4. 写 `fetch_events(event_type='dedup_merge', ok=true, ...)`，payload 含 winner/loser article_id、cosine 距离、lang，**所有合并事后可审计**
@@ -795,9 +805,11 @@ feeds:
 - **跨源近似去重（B4）**：同事件跨源改写（URL/content_hash 不同、语义近似）→ embed 后断言 `dedupe_of` 合并、主题视图不重复占位
 - **backfill（B3）**：切 active embed model 后全量重嵌，search 期间不混入旧 model 向量
 - **HNSW 性能（D3）**：`ef_construction=128/ef_search=64` 下 P95 < 100ms 基准（万级向量）
+- **summaries upsert content_hash 版本守卫（D5）**：mock supersede 竞态（H1 旧 job 带着过期 hash 提交、H2 新 job 已经先落）→ 旧结果**未**写入、H2 的结果保留（§6 状态机原子性）
+- **loser done + drain_queue 不复活（D6）**：mock「文章在 done 之前 status 反复横跳、loser 文章在 dedup 后不再被 drain_queue 补队」（§6 文章状态机迁移触发点）
 - **db**：pytest + 临时 Postgres（docker compose 测试库）；向量维度校验用例
 - **降级**：mock `/v1/embeddings` 404 → 断言语义通道降级
-- **结构化日志（D4）**：**双 sink**——① 结构化 JSON（job 级规约 `job_id/task/attempt/latency_ms/error_class`，写 `logs/tc-YYYYMMDD.jsonl`，供 `tc status` 排障与 grep）② 人类可读 Rich 控制台滚动日志（PRD §13，开发期终端实时看）。二者经同一 `logging` 配置分流到不同 handler、不互斥；卡住的 running job 可凭 JSON 日志定位（`tc status` 的排障底座）。`error_class` 与 §5.1 `processing_jobs.error_class` 对齐（transient/permanent/timeout）
+- **结构化日志（D4）**：**双 sink**——① 结构化 JSON（job 级规约 `job_id/task/attempt/latency_ms/error_class`，写 `logs/tc-YYYYMMDD.jsonl`，供 `tc status` 排障与 grep）② 人类可读 Rich 控制台滚动日志（PRD §13，开发期终端实时看）。二者经同一 `logging` 配置分流到不同 handler、不互斥；卡住的 running job 可凭 JSON 日志定位（`tc status` 的排障底座）。`error_class` 与 §5.1 `processing_jobs.error_class` 对齐（transient/permanent）
 
 ---
 
