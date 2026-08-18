@@ -1,7 +1,8 @@
 # PRD：Topic Collection —— 主题信息采集 + 摘要 / 翻译 / 知识图谱 / LLM Wiki
 
-版本：v0.6（2026-08-18）· 状态：评审通过，进入 Phase 1 MVP 规划
+版本：v0.7（2026-08-18）· 状态：评审通过，进入 Phase 1 MVP 规划
 > 工程细节（目录结构 / DDL / LLM 接口 / 流水线）以 [DESIGN.md](DESIGN.md) 为权威
+> v0.7：架构审查三轮落档——**summaries upsert content_hash 谓词改对**（§5 §15 #7 + DESIGN §6：比对文章当前版本而非存量摘要，旧谓词方向反过期覆盖新）；**pick-and-claim 不再自增 attempt**（§14 §15 #7 + DESIGN §6：attempt 由永久失败路径独占，否则瞬时退避占 max_attempts 预算）；**文章状态机迁移时机明确**（DESIGN §6：pending→processing/processing→done/loser 同事务 done）+ **drain_queue 谓词改三条件互锁**（DESIGN §6：`status='pending' AND dedupe_of IS NULL AND NOT EXISTS`，阻断 loser 周期性复活）；**超时转永久直接 failed**（§14 §15 #7 + DESIGN §6/§11：不再 attempt+1 循环，180s×3=9 分钟试完直接死信）；**主题聚合 dedupe_of IS NULL 硬约束**（§5 §15 #16 + DESIGN §6：loser 在 dedup 之前已写 article_topics，不过滤就重复占位）；**§13 测试加 D5/D6 断言**（summaries 守卫、loser 不复活）；与 DESIGN v0.8 同步
 > v0.6：架构审查二轮落档——**Phase 1 回归单进程**（§5 架构决策：worker + APScheduler 同 asyncio 循环，`make worker` 起全套，drain_queue 随 scheduler 在场、高量 feed 不滞留；CLI 走 services 不起 worker）；**重试分类落 schema**（§14 风险表：瞬时 5xx/超时 attempt 不自增、无限续跑退避封顶 15m 不进死信；永久 401/403/JSON 失败 max_attempts 死信；**401/403 归永久**）；**近似去重向量 body↔body 同粒度**（§5/§15 #16）；**embed_summary 优先级 4→6**（§5）；**init_db 统一走 Alembic**（§11）；**`tc summarize` 作用域明确** + **`tc topic add` 同步触发近 30 天 reclassify**（§4 F11/§15 #3）；与 DESIGN v0.7 同步
 > v0.4：架构审查落档——重试按瞬时/永久错误分类（§14/§15 #7）、检索 P1 即 RRF（§5）、跨源向量近似去重（§3/§5）、CPU 密集走 to_thread（§13）、`tc backup` CLI 主触发备份（§4 F11/§11）等；与 DESIGN v0.5 同步
 
