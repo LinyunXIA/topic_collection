@@ -1,0 +1,50 @@
+# Topic Collection 主配置 — DESIGN §9
+# 凭据走环境变量覆盖，不在此文件中
+
+data_dir: ./data
+
+db:
+  dsn: postgresql+asyncpg://tc:tc@localhost:5432/topic_collection
+  pool_size: 5
+  vector_dim: 1536            # Qwen3-Embedding 输出经 dimensions=1536 截断
+
+web:
+  host: 127.0.0.1
+  port: 7111
+
+llm:
+  backend: omlx               # omlx | ollama
+  endpoint: http://localhost:8000
+  model: Qwen3.8-27B-MLX-4bit
+  max_concurrency: 1
+  max_timeout_retries: 3
+  models: {}                  # per-task 覆盖，空=用默认 model
+  embed:
+    backend: omlx
+    model: Qwen3-Embedding-8B-4bit-DWQ
+    max_tokens: 8192
+  rerank:                     # Phase 2 启用
+    model: Qwen3-Reranker-4B-mxfp8
+
+ingestion:
+  fetch_interval_hours: 6
+  user_agent: "TopicCollection/0.1 (+local personal KB)"
+  max_scrape_bytes: 5242880
+  feed_disable_after: 5
+  max_items_per_fetch: 50
+  global_concurrency: 8
+  per_host_interval_ms: 500
+  fetch_events_retention_days: 90
+  dedup:
+    threshold: 0.95
+    window_days: 30
+    k: 10
+    same_lang_only: true
+
+topics:
+  llm_threshold: 0.6
+  reclassify_recent_days: 30
+
+schedule:
+  daily_report: "08:00"
+  weekly_report: "Mon 08:00"

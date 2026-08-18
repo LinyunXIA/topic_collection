@@ -1,0 +1,16 @@
+# Topic Collection 订阅源清单 — DESIGN §9
+# 新增订阅：在此加一项 → tc feeds import → tc fetch
+
+feeds:
+  - name: "示例 RSS"
+    type: rss
+    url: "https://example.com/feed.xml"
+    enabled: true
+
+  # - name: "Hacker News API"         # P2 API 连接器示例
+  #   type: api
+  #   url: "https://hacker-news.firebaseio.com/v0/"
+  #   enabled: false
+  #   config:
+  #     path: topstories
+  #     mapper: { title: .title, url: .url, published: .time }
