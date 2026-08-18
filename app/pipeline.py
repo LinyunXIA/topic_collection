@@ -292,38 +292,45 @@ async def worker_loop(
                 await asyncio.sleep(5)
                 continue
 
-            async with session_factory() as session:
-                job = await pick_and_claim(session)
-                await session.commit()
-
-            if not job:
-                await asyncio.sleep(1)
-                continue
-
-            logger.info(
-                "领取 job %d: article=%d task=%s",
-                job["id"], job["article_id"], job["task"],
-            )
-
-            # 处理任务
-            if task_handler:
+            # 领取 + 处理在同一个信号量内，保证并发=1
+            if llm_client:
+                await llm_client._semaphore.acquire()
+            try:
                 async with session_factory() as session:
-                    try:
-                        await task_handler(session, job, settings, llm_client)
-                        await session.commit()
-                    except PermanentError as e:
-                        await handle_permanent_failure(session, job["id"], str(e))
-                        await check_and_set_done(session, job["article_id"])
-                        await session.commit()
-                    except Exception as e:
-                        is_timeout = "timeout" in str(e).lower()
-                        await handle_transient_failure(
-                            session, job["id"], str(e),
-                            is_timeout=is_timeout,
-                            health_ok=llm_client.is_healthy if llm_client else True,
-                            max_timeout_retries=settings.llm.max_timeout_retries,
-                        )
-                        await session.commit()
+                    job = await pick_and_claim(session)
+                    await session.commit()
+
+                if not job:
+                    await asyncio.sleep(1)
+                    continue
+
+                logger.info(
+                    "领取 job %d: article=%d task=%s",
+                    job["id"], job["article_id"], job["task"],
+                )
+
+                # 处理任务
+                if task_handler:
+                    async with session_factory() as session:
+                        try:
+                            await task_handler(session, job, settings, llm_client)
+                            await session.commit()
+                        except PermanentError as e:
+                            await handle_permanent_failure(session, job["id"], str(e))
+                            await check_and_set_done(session, job["article_id"])
+                            await session.commit()
+                        except Exception as e:
+                            is_timeout = "timeout" in str(e).lower()
+                            await handle_transient_failure(
+                                session, job["id"], str(e),
+                                is_timeout=is_timeout,
+                                health_ok=llm_client.is_healthy if llm_client else True,
+                                max_timeout_retries=settings.llm.max_timeout_retries,
+                            )
+                            await session.commit()
+            finally:
+                if llm_client:
+                    llm_client._semaphore.release()
 
         except asyncio.CancelledError:
             logger.info("worker 收到取消信号，退出")

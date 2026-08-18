@@ -83,8 +83,8 @@ async def check_extensions(settings: Settings) -> None:
         )
         row = result.fetchone()
         if row and row[0] > 0:
-            # atttypmod 对 vector 类型 = 维度 + 8
-            db_dim = row[0] - 8
+            # atttypmod 对 vector 类型直接就是维度
+            db_dim = row[0]
             if db_dim != settings.db.vector_dim:
                 raise RuntimeError(
                     f"向量维度不匹配：DB={db_dim}, config={settings.db.vector_dim}"
