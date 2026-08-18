@@ -1,0 +1,388 @@
+# PRD：Topic Collection —— 主题信息采集 + 摘要 / 翻译 / 知识图谱 / LLM Wiki
+
+版本：v0.3（2026-08-17）· 状态：评审通过，进入 Phase 1 MVP 规划
+> 工程细节（目录结构 / DDL / LLM 接口 / 流水线）以 [DESIGN.md](DESIGN.md) 为权威
+
+---
+
+## 1. 背景与目标（Context）
+
+用户每天面对大量分散在 RSS、API、网站中的信息（技术博客、新闻、领域动态），缺乏一个统一的「采集 → 消化 → 沉淀」工具。本产品构建一个**本地运行、数据私密、中文友好的主题信息聚合与个人知识库系统**：
+
+- 从任意 RSS/Atom、开放 API、网页爬虫采集文章；
+- 用**本地 LLM（oMLX，Apple Silicon）**对内容做中文摘要、翻译、实体与关系抽取、主题分类；
+- 沉淀为**可搜索的知识库 Wiki** 和**实体-关系知识图谱**；
+- 通过**本地 Web Dashboard** 可视化浏览，并由**定时任务**产出日报/周报。
+
+项目背景：`topic_collection/` 为全新空项目（Python 3.14.6，Apple Silicon，空 venv），从零搭建。
+
+### 已确认的产品决策
+
+| 维度 | 决策 |
+|---|---|
+| 数据源 | 任意 RSS/Atom + 开放 API/爬虫 + 按主题关键词跨源聚合（三者全要） |
+| 产品形态 | Phase 1 以 **CLI** 为核心可用入口（fetch/summarize/search/list）；**WebUI Dashboard 整体移入 Phase 2**；定时任务/报告 Phase 2 |
+| LLM Wiki | 可搜索的知识库站点（文章归档、自动分类、交叉链接、全文检索） |
+| 知识图谱 | 实体-关系三元组 + 图可视化（ECharts） |
+| LLM 能力 | 仅本地推理：oMLX（`http://localhost:8000`，OpenAI 兼容 RESTful，**本机不鉴权**）本地提供 3 模型——生成 `Qwen3.6-27B-AEON…-mlx-4Bit`（备选 9B INSTRUCT；THINKING 待修复）、嵌入 `Qwen3-Embedding-8B`（4096 维）、重排 `Qwen3-Reranker-4B`（§8） |
+| 输出语言 | 中文（摘要/Wiki 默认中文，原文保留；翻译默认译为简体中文） |
+| 数据库 | PostgreSQL + pgvector（向量语义检索 + tsvector 中文全文检索） |
+
+---
+
+## 2. 目标用户与使用场景
+
+- **用户**：个人/极客（单用户本地工具），关注技术、行业、研究动态。
+- **典型场景**：
+  1. 每天新增几篇到几十篇订阅文章，自动获得中文摘要，扫一遍即可决定是否精读；
+  2. 外文文章一键翻译成中文全文；
+  3. 按主题（如「RAG」「多模态」「某公司动态」）跨源聚合，追踪一个话题的持续进展；
+  4. 浏览「XX 公司与 XX 产品」的实体关系图谱，点击节点回看相关文章；
+  5. 在 Wiki 中按主题/实体浏览已沉淀的知识，并全文检索；
+  6. 早晨收到昨日日报、周一收到周报，含主题热度与摘要精华。
+
+---
+
+## 3. 产品范围（Scope）
+
+### In Scope
+- 数据采集：RSS/Atom、配置化 API 连接器、礼貌网页抓取；按主题关键词聚合
+- 内容处理：HTML→Markdown 清洗、去重、语言检测
+- LLM 处理（本地）：中文摘要+要点、全文翻译、实体与关系三元组抽取、主题分类、Wiki 词条生成、报告综合
+- 知识沉淀：PostgreSQL 存储、实体-关系图谱、可搜索 Wiki、交叉链接
+- 展示：本地 Web Dashboard（Feed 管理、文章列表/详情、图谱、Wiki、话题、报告、设置）
+- 自动化：定时抓取 + 流水线消费 + 日报/周报
+- 本地 LLM 抽象：oMLX（主）+ Ollama / 进程内降级，可切换
+
+### Out of Scope（本版本）
+- 多用户/账号/鉴权
+- 云端部署、多进程/分布式（单应用进程 + 单机 PostgreSQL 足够）
+- 移动端 App
+- 深度社交/推荐算法
+- 对任意网站的通用语义解析（仅礼貌抓取主流页面 + 主内容提取）
+
+---
+
+## 4. 核心特性与用户故事
+
+| # | 特性 | 用户故事 | 优先级 |
+|---|---|---|---|
+| F1 | RSS/Atom 订阅 | 添加任意 RSS/Atom 源，定时抓取，304/去重，失败自动禁用 | P0 |
+| F2 | 中文摘要 | 新文章自动生成中文摘要 + 3–5 条要点，可重新生成 | P0 |
+| F3 | 知识库检索 | 对文章/Wiki 做全文搜索（中文友好） | P0 |
+| F4 | 文章归档与 Wiki 词条 | 每篇文章生成中文词条页（P0 基础），跨文章按实体/话题互链（P2 完整） | P0（基础）/P2（完整） |
+| F5 | 主题关键词聚合 | 定义主题+关键词并分类（P1）、跨源聚合按热度（P2 视图） | P1/P2 |
+| F6 | 全文翻译 | 非中文文章一键译为简体中文全文 | P2 |
+| F7 | 知识图谱 | 抽取实体-关系三元组，ECharts 力导向图可视化，可筛选 | P2 |
+| F8 | 日报/周报 | 每日/每周自动生成报告（主题热度、精华摘要、源健康、图谱增长） | P2 |
+| F9 | 开放 API 连接器 | 配置化连接 HN / GitHub / arXiv 等（骨架 P2，广度 P3） | P2/P3 |
+| F10 | 网页抓取 | 礼貌抓取 + 主内容提取（readability、反爬礼仪、增量抓取） | P3 |
+| F11 | CLI（Phase 1 主入口） | `feeds import` / `topic add` / `topic list` / `fetch` / `summarize` / `list [--topic]` / `search` / `article <id>`；report/graph 导出留 Phase 2 | P0 |
+| F12 | 告警 | 主题命中、Feed 故障、LLM 掉线时通知（桌面/邮件） | P3 |
+
+---
+
+## 5. 系统架构
+
+单 Python 进程，三子系统协作，无 Celery/Redis（单用户用不到）：
+
+```
+                    ┌─────────────────────────────────────────────┐
+                    │               FastAPI 进程                    │
+                    │                                             │
+  Internet ──► ┌────┴─────┐   ┌──────────────┐   ┌──────────────┐  │
+  RSS/API/     │ Ingestor │──►│ Pipeline     │──►│ Wiki + Graph │  │
+  Scrape       │ (async) │   │ (LLM stages) │   │ Builders     │  │
+               └────┬─────┘   └──────┬───────┘   └──────┬───────┘  │
+                    ▼                ▼                  ▼          │
+               ┌───────────────────────────────────────────────┐   │
+               │   PostgreSQL 15+ (pgvector + tsvector + GIN)   │   │
+               └───────────────────────────────────────────────┘   │
+                    ▲                ▲                  ▲          │
+               ┌────┴─────┐   ┌──────┴───────┐   ┌──────┴───────┐  │
+               │ APSched  │   │ Web UI       │   │ LLM Providers│  │
+               │ scheduler│   │ (Jinja+HTMX, │   │ oMLX / Ollama│  │
+               └──────────┘   │  ECharts)    │   │ (localhost)  │  │
+                              └──────────────┘   └──────────────┘  │
+               ┌──────────────────────────────────────────────────┐│
+               │ Services 层 = 应用 API → CLI 只是薄 typer 封装    ││
+               └──────────────────────────────────────────────────┘│
+```
+
+**关键架构决策**
+- 单应用进程 + 外部 PostgreSQL 服务；FastAPI 承载 Web UI、APScheduler（AsyncIOScheduler）、流水线 worker（asyncio 任务）
+- 全异步：httpx 抓取、SQLAlchemy 2.0 async + asyncpg
+- **队列 = Postgres 表**（`processing_jobs`），worker 用 `SELECT ... FOR UPDATE SKIP LOCKED` 领取任务，可跨重启、Dashboard 可观测，无需 Redis/Celery；活跃态 `(article_id, task)` 部分唯一索引 + `ON CONFLICT DO NOTHING` 幂等入队，内容变更时旧 job 标 `superseded`（详见 DESIGN §5.1/§6）
+- **PostgreSQL + pgvector**：`article_embeddings.vector(4096)` 支撑语义检索，`tsvector + GIN` 支撑中文全文检索；开发环境已确认用 **Docker Compose** 起 pgvector（`docker compose up -d`，pgvector 官方镜像，见 DESIGN §5.4）
+- **生成/嵌入/重排全走 oMLX**（`http://localhost:8000` 已实测）：OpenAI 兼容 **RESTful** 三端点——`POST /v1/chat/completions`（生成 `Qwen3.6-27B-AEON…-mlx-4Bit`，备选 9B INSTRUCT）、`POST /v1/embeddings`（嵌入 `Qwen3-Embedding-8B-4bit-DWQ`，4096 维）、`POST /v1/rerank`（重排 `Qwen3-Reranker-4B-mxfp8`，P2）；本机不鉴权；Ollama/进程内为可切换备选
+- **增量处理**：仅新/变更文章入流水线；每个 LLM 产物按 `(article, task, model, content_hash)` 缓存
+
+**数据流水线**：`fetch → normalize → dedup（URL hash / content hash，LLM 花钱前）→ clean → 按任务入队 processing_jobs → LLM 各阶段（summarize/translate/entities/topics/wiki/embed_core/embed_summary）→ 图谱与 Wiki 构建 → 向量 + tsvector 索引`
+- 每个抓取源独立 try/catch；连续失败 N 次自动禁用并提示
+- LLM 掉线 → 任务保持 `queued` + `lock_until` 退避重试（worker 领取条件自动跳过未到期行，到点自动续跑），healthcheck 门控防打爆；文章仍可浏览原文
+- 启动时 `recover_interrupted()` 恢复上次中断的 `running` 任务
+- **主题分类（P1）**：关键词快路径命中即计入（`method=keyword`，不跑 LLM）；仅未命中关键词的文章进 LLM 打分（≥0.6 记入，`method=llm`）；`UNIQUE(article_id, topic_id)` 一篇文章一主题一行；聚合按 `score DESC, published_at DESC`（规则详见 DESIGN §6）
+
+---
+
+## 6. 模块划分
+
+| 模块 | 职责 | 关键接口 |
+|---|---|---|
+| `app/config.py` | 加载 `config.yaml` + 环境变量覆盖，pydantic-settings 类型化配置 | `get_settings() -> Settings` |
+| `app/db/` | 引擎/会话、SQLAlchemy 模型、pgvector + tsvector 索引、Alembic 迁移 | `init_db()`, `get_session()`, `run_migrations()` |
+| `app/ingest/` | 采集：RSS 抓取（ETag/304）、API 连接器（配置驱动）、礼貌爬虫、去重 | `fetch_feed()`, `fetch_api()`, `scrape()`, `canonicalize_url()/content_hash()` |
+| `app/services/cleaner.py` | HTML→文本→Markdown 清洗、样板去除、编码修复、语言检测 | `clean_html(html) -> CleanedContent` |
+| `app/llm/` | 本地 LLM 抽象：Provider Protocol、oMLX/Ollama 生成后端、嵌入（oMLX `/v1/embeddings`，备选进程内）、重排（oMLX `/v1/rerank`，P2）、facade（重试/并发/健康检查）、提示词模板、JSON 修复 | `LLMProvider.generate()/embed()/rerank()`, `LLMClient` |
+| `app/services/llm_tasks.py` | 各 LLM 阶段（幂等、缓存、类型化错误） | `summarize/translate/extract_entities/classify_topics/generate_wiki_entry/generate_report/embed_core/embed_summary` |
+| `app/services/entities.py` | 实体去重合并、别名、关系计数与置信度 | `upsert_entities()`, `link_relations()`, `resolve()` |
+| `app/services/topics.py` | 主题 CRUD、关键词预匹配、跨源聚合查询 | `match_keywords()`, `aggregate_topic()` |
+| `app/services/wiki.py` | 生成/更新文章/主题/实体词条页、交叉链接、全文检索 | `build_*_page()`, `link_related_pages()`, `search(q)` |
+| `app/services/graph.py` | 组装 ECharts categories/nodes/links JSON，可按主题/时间筛选 | `graph_json(filters)` |
+| `app/services/reports.py` | 日报/周报生成（结构化统计 → LLM 综合为 Markdown/HTML） | `generate_daily_report()`, `generate_weekly_report()` |
+| `app/pipeline.py` | 队列消费、任务分发、退避/死信、状态流转 | `enqueue()`, `worker_loop()`, `process_job()`, `recover_interrupted()` |
+| `app/api/` | FastAPI 路由 + Jinja2/HTMX WebUI（**Phase 2**） | `GET /`, `/feeds`, `/articles/{id}`, `/wiki/{slug}`, `/graph`, `/search`, … |
+| `app/scheduler.py` | APScheduler：定时抓取、排空队列、日报/周报 | `setup_scheduler(app_state)` |
+| `app/services/cli.py` | CLI 薄封装（**Phase 1 主入口**） | typer 命令：feeds import / topic add / topic list / fetch / summarize / list / search / article，逻辑全部复用 services |
+
+---
+
+## 7. 数据模型（PostgreSQL + pgvector）
+
+PostgreSQL 15+ + `pgvector` 扩展 + SQLAlchemy 2.0（asyncpg）+ Alembic。核心表：
+
+| 表 | 用途 | 关键字段 |
+|---|---|---|
+| `feeds` | 全部数据源（rss/api/scrape） | `type, url, enabled, config_json, etag, last_modified, fetch_status, fetch_failures` |
+| `articles` | 归一化文章 | `feed_id, source_url, url_hash UNIQUE, content_hash, title, lang, status(pending/processing/done/unparseable/error), dedupe_of, mention_count`；另有 `tsv tsvector`（GIN 索引） |
+| `article_embeddings` | 多粒度向量（标题/摘要/正文） | `article_id, kind, model, content_hash, dim, vector vector(4096)` — UNIQUE(article_id, kind, model)，upsert 保留最新，HNSW 索引；正文 embed 截断 8K（见 DESIGN §5.2） |
+| `article_versions` | 原始内容留档（供重处理） | `kind(raw_html/raw_text), content` |
+| `summaries` | 中文摘要缓存 | `summary_text, key_points_json, confidence, content_hash, UNIQUE(article_id, lang, model)` — upsert 保留最新 |
+| `translations` | 翻译缓存 | `src_lang, tgt_lang, translated_title, translated_content, content_hash` — UNIQUE(article_id, src_lang, tgt_lang, model) |
+| `entities` | 去重后实体 | `canonical_name, aliases_json, entity_type, description, mention_count, confidence` |
+| `relations` | 三元组 | `subject_id, predicate, object_id, source_article_id, confidence` |
+| `topics` | 用户主题+关键词 | `name, description, keywords_json, enabled` |
+| `article_topics` | 文章↔主题 | `score, method(keyword/llm), UNIQUE(article_id, topic_id)` |
+| `wiki_pages` | 生成的词条 | `kind(article/topic/entity/manual), ref_id, slug UNIQUE, content_md, related_json` |
+| `processing_jobs` | 流水线队列 | `task, status(queued/running/succeeded/failed/superseded), attempt, priority, error, lock_until, content_hash`；活跃态 `(article_id, task)` 部分唯一索引（防重复入队） |
+| `reports` | 报告 | `report_type(daily/weekly), period, content_md, content_html, stats_json` |
+| `fetch_events` | 源健康审计 | `ok, error, item_count` |
+
+**检索（双通道，中文友好）**：
+- **向量语义检索**：`article_embeddings.vector(4096)`（实测 `Qwen3-Embedding-8B` 输出 4096 维），**HNSW** 索引，余弦距离 `ORDER BY vector <=> $1`；对标题/摘要/正文分别建 embedding——检索主依赖 title+summary，正文超长截断 8K 只作补充（DESIGN §5.2），供语义搜索与相似文章推荐。
+- **关键词全文检索**：`articles.tsv tsvector` + **GIN** 索引；中文用 **jieba 预切词**后写入 `tsvector('simple', ...)` 提升召回（避免依赖需编译的 `zhparser` 扩展）。
+- **混合检索**：`search(q)` = 向量 top-k ∪ 关键词 top-k → 加权融合排序（P1 简单加权；P2 用 RRF / 交叉编码 rerank）。
+- 单用户量级（数万篇）Postgres 单机足够，不引入 Elasticsearch / Meilisearch。
+
+---
+
+## 8. LLM 抽象层（本地推理）
+
+### 接口
+```python
+class LLMProvider(Protocol):
+    name: str                # "omlx" | "ollama"
+    base_url: str            # oMLX OpenAI 兼容端点
+    api_key: str | None      # 可选；None/空 = 不发送鉴权头（本机默认不鉴权）
+    generation_model: str    # Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16-mlx-4Bit
+    embedding_model: str     # Qwen3-Embedding-8B-4bit-DWQ
+    rerank_model: str | None # Qwen3-Reranker-4B-mxfp8（P2）
+    async def generate(req: GenerateRequest) -> GenerateResult   # POST /v1/chat/completions
+    async def embed(texts: list[str], model=None) -> EmbedResult  # POST /v1/embeddings
+    async def rerank(query, docs, top_n) -> list[int]             # POST /v1/rerank（P2）
+    async def healthcheck() -> bool
+class GenerateRequest: model, messages, temperature=0.3, max_tokens, json_mode, timeout_s=180
+class GenerateResult: text, finish_reason, usage, latency_ms
+```
+`LLMClient` facade：并发信号量（默认 1）、超时、指数退避重试、`healthy` 健康状态。重试/超时只在这层处理，services 不碰传输细节。
+
+### 生成后端：oMLX（RESTful）
+- **调用方式**：OpenAI 兼容 **RESTful** `POST {endpoint}/v1/chat/completions`；模型 = `Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16-mlx-4Bit`。
+- **鉴权**：**本机不鉴权**（已实测，不带 token 正常）；若将来开启，`api_key_env` 从环境变量读取，不写进仓库。
+- **json_mode**：请求 `{"response_format": {"type": "json_object"}}`（oMLX 支持时启用），否则走解析+修复（§8 结构化输出）。
+- **备选 Ollama**：同为 OpenAI 兼容 REST，配置一键切换。
+
+### 嵌入模型（Embeddings，支撑 pgvector）—— 直接用 oMLX 本地嵌入模型
+- **为什么用独立嵌入模型**：pgvector 语义检索必须把文本变成向量；9B 生成模型不产出嵌入，故用 oMLX 上的**嵌入模型** `Qwen3-Embedding-8B-4bit-DWQ`。
+- **主后端（oMLX）**：`POST {endpoint}/v1/embeddings`，与生成同走本地、不鉴权。若 oMLX 未暴露 `/v1/embeddings`，降级进程内 `fastembed`（`bge-small-zh-v1.5` / `bge-m3`）。
+- **维度**：Qwen3-Embedding-8B 实测输出 **4096 维**，DDL 与 `db.vector_dim` 统一 4096、不截断；启动时校验一致（防 HNSW 失配 / 模型切换）。
+- 嵌入按 `(article, kind, model)` 缓存；嵌入拆两个独立 P1 任务：`embed_core`（title+body，与 `summarize` 并行入队）+ `embed_summary`（`summarize` 成功后补 summary；独立 task 去重，避免 `embed_core` 退避占槽吞掉 summary 入队，见 DESIGN §5.2）。
+
+### Reranker（重排序）—— P1 不需要，P2 直接用 oMLX 模型
+- 混合检索的「向量 top-k ∪ 关键词 top-k」在 P1 用简单加权融合即可满足 MVP 验收（§15 第 9 条）。
+- P2 精度增强：调 oMLX `POST {endpoint}/v1/rerank`，模型 `Qwen3-Reranker-4B-mxfp8`，对 top-k 候选重排；若 oMLX 未暴露 `/v1/rerank`，降级进程内 `bge-reranker-v2-m3`。
+
+### 提示词职责（一律强制中文输出）
+| 任务 | 契约 | 输出 |
+|---|---|---|
+| `summarize` | 中心论点 + 3–5 要点，不加观点 | JSON `{"summary_zh": ..., "key_points":[...]}` |
+| `translate` | 忠实译成简体中文，保留技术术语 | 纯文本 |
+| `extract_entities` | 抽取本文命名实体及关系 | JSON `{"entities":[{"name,type,aliases,description"}], "relations":[{"subject,predicate,object"}]}` |
+| `classify_topics` | 给定主题+关键词，打分 0–1 | JSON `{"scores":{topic_id:0.87}}` |
+| `generate_wiki_entry` | 中性中文百科式词条（文章+实体关系） | Markdown |
+| `generate_report` | 按期聚合主题精华 | Markdown |
+
+### 模型建议
+- **生成（统一走 oMLX）**：默认 `Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16-mlx-4Bit`（实测可用，质量更佳，json_mode 正常）承担全部生成任务；备选轻量 `Qwen3.5-9B-…-INSTRUCT-…-MLX-mxfp8`；`9B THINKING` 变体 oMLX 加载失败（Missing 154 parameters）待修复。27B 长文约 20–60s，并发=1 后台处理可接受；各任务同用一模型避免多模型抢占内存；分任务 A/B 留 P3。
+- **嵌入**：oMLX `Qwen3-Embedding-8B-4bit-DWQ`（本地、无需另起服务）；进程内 `bge-small-zh-v1.5`/`bge-m3` 仅作降级。
+- **重排（P2）**：oMLX `Qwen3-Reranker-4B-mxfp8`。
+
+### 结构化输出健壮性
+`json_mode`（支持处开启）→ 解析失败用 `structured.parse_with_repair`（去代码围栏、找首个平衡 `{}`、带错误重问一次）→ 仍失败则标记 `low_confidence`，文章仍可用。**部分失败不阻塞**：每个任务独立 job、独立缓存；`extract_entities` 失败但摘要成功 → 文章 `done` + 部分 Wiki 页，可对单个任务重试（Phase 1 CLI / Phase 2 详情页）。
+
+---
+
+## 9. Web Dashboard 页面
+
+Jinja2 服务端渲染 + HTMX 动态 + ECharts（本地 vendored JS，离线可用）。
+
+| 路由 | 页面 | 内容 |
+|---|---|---|
+| `GET /` | 概览 | 流水线统计（总数/今日）、待处理队列、LLM 健康横幅、最近文章、源健康 |
+| `GET/POST /feeds` | Feed 管理 | 增删改/禁用，按类型填字段，立即抓取，错误历史 |
+| `GET /articles?feed=&topic=&status=&q=` | 文章列表 | 筛选表格 + FTS 搜索 + 分页 |
+| `GET /articles/{id}` | 文章详情 | Tab：原文 / 中文摘要 / 全文翻译 / 实体关系 / 相关话题 / Wiki 词条；状态+重试 |
+| `GET /wiki` | Wiki 浏览 | 按 kind 分组的词条索引 + 搜索 |
+| `GET /wiki/{slug}` | Wiki 词条页 | 渲染 Markdown，交叉链接实体/话题/相关文章 |
+| `GET /graph` | 知识图谱 | ECharts 力导向图，按实体类型/主题/时间筛选，点节点回看相关文章 |
+| `GET/POST /topics` | 主题管理 | 主题 CRUD、关键词编辑、跨源聚合表（主题×源×文章数） |
+| `GET /reports` | 报告 | 日报/周报列表 + 渲染，导出 Markdown/HTML |
+| `GET/POST /settings` | 设置 | LLM 后端+分任务模型、并发、健康测试（流式）、定时时间 |
+| `GET /search?q=` | 搜索结果 | 混合检索（关键词+语义），文章+Wiki 命中与摘要片段，可切换纯语义模式 |
+
+---
+
+## 10. 定时任务与报告
+
+APScheduler：每日（默认 08:00）日报、每周（默认周一 08:00）周报，另含定时抓取与排空队列。报告存 `reports` 表。
+
+- **日报**：今日新增 N 篇（分源）、Top 5 摘要精华、新实体/新关系、队列与失败任务、源健康、LLM 状态与 token 估算
+- **周报**：主题热度排行（跨源聚合，核心价值点）、每主题摘要精华（LLM 综合）、图谱增长（节点/边新增、Top 新实体）、每源统计表、存储与归档建议
+- 报告由「结构化统计 JSON → LLM 综合为 Markdown」，非原文堆砌
+
+---
+
+## 11. 配置（DX）
+
+`config/config.yaml`（默认 oMLX）：
+```yaml
+data_dir: ./data
+db:
+  dsn: postgresql+asyncpg://tc:tc@localhost:5432/topic_collection
+  pool_size: 5
+  vector_dim: 4096           # 实测 Qwen3-Embedding-8B 输出维度
+web: { host: 127.0.0.1, port: 7111 }   # 必须 ≠ oMLX 端口 (8000)，避免与本地 LLM 端口冲突
+llm:
+  backend: omlx              # omlx | ollama
+  endpoint: http://localhost:8000   # oMLX OpenAI 兼容 RESTful 端点（实测）
+  # 鉴权：本机不鉴权（已确认），不发 Authorization 头；如需鉴权再设 api_key_env
+  model: Qwen3.6-27B-AEON-Ultimate-Uncensored-BF16-mlx-4Bit  # 实测可用，质量更佳
+  # 备选：Qwen3.5-9B-Claude-4.6-HighIQ-INSTRUCT-HERETIC-UNCENSORED-MLX-mxfp8（更轻量）
+  # THINKING 变体 oMLX 加载失败待修复，修好后可改回
+  max_concurrency: 1
+  models: { summarize: <model>, translate: <model>, entities: <model>,
+            topics: <model>, wiki: <model>, report: <model> }  # 默认=generation model
+  embed:
+    backend: omlx            # omlx(/v1/embeddings) | inproc(fastembed) 降级
+    model: Qwen3-Embedding-8B-4bit-DWQ
+    max_tokens: 8192         # 正文 embed 截断上限（title/summary 天然短不截断）
+  rerank:                    # P2 启用
+    model: Qwen3-Reranker-4B-mxfp8
+topics: { llm_threshold: 0.6 }   # classify_topics LLM 打分阈值（关键词快路径不经过此值）
+ingestion:
+  fetch_interval_hours: 6
+  user_agent: "TopicCollection/0.1 (+local personal KB)"
+  max_scrape_bytes: 5242880
+  feed_disable_after: 5          # feed 连续失败 N 次自动禁用（DESIGN §6）
+  fetch_events_retention_days: 90 # fetch_events 审计表保留天数
+schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
+# 订阅源不写在主配置 → 独立文件 config/feeds.yaml（加订阅只改那一个文件）
+```
+
+**订阅源配置独立**：`config/feeds.yaml` 为订阅源清单（type/url/enabled/可选 config），新增源只需在文件里加一项 → `tc feeds import`（或启动自动同步，幂等 upsert 进 DB `feeds` 表）→ `tc fetch` 抓取。schema 与同步机制见 DESIGN §9。
+- 开发环境（Docker，已确认）：`docker compose up -d` 一键起 pgvector（`pgvector/pgvector:pg17` 镜像，配置见 DESIGN §5.4）；首次运行 `scripts/init_db` 建库建扩展
+- 环境变量覆盖：`TC_LLM_BACKEND=omlx`、`TC_DB_DSN=postgresql+asyncpg://...` 等（pydantic-settings；**凭据一律走环境变量，不入库不入 repo**）
+- DX：`uv run` / `make dev` 启动（lifespan 拉起 DB init + scheduler + worker）；`scripts/` 放 init_db / import_feeds / backfill / re_process；`--check-llm` 验证后端与模型
+
+---
+
+## 12. 分阶段路线图
+
+| 阶段 | 范围 | 覆盖需求 |
+|---|---|---|
+| **Phase 1 MVP（可用即可，无 WebUI）** | 建库（Postgres + pgvector + tsvector）；RSS 抓取（ETag/去重）；清洗；本地 LLM（oMLX）+ `summarize`(中文) + `embed_core`/`embed_summary`(4096维) + `classify_topics`（关键词+LLM）；基础 Wiki 词条 + 混合检索；**CLI 入口**（feeds import / topic add / topic list / fetch / summarize / list / search / article）；定时抓取+流水线；config（config.yaml + feeds.yaml）+ `docker-compose.yml`(pgvector) | RSS(1a)、LLM Wiki 基础(3)、本地 LLM oMLX(5a)、中文输出(6)、语义检索(pgvector 基础)、定时抓取(2b 部分)、CLI 可用入口(2c 提前) |
+| **Phase 2** | **WebUI Dashboard**（概览/Feeds/文章/详情/搜索/设置/图谱/报告页）；混合检索完善（RRF + oMLX Reranker、相似文章推荐）；中文翻译；实体关系抽取→entities/relations 表+合并；图谱页（ECharts）；主题聚合 UI+跨源视图；完整 Wiki（主题/实体词条+交叉链接）；日报/周报；API 连接器骨架 | Web+Dashboard(2a)、报告(2b)、知识图谱(4)、API/爬虫骨架(1b 部分)、主题聚合(1c)、Reranker 增强(3)、混合检索高级(3) |
+| **Phase 3** | API 连接器广度（arXiv/GitHub/通用 OpenAPI）+ 健壮爬虫（readability、反爬礼仪、增量抓取）；高级搜索（过滤/保存搜索/实体搜索）；告警（主题命中/Feed 故障/LLM 掉线）；分任务多模型 A/B；存储归档裁剪 | API/爬虫广度(1b)、高级搜索(3)、告警(12) |
+
+---
+
+## 13. 非功能需求
+
+- **性能**：单机数万篇文章量级流畅；LLM 并发=1 后台处理不阻塞 UI；Dashboard 秒级响应；向量检索走 HNSW，P95 < 100ms
+- **运行时依赖**：Docker Compose 起 PostgreSQL 15+（`pgvector/pgvector:pg17` 镜像，已确认）；DB 仅本机回环访问（`127.0.0.1`），凭据由配置/环境变量管理
+- **可靠性**：源失败自动禁用+审计；LLM 掉线优雅降级（文章仍可浏览原文）；任务可重试/恢复/死信；增量处理幂等
+- **隐私/安全**：全部本地运行，无数据出机；Dashboard 默认绑定 `127.0.0.1`；不保存任何云凭据
+- **可维护性**：Services 层为应用 API，CLI/Web 均薄封装；Alembic 迁移；Rich 滚动日志；配置类型化校验
+- **可测试性**：LLM 可 mock；单元（dedup/cleaner/structured/FTS）+ 集成（fake LLM）
+
+---
+
+## 14. 风险与对策
+
+| 风险 | 影响 | 对策 |
+|---|---|---|
+| 本地 LLM 中文质量 | 摘要/实体偏弱 | 首选 Qwen3.6-27B（实测质量更佳）；提示词带示例；置信度评分；手动「重新生成」+ 人工编辑词条兜底 |
+| LLM 速度（27B） | 流水线积压 | 并发=1 后台 worker；仅增量处理；预热模型（备选 9B INSTRUCT 更轻量可降级） |
+| LLM JSON 漂移 | 三元组损坏 | json_mode/schema + 修复解析 + 重问一次；低置信度也入库并在 UI 标注 |
+| 中文检索召回 | 搜不到 | jieba 预切词写入 `tsvector('simple')`；必要时补充同义词表；混合检索兜底 |
+| 反爬（P3） | 抓取失败/封禁 | 礼貌 UA + robots 检查 + 每域限速抖动 + 退避重试；优先 RSS/API |
+| Feed 不稳定 | 采集噪音 | ETag/304、失败计数自动禁用、审计事件、UI 状态徽标 |
+| 存储增长 | DB 变慢 | 原始 HTML 仅按需存 `article_versions`；按策略归档裁剪（P3） |
+| Postgres 运维依赖 | 环境难跑/版本不一 | `docker-compose` 一键起 pgvector 镜像；锁定 PG15+；启动时校验 `vector` 扩展并给出可执行提示 |
+| pgvector 维度/索引失配 | 检索慢或报错 | 启动校验 embedding 维度与 `vector_dim`；HNSW 用 `vector_cosine_ops` 并文档化；切换模型后重建索引 |
+| 向量存储增长 | 磁盘/入库变慢 | 主存 title+summary、正文截断 8K；按策略裁剪归档（P3）；周期性 `REINDEX` |
+| 凭据泄露（若开鉴权） | token 写进 repo/DB | 默认不鉴权无需 token；若开启则 `api_key_env` 只存环境变量名，config.yaml 不含真实值 |
+| 嵌入/重排端点不可用 | 语义检索不可用 | oMLX 未暴露 `/v1/embeddings`/`/v1/rerank` → 降级进程内嵌入/重排；仍失败则语义检索降级为纯关键词并提示 |
+| oMLX 掉线 | 流水线停摆 | 网络错/5xx → 保持 queued + `lock_until` 退避重试（到点自动续跑）；Dashboard 健康横幅；配置一键切回 Ollama 备选（不鉴权模式无鉴权失败） |
+
+---
+
+## 15. 成功指标（验收）
+
+> **Phase 1（CLI 验证，无 WebUI）**：1 / 3 / 5 / 7 / 8 / 9
+> **Phase 2（WebUI 上线后）**：2 / 4 / 6
+> **Phase 3（进阶能力）**：10 / 11 / 12 / 13 / 14 / 15
+
+1. 添加一个 RSS 源后，能自动抓取 → 生成中文摘要 → 文章列表可检索
+2. 非中文文章可一键翻译为简体中文（Phase 2）
+3. 定义一个主题（名称+关键词）后，可按主题过滤的多源文章列表可查（Phase 1 CLI `tc list --topic <name>`）；主题热度排行视图归 Phase 2
+4. 知识图谱页可看到实体节点与关系边，点击节点跳回相关文章（Phase 2）
+5. Wiki 可按关键词全文搜索（含中文关键词），且每篇新文章都已自动生成 Wiki 词条页；按主题/实体浏览的完整 Wiki 归 Phase 2
+6. 日报/周报能按计划生成并在 Dashboard 查看/导出（Phase 2）
+7. 拔掉 LLM 服务后，系统不崩溃：文章可浏览、任务保持 queued 退避（lock_until）、恢复后自动续跑
+8. 全程本地运行，无任何数据发送到云端
+9. 语义检索生效：用与原文字面不同但语义相近的查询词，仍能召回相关文章（pgvector）
+10. 配置化 API 连接器（Phase 3）：不改代码，仅通过 `feeds.yaml` 配置（endpoint + 参数 + JSONPath 映射）即可接入 arXiv / GitHub / 通用 OpenAPI 等源并进入流水线
+11. 健壮网页抓取（Phase 3）：对一个无 RSS 的网站配置 URL 即能礼貌抓取并提取主内容（readability 类）；被限流/反爬时按域退避重试、不触发封禁；增量抓取只处理变更页面
+12. 高级搜索（Phase 3）：支持组合过滤（时间范围 / 数据源 / 主题 / 实体类型）+ 保存常用搜索；实体搜索——从图谱或实体页点实体，跳转列出其相关文章
+13. 告警（Phase 3）：主题命中新文章、Feed 连续失败、LLM 掉线三类事件，按配置触发通知（桌面 / 邮件）
+14. 分任务多模型 A/B（Phase 3）：同一任务（如 `summarize`）可配置多模型并行产出并对比（如 27B vs 9B），结果可标注来源与手动切换
+15. 存储归档（Phase 3）：按策略（时间 / 体积 / 状态）归档并裁剪旧文章、原始 HTML 与向量，归档后 DB 体积下降且检索仍可用
+
+---
+
+## 16. 项目结构（新建）
+
+> **文件级目录结构以 [DESIGN.md §3](DESIGN.md) 为唯一权威**，此处仅列顶层概览，避免两份文档漂移。
+
+```
+topic_collection/
+├── pyproject.toml · README.md · docker-compose.yml   # docker-compose: dev 起 pgvector
+├── docs/{PRD.md, DESIGN.md}
+├── config/{config.yaml, feeds.yaml}
+├── app/            # main / config / db / ingest / llm / services / pipeline / scheduler
+│                   # Phase 2 追加 api/（Web 路由）+ web/（templates + static）
+├── data/  logs/  scripts/  tests/
+```
+
+技术栈见 [DESIGN §2](DESIGN.md)（此处不重复维护）。Phase 1 = CLI（typer）入口，无 WebUI。

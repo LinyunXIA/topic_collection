@@ -1,0 +1,43 @@
+# ───────── Python ─────────
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# ───────── Virtual env ─────────
+.venv/
+venv/
+env/
+
+# ───────── IDE ─────────
+.idea/
+.vscode/
+*.swp
+.DS_Store
+
+# ───────── Claude Code 项目配置 ─────────
+.claude/
+
+# ───────── 项目运行时产物（CLAUDE.md §16 目录约定） ─────────
+data/
+logs/
+*.db
+*.sqlite
+*.sqlite3
+
+# ───────── Secrets / 本地覆盖 ─────────
+.env
+.env.local
+*.local.yaml
+
+# ───────── OS ─────────
+Thumbs.db
