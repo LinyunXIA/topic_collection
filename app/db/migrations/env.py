@@ -19,9 +19,10 @@ config = context.config
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# 设置 sqlalchemy.url 从项目配置加载
+# 设置 sqlalchemy.url：Alembic 用同步驱动（asyncpg → psycopg2）
 settings = load_settings()
-config.set_main_option("sqlalchemy.url", settings.db.dsn)
+sync_dsn = settings.db.dsn.replace("+asyncpg", "")
+config.set_main_option("sqlalchemy.url", sync_dsn)
 
 target_metadata = Base.metadata
 

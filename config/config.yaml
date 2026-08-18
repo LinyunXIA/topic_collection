@@ -4,7 +4,7 @@
 data_dir: ./data
 
 db:
-  dsn: postgresql+asyncpg://tc:tc@localhost:5432/topic_collection
+  dsn: postgresql+asyncpg://tc:tc@localhost:5433/topic_collection
   pool_size: 5
   vector_dim: 1536            # Qwen3-Embedding 输出经 dimensions=1536 截断
 

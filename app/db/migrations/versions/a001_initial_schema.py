@@ -61,7 +61,10 @@ def upgrade() -> None:
         sa.Column("tsv", postgresql.TSVECTOR()),
         sa.Column("created_at", sa.DateTime(timezone=True), server_default=sa.func.now()),
     )
-    op.create_index("articles_tsv_idx", "articles", [postgresql.GIN("tsv")])
+    op.create_index(
+        "articles_tsv_idx", "articles", ["tsv"],
+        postgresql_using="gin",
+    )
 
     # ── article_versions ───────────────────────────────────────
     op.create_table(
