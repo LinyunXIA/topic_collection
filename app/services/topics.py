@@ -241,7 +241,10 @@ async def classify_topics(
     )
 
     system, user = get_prompt("classify_topics", topics_json=topics_json, title=title, summary=summary)
-    model = settings.llm.models.get("topics", settings.llm.model)
+    # 注意：fallback 用 generate.model 而非顶层 llm.model（DESIGN §4.1 / §9 per-capability）
+    _gen = settings.llm.generate
+    _default = _gen.model if _gen else settings.llm.model
+    model = settings.llm.models.get("topics", _default)
 
     resp = await llm_client.generate(
         GenerateRequest(

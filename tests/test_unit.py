@@ -181,3 +181,78 @@ class TestConfig:
         assert TASK_PRIORITY["embed_core"] == 1
         assert TASK_PRIORITY["summarize"] == 2
         assert TASK_PRIORITY["embed_summary"] == 6
+
+    def test_resolve_generate_model_uses_per_capability(self):
+        """Regression: per-capability llm.generate.model 必须优先于顶层 llm.model。
+
+        worker 日志里 https://api.minimaxi.com/v1/chat/completions 收到 'qwen3.8-27b-mlx-4bit'
+        (api 侧归一化后的本地 oMLX 默认名) 而不是 'MiniMax-M3'，原因为
+        services/llm_tasks.py:58 + topics.py:244 的 fallback 直接读了顶层 llm.model。
+        """
+        from app.config import GenerateSettings, Settings, LLMSettings
+
+        # 构造冲突配置：顶层 omlx 模型 + generate 外部 minimax 模型
+        llm = LLMSettings(
+            backend="omlx",
+            endpoint="http://localhost:8000",
+            model="Qwen3.8-27B-MLX-4bit",
+            generate=GenerateSettings(
+                backend="minimax",
+                endpoint="https://api.minimaxi.com",
+                api_key_env="MiniMax_Key",
+                model="MiniMax-M3",
+            ),
+        )
+        s = Settings(llm=llm)
+
+        # 复刻 services/llm_tasks.py:60-62 + topics.py:247-248 的解析逻辑
+        def resolve(task: str) -> str:
+            gen = s.llm.generate
+            default = gen.model if gen is not None else s.llm.model
+            return s.llm.models.get(task, default)
+
+        # 未设置 per-task override 时，必须走 generate.model
+        assert resolve("summarize") == "MiniMax-M3"
+        assert resolve("topics") == "MiniMax-M3"
+        assert resolve("wiki") == "MiniMax-M3"
+
+        # 设置 per-task override 时，必须优先用 override 值
+        llm_with_override = LLMSettings(
+            backend="omlx",
+            endpoint="http://localhost:8000",
+            model="Qwen3.8-27B-MLX-4bit",
+            models={"summarize": "minimax/MiniMax-Text-01"},
+            generate=GenerateSettings(
+                backend="minimax",
+                endpoint="https://api.minimaxi.com",
+                api_key_env="MiniMax_Key",
+                model="MiniMax-M3",
+            ),
+        )
+        s2 = Settings(llm=llm_with_override)
+
+        def resolve2(task: str) -> str:
+            gen = s2.llm.generate
+            default = gen.model if gen is not None else s2.llm.model
+            return s2.llm.models.get(task, default)
+
+        # per-task override 胜出
+        assert resolve2("summarize") == "minimax/MiniMax-Text-01"
+        # 未覆盖的任务仍走 generate.model
+        assert resolve2("topics") == "MiniMax-M3"
+
+    def test_resolve_generate_model_falls_back_to_top_level(self):
+        """无 generate 配置时，fallback 到顶层 llm.model（旧扁平配置兼容）。"""
+        from app.config import LLMSettings, Settings
+
+        llm = LLMSettings(
+            backend="omlx",
+            endpoint="http://localhost:8000",
+            model="Qwen3.8-27B-MLX-4bit",
+            generate=None,  # 旧扁平配置
+        )
+        s = Settings(llm=llm)
+
+        gen = s.llm.generate
+        default = gen.model if gen is not None else s.llm.model
+        assert default == "Qwen3.8-27B-MLX-4bit"

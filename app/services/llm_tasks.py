@@ -55,7 +55,11 @@ async def run_summarize(
         raise PermanentError("LLM client 未初始化")
 
     system, user = get_prompt("summarize", title=title, content=content[:8000])
-    model = settings.llm.models.get("summarize", settings.llm.model)
+    # 注意：fallback 用 generate.model 而非顶层 llm.model
+    # 顶层 llm.model 默认是本地 oMLX 模型（如 Qwen3.8），切到外部 API 会 400
+    _gen = settings.llm.generate
+    _default = _gen.model if _gen else settings.llm.model
+    model = settings.llm.models.get("summarize", _default)
     resp = await llm_client.generate(
         GenerateRequest(
             model=model,
@@ -95,7 +99,10 @@ async def complete_summarize(
     summary_text = result.get("summary_zh", "")
     key_points = result.get("key_points", [])
     confidence = result.get("confidence", 0.0)
-    model = settings.llm.models.get("summarize", settings.llm.model)
+    # 注意：fallback 用 generate.model 而非顶层 llm.model（DESIGN §4.1 / §9 per-capability）
+    _gen = settings.llm.generate
+    _default = _gen.model if _gen else settings.llm.model
+    model = settings.llm.models.get("summarize", _default)
 
     # 1. summaries upsert（content_hash 版本守卫）
     await session.execute(
