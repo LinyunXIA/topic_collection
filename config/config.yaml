@@ -20,10 +20,15 @@ llm:
   max_timeout_retries: 3
   models: {}                  # per-task 覆盖，空=用默认 model
   generate:
-    backend: minimax
-    endpoint: https://api.minimaxi.com
-    api_key_env: MiniMax_Key
-    model: MiniMax-M3
+    # 默认本地 oMLX；切外部时改 backend + providers + export 对应 key
+    # backend: minimax
+    # endpoint: https://api.minimaxi.com
+    # api_key_env: MiniMax_Key
+    # model: MiniMax-M3
+    backend: omlx
+    endpoint: http://localhost:8000
+    api_key_env: null
+    model: Qwen3.8-27B-MLX-4bit
   embed:
     backend: omlx
     endpoint: http://localhost:8000
