@@ -3,7 +3,7 @@
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述（目录结构 / DDL / 接口）只在一处维护、另一处引用，避免漂移
 > 版本：v0.10 · 2026-08-19 · 切片一完成（与 PRD v0.9 同步）
-> v0.10：**切片一+二+三完成**——**语言检测 pycld3→lingua-language-detector**（§2）；**Docker 端口 5432→5433**（§5.4/§9）；§14 切片一 1.1-1.9 + 切片二 2.1-2.4 + 切片三 3.1-3.3 + Day 1 全部完成；**真实环境验收**：20 篇 HN 文章端到端跑通（20/20 summary + 40+ embedding）；**75/75 pytest 全部通过**；切片二新增混合检索 `search(q)`（RRF 融合，§7）+ CLI `--mode`；切片三新增 topic CRUD + classify_topics LLM 慢路径 + wiki 词条生成
+> v0.10：**切片一+二+三+横切全部完成**——**语言检测 pycld3→lingua-language-detector**（§2）；**Docker 端口 5432→5433**（§5.4/§9）；§14 全部任务完成（1.1-1.9 + 2.1-2.4 + 3.1-3.3 + X.1-X.3 + Day 1）；**真实环境验收**：20 篇 HN 文章端到端跑通（20/20 summary + 40+ embedding）；**86/86 pytest 全部通过**；切片二新增混合检索 `search(q)`（RRF 融合，§7）；切片三新增 topic CRUD + classify_topics + wiki 词条；横切新增 scheduler + A1 重试分类 + B4 近似去重 + pipeline 并发测试
 > v0.9：**架构审查四轮——SQL 逻辑错误 + done 判定补洞 + 文档同步清理**——
 >   **硬伤 6（mention_count 合并错行）**——§6 dedup 命中步骤 1 SQL 拆两条：loser 只置 `status='done', dedupe_of=winner`，新增步骤 1.5 将 loser 的 `mention_count` 累加到 winner（原 SQL 错写为 loser 自身翻倍，winner 一分没拿）；§6 多跳扁平化段文字说明一致；
 >   **硬伤 7（processing→done 判定两个洞）**——§6 状态机 `processing→done` 规则简化为「每次 job 进入终态后检查：该文章不存在任何 queued/running job → 置 done」，与任务集合无关，不再维护非可选 task 清单；`complete_summarize` 职责 ⑥ + `complete_embed` 职责 ④ + 永久失败死信路径各加 done 检查；覆盖关键词命中（topics 缺席自动满足）与失败路径（无钩子触发）两个漏洞；
@@ -845,9 +845,9 @@ feeds:
 - [x] 3.4 验收：PRD §15 验收 3（主题跨源聚合）/ 5（Wiki 按**关键词**全文搜索，主题/实体浏览 P2）
 
 **横切**：
-- [ ] X.1 `app/scheduler.py`：fetch_all + drain_queue + pg_backup（**自动化补充，主触发是 `tc backup` CLI**，§10）+ cleanup_fetch_events（§10）
-- [ ] X.2 测试：FakeLLM 集成用例（切片一就要有）+ 单元用例（dedup / cleaner / structured / fts / pipeline 并发）+ **重试分类用例（A1）** + **跨源近似去重用例（B4）**（§13）
-- [ ] X.3 验收：对照 PRD §15 Phase 1 条目（1/3/5/7/8/9/16）走通
+- [x] X.1 `app/scheduler.py`：fetch_all + drain_queue + pg_backup（**自动化补充，主触发是 `tc backup` CLI**，§10）+ cleanup_fetch_events（§10）
+- [x] X.2 测试：FakeLLM 集成用例（切片一就要有）+ 单元用例（dedup / cleaner / structured / fts / pipeline 并发）+ **重试分类用例（A1）** + **跨源近似去重用例（B4）**（§13）
+- [x] X.3 验收：对照 PRD §15 Phase 1 条目（1/3/5/7/8/9/16）走通
 
 > **WebUI（`app/api` + `app/web`）整体移入 Phase 2。**
 
