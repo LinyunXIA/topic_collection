@@ -19,6 +19,11 @@ llm:
   max_concurrency: 1
   max_timeout_retries: 3
   models: {}                  # per-task 覆盖，空=用默认 model
+  generate:
+    backend: minimax
+    endpoint: https://api.minimaxi.com
+    api_key_env: MiniMax_Key
+    model: MiniMax-M3
   embed:
     backend: omlx
     endpoint: http://localhost:8000
@@ -28,6 +33,10 @@ llm:
     backend: omlx
     endpoint: http://localhost:8000
     model: Qwen3-Reranker-4B-mxfp8
+  providers:
+    minimax:
+      endpoint: https://api.minimaxi.com
+      api_key_env: MiniMax_Key
   # 外部 provider 注册表（仅 OpenAI 兼容协议；多个可同时声明）
   # providers:
   #   openai:

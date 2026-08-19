@@ -115,14 +115,7 @@ def build_provider(
             max_concurrency = llm.max_concurrency
             max_timeout_retries = llm.max_timeout_retries
 
-        if backend == "openai":
-            return _build_openai(
-                endpoint=endpoint,
-                api_key_env=api_key_env,
-                generation_model=model,
-                embedding_model=llm.embed.model,
-            )
-        elif backend == "omlx":
+        if backend == "omlx":
             return _build_omlx(
                 endpoint=endpoint,
                 api_key_env=api_key_env,
@@ -130,8 +123,20 @@ def build_provider(
                 embedding_model=llm.embed.model,
                 rerank_model=llm.rerank.model,
             )
+        elif backend in llm.providers:
+            # 任何在 providers 注册表里的后端都走 OpenAI 兼容协议
+            provider_cfg = llm.providers[backend]
+            return _build_openai(
+                endpoint=provider_cfg.endpoint,
+                api_key_env=provider_cfg.api_key_env,
+                generation_model=model,
+                embedding_model=llm.embed.model,
+            )
         else:
-            raise ValueError(f"generate 能力不支持 backend '{backend}'（仅 omlx | openai）")
+            raise ValueError(
+                f"generate 能力不支持 backend '{backend}'；"
+                f"可用：omlx（本地）或 providers 注册表中的 key（{list(llm.providers.keys())}）"
+            )
 
     elif capability == "embed":
         # 强制本地

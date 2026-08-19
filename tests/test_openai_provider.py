@@ -235,19 +235,35 @@ class TestLLMClientHttpClassification:
 class TestBuildProvider:
     """验证 build_provider 正确构建 provider 并处理 API key。"""
 
+    def _make_omlx_settings(self):
+        """构造 omlx 默认 settings（不依赖 config.yaml 内容）。"""
+        from app.config import LLMSettings, EmbedSettings, RerankSettings, Settings
+        from unittest.mock import MagicMock
+        # 用真实 pydantic 对象，避免 MagicMock 嵌套属性问题
+        settings = MagicMock(spec=Settings)
+        llm = LLMSettings(
+            backend="omlx",
+            endpoint="http://localhost:8000",
+            model="Qwen3.8-27B-MLX-4bit",
+            embed=EmbedSettings(backend="omlx", endpoint="http://localhost:8000"),
+            rerank=RerankSettings(backend="omlx", endpoint="http://localhost:8000"),
+        )
+        settings.llm = llm
+        return settings
+
     def test_build_generate_omlx(self):
-        settings = load_settings()
+        settings = self._make_omlx_settings()
         p = build_provider("generate", settings)
         assert p.name == "omlx"
         assert "8000" in p.base_url
 
     def test_build_embed_omlx(self):
-        settings = load_settings()
+        settings = self._make_omlx_settings()
         p = build_provider("embed", settings)
         assert p.name == "omlx"
 
     def test_build_rerank_omlx(self):
-        settings = load_settings()
+        settings = self._make_omlx_settings()
         p = build_provider("rerank", settings)
         assert p.name == "omlx"
 
