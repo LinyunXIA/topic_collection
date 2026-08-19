@@ -70,13 +70,20 @@ async def search(
 
     # 语义通道
     semantic_results: list[tuple[int, float]] = []
-    if mode in ("hybrid", "semantic") and llm_client:
-        try:
-            semantic_results = await _semantic_search(session, query, settings, llm_client, limit * 2)
-        except Exception as e:
-            logger.warning("语义搜索失败，降级为关键词: %s", e)
+    if mode in ("hybrid", "semantic"):
+        if llm_client:
+            try:
+                semantic_results = await _semantic_search(session, query, settings, llm_client, limit * 2)
+            except Exception as e:
+                logger.warning("语义搜索失败，降级为关键词: %s", e)
+                if mode == "hybrid":
+                    mode = "keyword"
+        else:
+            # 无 LLM client → 降级
             if mode == "hybrid":
-                mode = "keyword"  # 降级
+                mode = "keyword"
+            elif mode == "semantic":
+                return SearchResponse(results=[], total=0, mode="keyword")
 
     # RRF 融合
     if mode == "hybrid":
