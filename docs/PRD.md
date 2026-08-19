@@ -1,7 +1,8 @@
 # PRD：Topic Collection —— 主题信息采集 + 摘要 / 翻译 / 知识图谱 / LLM Wiki
 
-版本：v0.9（2026-08-19）· 状态：切片一完成，48/48 tests passed
+版本：v0.11（2026-08-19）· 状态：Phase 1+ 完成，148/148 tests passed
 > 工程细节（目录结构 / DDL / LLM 接口 / 流水线）以 [DESIGN.md](DESIGN.md) 为权威
+> v0.11：Phase 1+ 适配器层完成（LLMAdapter + ProviderPatch + 三家差异分析 + MiniMax 通讯验证）；与 DESIGN v0.11 同步；148/148 tests
 > v0.9：切片一实现完成（PRD §15 验收 1/7/8 通过 + 真实环境 20 篇 HN 跑通）；与 DESIGN v0.10 同步；Docker 端口 5433（§11）
 > v0.8：§11 配置砍成示意 + 指向 DESIGN §9（结构性内容只在一处维护，连续三轮同步漂移后彻底消灭副本）；与 DESIGN v0.9 同步
 > v0.7：架构审查三轮落档——**summaries upsert content_hash 谓词改对**（§5 §15 #7 + DESIGN §6：比对文章当前版本而非存量摘要，旧谓词方向反过期覆盖新）；**pick-and-claim 不再自增 attempt**（§14 §15 #7 + DESIGN §6：attempt 由永久失败路径独占，否则瞬时退避占 max_attempts 预算）；**文章状态机迁移时机明确**（DESIGN §6：pending→processing/processing→done/loser 同事务 done）+ **drain_queue 谓词改三条件互锁**（DESIGN §6：`status='pending' AND dedupe_of IS NULL AND NOT EXISTS`，阻断 loser 周期性复活）；**超时转永久直接 failed**（§14 §15 #7 + DESIGN §6/§11：不再 attempt+1 循环，180s×3=9 分钟试完直接死信）；**主题聚合 dedupe_of IS NULL 硬约束**（§5 §15 #16 + DESIGN §6：loser 在 dedup 之前已写 article_topics，不过滤就重复占位）；**§13 测试加 D5/D6 断言**（summaries 守卫、loser 不复活）；与 DESIGN v0.8 同步

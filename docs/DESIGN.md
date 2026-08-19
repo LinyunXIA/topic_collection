@@ -2,7 +2,8 @@
 
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述（目录结构 / DDL / 接口）只在一处维护、另一处引用，避免漂移
-> 版本：v0.10 · 2026-08-19 · 切片一完成（与 PRD v0.9 同步）
+> 版本：v0.11 · 2026-08-19 · Phase 1+ 适配器层完成（与 PRD v0.11 同步）
+> v0.11：**Phase 1+ 适配器层完成**——`app/llm/patches.py`（ProviderPatch + 5 个预定义 patch：OMLX/OPENAI/MINIMAX/DEEPSEEK_CHAT/DEEPSEEK_REASONER）+ `app/llm/adapter.py`（LLMAdapter 统一适配层：build_payload/parse_response + strip_think_tags/strip_code_fences）；Provider（openai.py/omlx.py）简化为 HTTP 传输壳；factory 支持 config dict→ProviderPatch 转换；MiniMax-M3 通讯验证通过（healthcheck + generate）；**148/148 pytest 全部通过**（+32 adapter tests）
 > v0.10：**切片一+二+三+横切全部完成**——**语言检测 pycld3→lingua-language-detector**（§2）；**Docker 端口 5432→5433**（§5.4/§9）；§14 全部任务完成（1.1-1.9 + 2.1-2.4 + 3.1-3.3 + X.1-X.3 + Day 1）；**真实环境验收**：20 篇 HN 文章端到端跑通（20/20 summary + 40+ embedding）；**86/86 pytest 全部通过**；切片二新增混合检索 `search(q)`（RRF 融合，§7）；切片三新增 topic CRUD + classify_topics + wiki 词条；横切新增 scheduler + A1 重试分类 + B4 近似去重 + pipeline 并发测试
 > v0.9：**架构审查四轮——SQL 逻辑错误 + done 判定补洞 + 文档同步清理**——
 >   **硬伤 6（mention_count 合并错行）**——§6 dedup 命中步骤 1 SQL 拆两条：loser 只置 `status='done', dedupe_of=winner`，新增步骤 1.5 将 loser 的 `mention_count` 累加到 winner（原 SQL 错写为 loser 自身翻倍，winner 一分没拿）；§6 多跳扁平化段文字说明一致；
@@ -913,6 +914,7 @@ feeds:
 - [x] P1+.1 外部 LLM API 切换（OpenAI 兼容协议）：`app/llm/openai.py`（新 provider）+ `app/llm/factory.py`（per-capability factory：`build_provider(capability, settings)`）+ `app/config.py`（`GenerateSettings`/`ProviderConfig`/`EmbedSettings`/`RerankSettings` 扩展 endpoint/api_key_env 字段）+ `app/llm/client.py`（`_classify_http_error` 接入 `_retry_transient` 调用路径，401/403/400 → `PermanentError`；**在 except 块内联分类逻辑**——Python except 块内 raise 的异常不被同 try 的其他 except 捕获，DESIGN §4.X）；worker 双 `LLMClient`（generate/embed 独立信号量，embed 不被 27B 阻塞）；`app/llm/omlx.py`（`EMBED_INSTRUCT_PREFIX` 提升为 class attribute `embed_instruct_prefix`）+ `app/llm/base.py` Protocol 新增 `embed_instruct_prefix: str`；config schema 新增 `llm.generate.*` + `llm.providers.*`（向后兼容旧扁平字段）；26 个新测试（`test_openai_provider.py`），112/112 全过
 - [x] P1+.2 `tc feeds fetch --count N`：CLI 新增 `--count` 选项（`typer.Option(None, "--count", "-c")`），`_feeds_fetch` 接收 `count: int | None`，`fetch_feed` 返回 items 后 `if count: items = items[:count]` 截断；超限记 `fetch_events(event_type='fetch_count_limited')`；测试：mock feed 返回 10 条 → `--count 3` 只入库 3 条
 - [x] P1+.3 验收：对照 PRD §15 Phase 1+ 条目（17/18）走通
+- [x] P1+.4 LLM 适配器层（统一 DTO + ProviderPatch）：`app/llm/patches.py`（ProviderPatch dataclass + 5 个预定义 patch：OMLX/OPENAI/MINIMAX/DEEPSEEK_CHAT/DEEPSEEK_REASONER）+ `app/llm/adapter.py`（LLMAdapter：build_generate_payload/parse_generate_response + build_embed_payload/parse_embed_response + strip_think_tags/strip_code_fences）；Provider（openai.py/omlx.py）简化为 HTTP 传输壳（委托 adapter）；factory 支持 `provider_cfg.patch` dict→ProviderPatch 转换；config.yaml minimax provider 加 patch 块；MiniMax-M3 通讯验证通过（healthcheck + summarize JSON 解析成功）；22 个 adapter 测试，**148/148 全过**
 
 > **WebUI（`app/api` + `app/web`）整体移入 Phase 2。**
 
