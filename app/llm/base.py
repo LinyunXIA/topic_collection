@@ -66,6 +66,7 @@ class LLMProvider(Protocol):
     generation_model: str
     embedding_model: str
     rerank_model: str | None
+    embed_instruct_prefix: str  # 嵌入查询 instruct 前缀；无则为空字符串
 
     async def generate(self, req: GenerateRequest) -> GenerateResult:
         """POST /v1/chat/completions"""

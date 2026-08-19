@@ -178,7 +178,19 @@ class GenerateResult: text: str; finish_reason: str; usage: dict | None; latency
 - **向量维度校验**：启动/首个 embed 后实测维度与 `db.vector_dim`（=1536）比对，不一致即告警并阻止写入（防 HNSW 失配 / 模型切换）
 - **Qwen3-Embedding 指令感知（instruct prefix）**：`Qwen3-Embedding` 官方推荐 **query 侧**拼 instruct 前缀（`"Given a web search query, retrieve relevant passages that answer the query: "`，可按 §4.5 提示词风格微调），**document 侧不加**——区分使用检索质量明显更好。在 `app/llm/embed.py` 封装层**一处**处理：`embed_query(text)` 自动加前缀，`embed_documents(texts)` 不加；上层 services 无感。截断维度 `dimensions=1536` 也走同一封装（§5.2）
 
-### 4.3 降级链路
+### 4.3 OpenAI 兼容外部 Provider（Phase 1+）
+
+- **实现**：`app/llm/openai.py`（`OpenAIProvider`），遵循 §4.1 `LLMProvider` Protocol
+- **端点**：与 oMLX 相同路径（`/v1/chat/completions`、`/v1/embeddings`、`/v1/models`），但 **Authorization header 必带**（外部 API 必鉴权）
+- **json_mode**：`response_format: {type: json_object}`，与 oMLX 行为一致
+- **embed `dimensions`**：**不传**（不同 OpenAI 兼容 API 支持情况不一），由 `complete_embed` 钩子统一校验维度（§5.2）
+- **rerank**：`raise NotImplementedError`（OpenAI 不支持 Cohere 风格 rerank）；rerank 强制走本地 oMLX
+- **错误分类**（§4.4 / §6）：401/403/400 → `PermanentError`（不退避，`attempt+1`，`max_attempts` 死信）；5xx/429 → 瞬时退避；**在 `LLMClient._retry_transient` 内联判断**（不调用 `_classify_http_error` 方法——Python except 块内 raise 的异常不被同 try 的其他 except 捕获）
+- **instruct prefix**：OpenAI embedding 不加 instruct prefix（`embed_instruct_prefix = ""`）；oMLX 加 Qwen3 prefix（§4.2）；`LLMClient.embed_query` 通过 `provider.embed_instruct_prefix` 属性读取（Protocol 新增此字段）
+- **per-capability 切换**：`app/llm/factory.py` 的 `build_provider(capability, settings)` 按能力构建 provider；generate 可选 `omlx | openai`，embed/rerank 强制 `omlx`（隐私，§12）；API key 从环境变量读取（`api_key_env` 字段引用 env var 名），启动时 fail fast
+- **配置**（§9）：`llm.generate.backend: openai` + `llm.providers.openai.endpoint` + `llm.providers.openai.api_key_env: OPENAI_API_KEY`；环境变量 `TC_LLM__GENERATE__BACKEND=openai`
+
+### 4.4 降级链路
 
 | 能力 | 主（oMLX） | 降级 |
 |---|---|---|
@@ -186,7 +198,7 @@ class GenerateResult: text: str; finish_reason: str; usage: dict | None; latency
 | 嵌入 | `/v1/embeddings` + `Qwen3-Embedding-8B` | **无进程内降级**——`bge-small-zh`(512d) / `bge-m3`(1024d) 维度不匹配 `vector(1536)` 且向量空间不同，混存会互相检索失效。oMLX 不可用 → 语义通道关闭、仅关键词（Dashboard 提示，§7/§11） |
 | 重排 | `/v1/rerank` + `Qwen3-Reranker-4B`（P2） | 进程内 `bge-reranker-v2-m3` → 不重排（保持 RRF 融合，§7） |
 
-### 4.4 `LLMClient` 门面
+### 4.5 `LLMClient` 门面
 
 并发信号量（默认 1）、每调用超时、指数退避重试（5xx/超时/连接拒绝）、`healthy` 标志与**单次健康探测**。重试/超时只在此层处理，services 不碰传输。**两层重试分工**：客户端=秒级抖动重试（单次调用内）；job 级 `lock_until` 退避（§6）=分钟级长中断（oMLX 整体不可用），互不冲突。**错误分类**：401/403/400 是永久/配置错误（鉴权失败、请求格式错），**不走指数退避**、直接抛永久类由 job 层按 `max_attempts` 死信；只 5xx/超时/连接拒绝归瞬时、走退避。**并发=1 是待验证假设**：oMLX 按请求切换模型会抖动加载是真，但 MLX 可在统一内存同时常驻多模型（27B-4bit ≈14GB + 8B 嵌入 ≈5GB，64GB+ Mac 装得下，无需切换、无抖动）——若实测同时常驻可行，信号量改 per-capability 一槽（gen 一个、embed 一个），embed 不被 27B 的 20–60s 阻塞、语义索引吞吐翻倍。P1 先按 1，§16 记为已知限制。
 
@@ -197,7 +209,7 @@ class GenerateResult: text: str; finish_reason: str; usage: dict | None; latency
 
 **`--check-llm` 启动校验覆盖全部配置模型**：不只查主 `llm.model`，还对 `llm.models` 里每个 per-task 覆盖（summarize/translate/entities/topics/wiki/report）+ `embed.model` + `rerank.model` 逐个 `GET /v1/models` 比对——拼错的覆盖模型名只会在该 job 运行时 404，启动期就暴露能省一整轮退避排查。
 
-### 4.5 提示词契约（一律中文输出）
+### 4.6 提示词契约（一律中文输出）
 
 | 任务 | 输出 |
 |---|---|
@@ -848,6 +860,11 @@ feeds:
 - [x] X.1 `app/scheduler.py`：fetch_all + drain_queue + pg_backup（**自动化补充，主触发是 `tc backup` CLI**，§10）+ cleanup_fetch_events（§10）
 - [x] X.2 测试：FakeLLM 集成用例（切片一就要有）+ 单元用例（dedup / cleaner / structured / fts / pipeline 并发）+ **重试分类用例（A1）** + **跨源近似去重用例（B4）**（§13）
 - [x] X.3 验收：对照 PRD §15 Phase 1 条目（1/3/5/7/8/9/16）走通
+
+**Phase 1+（CLI 增强，MVP 用后改进）**：
+- [x] P1+.1 外部 LLM API 切换（OpenAI 兼容协议）：`app/llm/openai.py`（新 provider）+ `app/llm/factory.py`（per-capability factory：`build_provider(capability, settings)`）+ `app/config.py`（`GenerateSettings`/`ProviderConfig`/`EmbedSettings`/`RerankSettings` 扩展 endpoint/api_key_env 字段）+ `app/llm/client.py`（`_classify_http_error` 接入 `_retry_transient` 调用路径，401/403/400 → `PermanentError`；**在 except 块内联分类逻辑**——Python except 块内 raise 的异常不被同 try 的其他 except 捕获，DESIGN §4.X）；worker 双 `LLMClient`（generate/embed 独立信号量，embed 不被 27B 阻塞）；`app/llm/omlx.py`（`EMBED_INSTRUCT_PREFIX` 提升为 class attribute `embed_instruct_prefix`）+ `app/llm/base.py` Protocol 新增 `embed_instruct_prefix: str`；config schema 新增 `llm.generate.*` + `llm.providers.*`（向后兼容旧扁平字段）；26 个新测试（`test_openai_provider.py`），112/112 全过
+- [ ] P1+.2 `tc feeds fetch --count N`：CLI 新增 `--count` 选项（`typer.Option(None, "--count", "-c")`），`_feeds_fetch` 接收 `count: int | None`，`fetch_feed` 返回 items 后 `if count: items = items[:count]` 截断；超限记 `fetch_events(event_type='fetch_count_limited')`；测试：mock feed 返回 10 条 → `--count 3` 只入库 3 条
+- [ ] P1+.3 验收：对照 PRD §15 Phase 1+ 条目（17/18）走通
 
 > **WebUI（`app/api` + `app/web`）整体移入 Phase 2。**
 

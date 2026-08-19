@@ -12,7 +12,7 @@ import signal
 from app.config import load_settings
 from app.db.engine import check_extensions, dispose_engine, get_engine
 from app.llm.client import LLMClient
-from app.llm.omlx import OMLXProvider
+from app.llm.factory import build_provider
 from app.pipeline import worker_loop
 from app.services.llm_tasks import run_embed_core, run_embed_summary, run_summarize
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -24,25 +24,12 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-
-async def task_dispatcher(
-    session: AsyncSession,
-    job: dict,
-    settings,
-    llm_client: LLMClient | None,
-) -> None:
-    """任务分发器：按 task 类型调用对应处理器。"""
-    task = job["task"]
-    handlers = {
-        "embed_core": run_embed_core,
-        "embed_summary": run_embed_summary,
-        "summarize": run_summarize,
-    }
-    handler = handlers.get(task)
-    if not handler:
-        logger.warning("未知任务类型: %s (job %d)，标记跳过", task, job["id"])
-        return
-    await handler(session, job, settings, llm_client)
+# task → capability 映射
+_TASK_CAPABILITY: dict[str, str] = {
+    "embed_core": "embed",
+    "embed_summary": "embed",
+    "summarize": "generate",
+}
 
 
 async def main() -> None:
@@ -58,22 +45,17 @@ async def main() -> None:
         logger.error("数据库校验失败: %s", e)
         return
 
-    # 构建 LLM client
-    provider = OMLXProvider(
-        base_url=settings.llm.endpoint,
-        generation_model=settings.llm.model,
-        embedding_model=settings.llm.embed.model,
-        rerank_model=settings.llm.rerank.model,
-    )
-    llm_client = LLMClient(
-        provider=provider,
-        max_concurrency=settings.llm.max_concurrency,
-    )
+    # 构建 per-capability LLM client（独立信号量，embed 不被 generate 阻塞）
+    gen_provider = build_provider("generate", settings)
+    emb_provider = build_provider("embed", settings)
+    generate_llm = LLMClient(provider=gen_provider, max_concurrency=1)
+    embed_llm = LLMClient(provider=emb_provider, max_concurrency=1)
 
-    # 健康探测
-    status = await llm_client.healthcheck()
+    # 健康探测（探测 generate 端点即可）
+    status = await generate_llm.healthcheck()
+    endpoint = settings.llm.generate.endpoint if settings.llm.generate else settings.llm.endpoint
     if status.healthy:
-        logger.info("✅ LLM 健康: %s (%dms)", settings.llm.endpoint, status.latency_ms)
+        logger.info("✅ LLM 健康: %s (%dms)", endpoint, status.latency_ms)
     else:
         logger.warning("⚠️  LLM 不可用: %s — 将在运行时重试", status.error)
 
@@ -88,9 +70,36 @@ async def main() -> None:
     for sig in (signal.SIGINT, signal.SIGTERM):
         loop.add_signal_handler(sig, _signal_handler)
 
+    # task dispatcher：闭包捕获 generate_llm / embed_llm
+    _clients: dict[str, LLMClient] = {
+        "generate": generate_llm,
+        "embed": embed_llm,
+    }
+
+    async def task_dispatcher(
+        session: AsyncSession,
+        job: dict,
+        settings,
+        llm_client: LLMClient | None,
+    ) -> None:
+        """任务分发器：按 task 类型路由到对应 LLMClient。"""
+        task = job["task"]
+        capability = _TASK_CAPABILITY.get(task)
+        client = _clients.get(capability, llm_client) if capability else llm_client
+        handlers = {
+            "embed_core": run_embed_core,
+            "embed_summary": run_embed_summary,
+            "summarize": run_summarize,
+        }
+        handler = handlers.get(task)
+        if not handler:
+            logger.warning("未知任务类型: %s (job %d)，标记跳过", task, job["id"])
+            return
+        await handler(session, job, settings, client)
+
     # 启动 worker
     worker_task = asyncio.create_task(
-        worker_loop(settings, llm_client=llm_client, task_handler=task_dispatcher)
+        worker_loop(settings, llm_client=generate_llm, task_handler=task_dispatcher)
     )
 
     # 等待退出信号

@@ -266,12 +266,12 @@ def summarize(
 
 
 async def _summarize(article_id: int):
-    from app.llm.omlx import OMLXProvider
+    from app.llm.factory import build_provider
     from app.llm.client import LLMClient
     from app.services.llm_tasks import run_summarize as _run_summarize
 
     settings = load_settings()
-    provider = OMLXProvider(base_url=settings.llm.endpoint, generation_model=settings.llm.model)
+    provider = build_provider("generate", settings)
     llm_client = LLMClient(provider=provider, max_concurrency=1)
 
     async with get_session(settings) as session:
@@ -380,13 +380,13 @@ async def _search(query: str, mode: str, limit: int):
 
     settings = load_settings()
 
-    # 语义/hybrid 模式需要 LLM client
+    # 语义/hybrid 模式需要 LLM client（embed 能力）
     llm_client = None
     if mode in ("hybrid", "semantic"):
         try:
-            from app.llm.omlx import OMLXProvider
+            from app.llm.factory import build_provider
             from app.llm.client import LLMClient as _LC
-            provider = OMLXProvider(base_url=settings.llm.endpoint, generation_model=settings.llm.model)
+            provider = build_provider("embed", settings)
             llm_client = _LC(provider=provider, max_concurrency=1)
             health = await llm_client.healthcheck()
             if not health.healthy:
@@ -501,9 +501,9 @@ async def _status():
         )
         pending_count = result.scalar()
 
-    # LLM 健康
-    from app.llm.omlx import OMLXProvider
-    provider = OMLXProvider(base_url=settings.llm.endpoint)
+    # LLM 健康（探测 generate 端点）
+    from app.llm.factory import build_provider
+    provider = build_provider("generate", settings)
     health = await provider.healthcheck()
 
     # 展示
@@ -538,11 +538,18 @@ def retry(
 
 
 async def _retry(article_id: int, task: str):
-    from app.llm.omlx import OMLXProvider
+    from app.llm.factory import build_provider
     from app.llm.client import LLMClient
 
     settings = load_settings()
-    provider = OMLXProvider(base_url=settings.llm.endpoint, generation_model=settings.llm.model)
+    # 按 task 选择对应能力的 provider
+    if task in ("summarize",):
+        capability = "generate"
+    elif task in ("embed_core", "embed_summary"):
+        capability = "embed"
+    else:
+        capability = "generate"  # 默认用 generate（未知 task 仍可尝试）
+    provider = build_provider(capability, settings)
     llm_client = LLMClient(provider=provider, max_concurrency=1)
 
     async with get_session(settings) as session:

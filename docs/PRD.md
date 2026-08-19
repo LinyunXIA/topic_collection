@@ -295,6 +295,7 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 | 阶段 | 范围 | 覆盖需求 |
 |---|---|---|
 | **Phase 1 MVP（可用即可，无 WebUI）** | 建库（Postgres + pgvector + tsvector）；RSS 抓取（ETag/去重）；清洗；本地 LLM（oMLX）+ `summarize`(中文) + `embed_core`/`embed_summary`(1536维) + `classify_topics`（关键词+LLM）；基础 Wiki 词条 + 混合检索；**CLI 入口**（feeds import / topic add / topic list / fetch / summarize / list / search / article）；定时抓取+流水线；config（config.yaml + feeds.yaml）+ `docker-compose.yml`(pgvector) | RSS(1a)、LLM Wiki 基础(3)、本地 LLM oMLX(5a)、中文输出(6)、语义检索(pgvector 基础)、定时抓取(2b 部分)、CLI 可用入口(2c 提前) |
+| **Phase 1+（CLI 增强，MVP 用后改进）** | 外部 LLM API 切换（OpenAI 兼容协议，per-capability：generate 可选本地/外部，embed/rerank 强制本地）；`tc feeds fetch --count N` 限制单次抓取条数；`_classify_http_error` 重试分类修复（401/403/400 → PermanentError） | 外部 LLM API(F5a 增强)、CLI 体验优化 |
 | **Phase 2** | **WebUI Dashboard**（概览/Feeds/文章/详情/搜索/设置/图谱/报告页）；混合检索完善（RRF + oMLX Reranker、相似文章推荐）；中文翻译；实体关系抽取→entities/relations 表+合并；图谱页（ECharts）；主题聚合 UI+跨源视图；完整 Wiki（主题/实体词条+交叉链接）；日报/周报；API 连接器骨架 | Web+Dashboard(2a)、报告(2b)、知识图谱(4)、API/爬虫骨架(1b 部分)、主题聚合(1c)、Reranker 增强(3)、混合检索高级(3) |
 | **Phase 3** | API 连接器广度（arXiv/GitHub/通用 OpenAPI）+ 健壮爬虫（readability、反爬礼仪、增量抓取）；高级搜索（过滤/保存搜索/实体搜索）；告警（主题命中/Feed 故障/LLM 掉线）；分任务多模型 A/B；存储归档裁剪 | API/爬虫广度(1b)、高级搜索(3)、告警(12) |
 
@@ -337,6 +338,7 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 ## 15. 成功指标（验收）
 
 > **Phase 1（CLI 验证，无 WebUI）**：1 / 3 / 5 / 7 / 8 / 9 / 16
+> **Phase 1+（CLI 增强）**：17 / 18
 > **Phase 2（WebUI 上线后）**：2 / 4 / 6
 > **Phase 3（进阶能力）**：10 / 11 / 12 / 13 / 14 / 15
 
@@ -356,6 +358,8 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 14. 分任务多模型 A/B（Phase 3）：同一任务（如 `summarize`）可配置多模型并行产出并对比（如 27B vs 9B），结果可标注来源与手动切换
 15. 存储归档（Phase 3）：按策略（时间 / 体积 / 状态）归档并裁剪旧文章、原始 HTML 与向量，归档后 DB 体积下降且检索仍可用
 16. 跨源同一事件转载/改写经**向量近似去重**合并（`dedupe_of`，多跳扁平化到终极 winner），主题视图与日报不重复占位（Phase 1；嵌入建好后生效，body↔body 同粒度匹配，DESIGN §6）
+17. 外部 LLM API 可选切换：config 配置 `llm.generate.backend: openai` + 环境变量设置 API key 后，summarize 走外部 API 完成；embed 仍走本地 oMLX；API key 缺失时 worker fail fast 不入队（Phase 1+）
+18. `tc feeds fetch --count N` 限制单次抓取条数：从 feed 第一条起按顺序取 N 条入库，超限截断并记录 fetch_events（Phase 1+）
 
 ---
 

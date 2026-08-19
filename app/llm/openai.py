@@ -1,7 +1,7 @@
-"""oMLX LLM Provider 实现 — DESIGN §4.2
+"""OpenAI 兼容 LLM Provider 实现 — 外部 API
 
-OpenAI 兼容 REST API，本机不鉴权（已实测确认）。
-三端点：/v1/chat/completions、/v1/embeddings、/v1/rerank。
+支持 OpenAI / DeepSeek / Moonshot / DashScope (OpenAI-mode) / 智谱 / vLLM 等
+OpenAI 兼容协议的外部 API。Embed/rerank 不走外部（隐私，强制本地）。
 """
 
 from __future__ import annotations
@@ -23,35 +23,29 @@ from app.llm.base import (
 
 logger = logging.getLogger(__name__)
 
-# 保留模块级别名，供旧 import 路径兼容
-_EMBED_INSTRUCT_PREFIX = (
-    "Given a web search query, retrieve relevant passages that answer the query: "
-)
 
-
-class OMLXProvider:
-    """oMLX OpenAI 兼容 Provider。"""
-
-    # Qwen3-Embedding instruct prefix（DESIGN §4.2）
-    embed_instruct_prefix: str = _EMBED_INSTRUCT_PREFIX
+class OpenAIProvider:
+    """OpenAI 兼容 Provider — 外部 API。"""
 
     def __init__(
         self,
-        base_url: str = "http://localhost:8000",
+        base_url: str,
         api_key: str | None = None,
-        generation_model: str = "Qwen3.8-27B-MLX-4bit",
-        embedding_model: str = "Qwen3-Embedding-8B-4bit-DWQ",
-        rerank_model: str | None = "Qwen3-Reranker-4B-mxfp8",
+        generation_model: str = "gpt-4o-mini",
+        embedding_model: str = "text-embedding-3-small",
+        rerank_model: str | None = None,  # OpenAI 不支持 rerank
     ):
-        self.name = "omlx"
+        self.name = "openai"
         self.base_url = base_url.rstrip("/")
         self.api_key = api_key or None
         self.generation_model = generation_model
         self.embedding_model = embedding_model
         self.rerank_model = rerank_model
+        # OpenAI embedding 不需要 instruct prefix
+        self.embed_instruct_prefix: str = ""
 
     def _headers(self) -> dict[str, str]:
-        """构建请求头：本机不鉴权时不带 Authorization（DESIGN §4.2）。"""
+        """构建请求头：外部 API 必须鉴权。"""
         headers = {"Content-Type": "application/json"}
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
@@ -93,13 +87,12 @@ class OMLXProvider:
     ) -> EmbedResult:
         """POST /v1/embeddings
 
-        指令感知（DESIGN §4.2）：调用方通过 embed_query/embed_documents 区分，
-        此处不做 prefix 处理——prefix 由 client 封装层统一加。
+        不传 dimensions 参数（不同 OpenAI 兼容 API 支持情况不一），
+        由下游 complete_embed 钩子统一校验维度。
         """
         payload = {
             "model": model or self.embedding_model,
             "input": texts,
-            "dimensions": 1536,  # DESIGN §5.2: MRL 截断至 1536
         }
 
         t0 = now_ms()
@@ -114,7 +107,6 @@ class OMLXProvider:
         data = resp.json()
         latency_ms = now_ms() - t0
 
-        # 按 index 排序确保顺序一致
         sorted_data = sorted(data["data"], key=lambda x: x["index"])
         embeddings = [item["embedding"] for item in sorted_data]
         dim = len(embeddings[0]) if embeddings else 0
@@ -129,34 +121,14 @@ class OMLXProvider:
     async def rerank(
         self, query: str, docs: list[str], top_n: int
     ) -> RerankResult:
-        """POST /v1/rerank（Cohere 风格，DESIGN §4.2）"""
-        if not self.rerank_model:
-            return RerankResult(indices=list(range(min(top_n, len(docs)))), scores=[])
+        """OpenAI 兼容 API 不支持 /v1/rerank（Cohere 风格）。
 
-        payload = {
-            "model": self.rerank_model,
-            "query": query,
-            "documents": docs,
-            "top_n": top_n,
-        }
-
-        t0 = now_ms()
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{self.base_url}/v1/rerank",
-                headers=self._headers(),
-                json=payload,
-            )
-            resp.raise_for_status()
-
-        data = resp.json()
-        latency_ms = now_ms() - t0
-
-        results = sorted(data.get("results", []), key=lambda x: x["index"])
-        return RerankResult(
-            indices=[r["index"] for r in results],
-            scores=[r["relevance_score"] for r in results],
-            latency_ms=latency_ms,
+        Rerank 必须走本地 OMLXProvider（factory 会跳过 OpenAI），
+        此方法不应被调用。
+        """
+        raise NotImplementedError(
+            "OpenAI 兼容 provider 不支持 rerank；"
+            "请使用本地 OMLXProvider（factory 会自动选择）"
         )
 
     async def healthcheck(self) -> HealthStatus:

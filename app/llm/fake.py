@@ -61,6 +61,7 @@ class FakeLLMProvider:
         self.generation_model = generation_model
         self.embedding_model = embedding_model
         self.rerank_model = rerank_model
+        self.embed_instruct_prefix = ""  # FakeLLM 不加 instruct prefix
         self._call_count = 0
         self._generate_response: dict | str | None = None
 

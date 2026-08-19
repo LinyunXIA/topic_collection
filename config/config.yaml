@@ -21,10 +21,18 @@ llm:
   models: {}                  # per-task 覆盖，空=用默认 model
   embed:
     backend: omlx
+    endpoint: http://localhost:8000
     model: Qwen3-Embedding-8B-4bit-DWQ
     max_tokens: 8192
   rerank:                     # Phase 2 启用
+    backend: omlx
+    endpoint: http://localhost:8000
     model: Qwen3-Reranker-4B-mxfp8
+  # 外部 provider 注册表（仅 OpenAI 兼容协议；多个可同时声明）
+  # providers:
+  #   openai:
+  #     endpoint: https://api.openai.com/v1
+  #     api_key_env: OPENAI_API_KEY
 
 ingestion:
   fetch_interval_hours: 6

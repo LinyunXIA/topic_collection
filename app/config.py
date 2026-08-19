@@ -23,13 +23,37 @@ class WebSettings(BaseSettings):
     port: int = 7111
 
 
+class ProviderConfig(BaseSettings):
+    """单个外部 LLM provider 的配置（endpoint + api_key）。"""
+
+    endpoint: str
+    api_key_env: str | None = None
+
+
+class GenerateSettings(BaseSettings):
+    """生成能力配置（per-capability，DESIGN §4）。"""
+
+    backend: str = "omlx"
+    endpoint: str = "http://localhost:8000"
+    api_key_env: str | None = None
+    model: str = "Qwen3.8-27B-MLX-4bit"
+    max_concurrency: int = 1
+    max_timeout_retries: int = 3
+    models: dict[str, str] = Field(default_factory=dict)
+
+
 class EmbedSettings(BaseSettings):
     backend: str = "omlx"
+    endpoint: str = "http://localhost:8000"
+    api_key_env: str | None = None
     model: str = "Qwen3-Embedding-8B-4bit-DWQ"
     max_tokens: int = 8192
 
 
 class RerankSettings(BaseSettings):
+    backend: str = "omlx"
+    endpoint: str = "http://localhost:8000"
+    api_key_env: str | None = None
     model: str = "Qwen3-Reranker-4B-mxfp8"
 
 
@@ -43,8 +67,10 @@ class LLMSettings(BaseSettings):
     max_concurrency: int = 1
     max_timeout_retries: int = 3
     models: dict[str, str] = Field(default_factory=dict)
+    generate: GenerateSettings | None = None  # None = 用旧顶层字段（向后兼容）
     embed: EmbedSettings = Field(default_factory=EmbedSettings)
     rerank: RerankSettings = Field(default_factory=RerankSettings)
+    providers: dict[str, ProviderConfig] = Field(default_factory=dict)
 
 
 class DedupSettings(BaseSettings):

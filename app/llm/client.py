@@ -11,6 +11,8 @@ import asyncio
 import logging
 from typing import Any
 
+import httpx
+
 from app.llm.base import (
     EmbedResult,
     GenerateRequest,
@@ -70,7 +72,11 @@ class LLMClient:
         self._consecutive_failures: int = 0
 
     async def _retry_transient(self, coro_factory, operation: str = "llm_call"):
-        """对瞬时错误执行指数退避重试。"""
+        """对瞬时错误执行指数退避重试。401/403/400 为永久错误，不重试。
+
+        注意：except 块内调用 raise 的方法会导致异常绕过同 try 的其他 except，
+        因此 HTTP 状态码分类在 httpx.HTTPStatusError 分支内直接内联判断。
+        """
         last_exc: Exception | None = None
         for attempt in range(self._max_retries + 1):
             try:
@@ -79,6 +85,23 @@ class LLMClient:
                 return result
             except PermanentError:
                 raise  # 永久错误不重试
+            except httpx.HTTPStatusError as e:
+                status = e.response.status_code
+                # 内联分类：401/403/400 → 永久错误，不重试
+                if status in _PERMANENT_STATUS_CODES:
+                    raise PermanentError(
+                        f"永久错误 {status}: {e}", status
+                    ) from e
+                # 其他（5xx/429/其它）→ 瞬时，走退避重试
+                last_exc = e
+                self._consecutive_failures += 1
+                if attempt < self._max_retries:
+                    delay = min(self._base_delay * (2**attempt), self._max_delay)
+                    logger.warning(
+                        "%s 第 %d 次失败 (HTTP %d)，%.1fs 后重试",
+                        operation, attempt + 1, status, delay,
+                    )
+                    await asyncio.sleep(delay)
             except Exception as e:
                 last_exc = e
                 self._consecutive_failures += 1
@@ -123,9 +146,8 @@ class LLMClient:
 
     async def embed_query(self, text: str) -> EmbedResult:
         """嵌入查询文本（自动加 instruct prefix，DESIGN §4.2）。"""
-        from app.llm.omlx import EMBED_INSTRUCT_PREFIX
-
-        prefixed = EMBED_INSTRUCT_PREFIX + text
+        prefix = getattr(self.provider, "embed_instruct_prefix", "")
+        prefixed = prefix + text
         return await self.embed([prefixed])
 
     async def embed_documents(self, texts: list[str]) -> EmbedResult:
