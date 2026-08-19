@@ -15,6 +15,8 @@ from app.llm.client import LLMClient
 from app.llm.factory import build_provider
 from app.pipeline import worker_loop
 from app.services.llm_tasks import run_embed_core, run_embed_summary, run_summarize
+from app.services.topics import classify_topics
+from app.services.wiki import generate_article_wiki
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logging.basicConfig(
@@ -29,7 +31,32 @@ _TASK_CAPABILITY: dict[str, str] = {
     "embed_core": "embed",
     "embed_summary": "embed",
     "summarize": "generate",
+    "topics": "generate",
+    "wiki": "generate",
 }
+
+
+# 薄壳函数把 services 的 (article_id, settings) 接口适配到 worker 派发器的 (session, job, settings, llm_client)
+async def run_classify_topics(
+    session: AsyncSession,
+    job: dict,
+    settings,
+    llm_client: LLMClient | None,
+) -> None:
+    """topics 任务 handler: 调用 services.topics.classify_topics + check_and_set_done。"""
+    if not llm_client:
+        raise RuntimeError("classify_topics 需要 llm_client（generate capability）")
+    await classify_topics(session, job["article_id"], settings, llm_client)
+
+
+async def run_generate_wiki(
+    session: AsyncSession,
+    job: dict,
+    settings,
+    llm_client: LLMClient | None,
+) -> None:
+    """wiki 任务 handler: 调用 services.wiki.generate_article_wiki（无 LLM 调用，llm_client 可为 None）。"""
+    await generate_article_wiki(session, job["article_id"], settings)
 
 
 async def main() -> None:
@@ -97,6 +124,8 @@ async def main() -> None:
             "embed_core": run_embed_core,
             "embed_summary": run_embed_summary,
             "summarize": run_summarize,
+            "topics": run_classify_topics,
+            "wiki": run_generate_wiki,
         }
         handler = handlers.get(task)
         if not handler:

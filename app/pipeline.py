@@ -46,12 +46,25 @@ async def enqueue_jobs(
 ) -> None:
     """幂等入队：ON CONFLICT DO NOTHING + supersede 同事务。
 
+    同一事务内把 article.status 从 pending 升到 processing（idempotent）：
+    - 由 scheduler.py / services/cli.py / complete_summarize 等多处入队时统一触发
+    - 由 check_and_set_done 检查 status='processing' 才置 done
+    - 不存在 → done 永远不触发
+
     Args:
         session: async session（调用方负责事务边界）
         article_id: 文章 ID
         tasks: 要入队的任务列表（如 ["embed_core", "summarize"]）
         content_hash: 文章当前内容版本
     """
+    # 文章状态机：pending → processing（首次入队时升级，幂等）
+    await session.execute(
+        text(
+            "UPDATE articles SET status='processing' "
+            "WHERE id=:aid AND status='pending'"
+        ),
+        {"aid": article_id},
+    )
     for task in tasks:
         priority = TASK_PRIORITY.get(task, 5)
         # 1. supersede 旧 job（同事务）
@@ -239,29 +252,161 @@ async def check_and_set_done(session: AsyncSession, article_id: int) -> None:
 
 # ── Recover ───────────────────────────────────────────────────────
 
-async def recover_interrupted(session_factory) -> int:
-    """回收过期 running job（仅 worker 启动时跑，DESIGN §6）。
+async def recover_interrupted(
+    session_factory,
+    *,
+    force_all_running: bool = False,
+) -> int:
+    """回收过期 / 孤立的 running job（DESIGN §6）。
+
+    Args:
+        session_factory: async session factory
+        force_all_running: True → 抢所有 status='running' 的 lease（启动期单 worker 假设，
+                            处理前 worker 被强杀、lease 尚未过期的场景）；
+                          False（默认）→ 仅回收 lock_until < now() 的过期 lease（运行期安全）。
+
+    Phase 1 单 worker 假设由 CLAUDE.md 锁定：启动时可用 force_all_running=True 抢锁，
+    周期回收维持 force_all_running=False 防止双 worker 误抢。
 
     不动 error 字段，recover_count 追踪回收次数。
     """
+    where_clause = (
+        "WHERE status='running'"
+        if force_all_running
+        else "WHERE status='running' AND lock_until < now()"
+    )
     async with session_factory() as session:
         result = await session.execute(
             text(
                 "UPDATE processing_jobs "
                 "SET status='queued', lock_until=NULL, "
                 "    recover_count=recover_count+1, updated_at=now() "
-                "WHERE status='running' AND lock_until < now() "
+                f"{where_clause} "
                 "RETURNING id"
             )
         )
         recovered = result.fetchall()
         await session.commit()
         if recovered:
-            logger.info("recover: 回收 %d 个过期 running job", len(recovered))
+            label = "全部 running（强制）" if force_all_running else "过期 lease"
+            logger.info("recover: 回收 %d 个 %s 的 job", len(recovered), label)
         return len(recovered)
 
 
+# ── Lease 续租（处理任务时跑） ──────────────────────────────────────
+
+async def _lease_renewer(
+    session_factory,
+    job_id: int,
+    stop_event: asyncio.Event,
+    *,
+    interval_s: int = 60,
+) -> None:
+    """每 interval_s 秒续租 lease（DESIGN §6 随处理协程，不另起 watchdog）。
+
+    stop_event.set() 后下一次 wait_for 立即返回，平滑退出。
+    续租 SQL 失败仅 warning，不抛——lease 自然过期由 worker_loop 周期 recover 兜底。
+    """
+    while not stop_event.is_set():
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=interval_s)
+            return  # 正常停止
+        except asyncio.TimeoutError:
+            try:
+                async with session_factory() as session:
+                    await session.execute(
+                        text(
+                            "UPDATE processing_jobs "
+                            "SET lock_until=now() + INTERVAL '5 minutes' "
+                            "WHERE id=:jid AND status='running'"
+                        ),
+                        {"jid": job_id},
+                    )
+                    await session.commit()
+            except Exception as e:
+                logger.warning("renew_lease job=%d 失败: %s", job_id, e)
+
+
+async def process_job_with_lease_renewal(
+    session_factory,
+    job: dict,
+    settings: Settings,
+    task_handler,
+    llm_client: LLMClient | None,
+) -> None:
+    """处理单个 job + 后台 lease 续租（与 LLM 调用并行）。
+
+    续租 task 跑独立 session，不争 handler 的 session；
+    异常分类（permanent/transient/failed）与原 worker_loop 行为一致。
+
+    成功路径额外负责把 processing_jobs.status='running' → 'succeeded'，然后
+    check_and_set_done 检查是否文章可升 done。原来只有 complete_embed handler
+    自己清状态（summarize / topics / wiki 的 handler 不清），导致 job 永久
+    占用 'running' 计数、阻塞后续 pick_and_claim（lock_until 在 renewer
+    续命下保持有效）。
+    """
+    renew_stop = asyncio.Event()
+    renew_task = asyncio.create_task(
+        _lease_renewer(session_factory, job["id"], renew_stop)
+    )
+    try:
+        async with session_factory() as session:
+            try:
+                if task_handler:
+                    await task_handler(session, job, settings, llm_client)
+                    # 关键修复：handler 成功返回后必须把 job 标 succeeded，
+                    # 否则 summarize/topics/wiki 这类"轻 handler"会把
+                    # status='running' 留到天荒地老，renewer 还在续 lease。
+                    await session.execute(
+                        text(
+                            "UPDATE processing_jobs "
+                            "SET status='succeeded', lock_until=NULL, updated_at=now() "
+                            "WHERE id=:jid"
+                        ),
+                        {"jid": job["id"]},
+                    )
+                    await check_and_set_done(session, job["article_id"])
+                    await session.commit()
+                else:
+                    await handle_permanent_failure(
+                        session, job["id"], "no task_handler registered"
+                    )
+                    await check_and_set_done(session, job["article_id"])
+                    await session.commit()
+            except PermanentError as e:
+                await handle_permanent_failure(session, job["id"], str(e))
+                await check_and_set_done(session, job["article_id"])
+                await session.commit()
+            except Exception as e:
+                is_timeout = "timeout" in str(e).lower()
+                await handle_transient_failure(
+                    session, job["id"], str(e),
+                    is_timeout=is_timeout,
+                    health_ok=llm_client.is_healthy if llm_client else True,
+                    max_timeout_retries=settings.llm.max_timeout_retries,
+                )
+                await check_and_set_done(session, job["article_id"])
+                await session.commit()
+    finally:
+        renew_stop.set()
+        # 给 renewer 最多 2s 平滑退出（renewer 每 60s 才打一次 SQL，正常 0ms 内退出）
+        try:
+            await asyncio.wait_for(renew_task, timeout=2)
+        except asyncio.TimeoutError:
+            renew_task.cancel()
+            try:
+                await renew_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        except asyncio.CancelledError:
+            pass
+
+
 # ── Worker 主循环 ──────────────────────────────────────────────────
+
+# worker_loop 周期回收间隔（秒）
+WORKER_RECOVER_PERIOD_S = 60
+
 
 async def worker_loop(
     settings: Settings,
@@ -270,22 +415,32 @@ async def worker_loop(
 ) -> None:
     """常驻自驱 worker 循环（DESIGN §6）。
 
-    循环：领取(SKIP LOCKED) → 无任务 sleep ~1s → 处理完继续。
+    循环：周期 recover → 领取(SKIP LOCKED) → 无任务 sleep ~1s → 处理（含后台续租）→ 继续。
     领取门控：不 healthy 则不领新 job。
+    启动期 force 回收所有 running lease 处理"前 worker 被强杀"场景（Phase 1 单 worker 假设）。
     """
     from app.db.engine import get_session_factory
 
     session_factory = get_session_factory(settings)
 
-    # 启动时 recover
-    recovered = await recover_interrupted(session_factory)
+    # 启动期强制回收（Phase 1 单 worker：claude.md 锁定）
+    recovered = await recover_interrupted(session_factory, force_all_running=True)
     if recovered:
-        logger.info("启动 recover: 回收 %d 个 job", recovered)
+        logger.warning(
+            "启动强制回收 %d 个 running job（Phase1 单 worker 假设）", recovered,
+        )
 
     logger.info("worker 启动，开始消费队列")
+    last_recover_at = asyncio.get_event_loop().time()
 
     while True:
         try:
+            # 周期回收（仅过期 lease，多 worker 安全）
+            now_t = asyncio.get_event_loop().time()
+            if now_t - last_recover_at >= WORKER_RECOVER_PERIOD_S:
+                await recover_interrupted(session_factory)
+                last_recover_at = now_t
+
             # 领取门控：不 healthy 则 sleep 退避
             if llm_client and not llm_client.is_healthy:
                 logger.debug("LLM 不健康，跳过领取，sleep 5s")
@@ -305,33 +460,10 @@ async def worker_loop(
                 job["id"], job["article_id"], job["task"],
             )
 
-            # 处理任务（Phase 1 单进程顺序执行，一次一个 job）
-            if task_handler:
-                async with session_factory() as session:
-                    try:
-                        await task_handler(session, job, settings, llm_client)
-                        await session.commit()
-                    except PermanentError as e:
-                        await handle_permanent_failure(session, job["id"], str(e))
-                        await check_and_set_done(session, job["article_id"])
-                        await session.commit()
-                    except Exception as e:
-                        is_timeout = "timeout" in str(e).lower()
-                        await handle_transient_failure(
-                            session, job["id"], str(e),
-                            is_timeout=is_timeout,
-                            health_ok=llm_client.is_healthy if llm_client else True,
-                            max_timeout_retries=settings.llm.max_timeout_retries,
-                        )
-                        await session.commit()
-            else:
-                # 无 handler 时跳过，标记 failed 防循环
-                async with session_factory() as session:
-                    await handle_permanent_failure(
-                        session, job["id"], "no task_handler registered"
-                    )
-                    await check_and_set_done(session, job["article_id"])
-                    await session.commit()
+            # 处理任务（带后台 lease 续租）
+            await process_job_with_lease_renewal(
+                session_factory, job, settings, task_handler, llm_client,
+            )
 
         except asyncio.CancelledError:
             logger.info("worker 收到取消信号，退出")

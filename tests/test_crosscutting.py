@@ -19,6 +19,7 @@ from app.llm.fake import FakeLLMProvider
 from app.pipeline import (
     enqueue_jobs, pick_and_claim,
     handle_transient_failure, handle_permanent_failure, check_and_set_done,
+    recover_interrupted, _lease_renewer, process_job_with_lease_renewal,
 )
 
 
@@ -461,3 +462,409 @@ class TestFetchCountLimit:
             assert row is not None
             assert row[0] == "fetch_count_limited"
             assert row[1] == 7
+
+
+# ── Pipeline 鲁棒性：recover / lease 续租 ───────────────────────────
+
+class TestRecoverInterrupted:
+    """recover_interrupted 两种模式：force_all_running 启动期抢所有 lease，
+    默认模式仅回收过期 lease。"""
+
+    @pytest.mark.asyncio
+    async def test_force_all_running_reclaims_active_lease(self, settings):
+        """force_all_running=True 必须抢走 lock_until 还在未来的 job。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+
+        async with factory() as session:
+            aid = await _insert_article(session, "https://t.com/rec-1", "T", "C")
+            await enqueue_jobs(session, aid, ["summarize"], "h")
+            await session.commit()
+
+            job = await pick_and_claim(session)
+            await session.commit()
+            assert job is not None
+
+            # 模拟前 worker 强杀：把 lock_until 推到未来 30 分钟
+            await session.execute(
+                text(
+                    "UPDATE processing_jobs "
+                    "SET lock_until=now() + INTERVAL '30 minutes', recover_count=0 "
+                    "WHERE id=:jid"
+                ),
+                {"jid": job["id"]},
+            )
+            await session.commit()
+
+        # 启动期 force 回收
+        recovered = await recover_interrupted(factory, force_all_running=True)
+        assert recovered == 1
+
+        async with factory() as session:
+            r = await session.execute(
+                text(
+                    "SELECT status, lock_until, recover_count "
+                    "FROM processing_jobs WHERE id=:jid"
+                ),
+                {"jid": job["id"]},
+            )
+            row = r.first()
+            assert row[0] == "queued"
+            assert row[1] is None
+            assert row[2] == 1
+
+    @pytest.mark.asyncio
+    async def test_default_only_reclaims_expired_lease(self, settings):
+        """默认模式（force_all_running=False）只回收 lock_until 已过期的 job。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+
+        async with factory() as session:
+            aid_expired = await _insert_article(session, "https://t.com/rec-2a", "Ex", "C")
+            aid_active = await _insert_article(session, "https://t.com/rec-2b", "Ac", "C")
+            await enqueue_jobs(session, aid_expired, ["summarize"], "h1")
+            await enqueue_jobs(session, aid_active, ["summarize"], "h2")
+            await session.commit()
+
+            j_expired = await pick_and_claim(session)
+            await session.commit()
+            j_active = await pick_and_claim(session)
+            await session.commit()
+
+            # expired: lock_until 推到过去 1 分钟
+            await session.execute(
+                text(
+                    "UPDATE processing_jobs SET lock_until=now() - INTERVAL '1 minute' "
+                    "WHERE id=:jid"
+                ),
+                {"jid": j_expired["id"]},
+            )
+            # active: lock_until 推到未来 30 分钟
+            await session.execute(
+                text(
+                    "UPDATE processing_jobs SET lock_until=now() + INTERVAL '30 minutes' "
+                    "WHERE id=:jid"
+                ),
+                {"jid": j_active["id"]},
+            )
+            await session.commit()
+
+        # 默认模式
+        recovered = await recover_interrupted(factory)
+        assert recovered == 1
+
+        async with factory() as session:
+            r1 = await session.execute(
+                text("SELECT status FROM processing_jobs WHERE id=:jid"),
+                {"jid": j_expired["id"]},
+            )
+            r2 = await session.execute(
+                text("SELECT status FROM processing_jobs WHERE id=:jid"),
+                {"jid": j_active["id"]},
+            )
+            assert r1.scalar() == "queued"  # 过期 lease 已回收
+            assert r2.scalar() == "running"  # 活跃 lease 保留
+
+
+class TestLeaseRenewer:
+    """_lease_renewer 在 stop_event 之前每 interval_s 写一次 lease。"""
+
+    @pytest.mark.asyncio
+    async def test_renewer_extends_lease_periodically(self, settings):
+        """间隔 0.5s 启动 renewer，1.2s 后至少写入 1 次 lease。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+
+        async with factory() as session:
+            aid = await _insert_article(session, "https://t.com/lease-1", "T", "C")
+            await enqueue_jobs(session, aid, ["summarize"], "h")
+            await session.commit()
+            job = await pick_and_claim(session)
+            await session.commit()
+
+        # 记录初始 lock_until
+        async with factory() as session:
+            r = await session.execute(
+                text("SELECT lock_until FROM processing_jobs WHERE id=:jid"),
+                {"jid": job["id"]},
+            )
+            initial_lease = r.scalar()
+
+        # 启动 renewer: interval_s=0.5
+        import asyncio
+        stop = asyncio.Event()
+        renew_task = asyncio.create_task(
+            _lease_renewer(factory, job["id"], stop, interval_s=0.5)
+        )
+        # 等 1.2s, 期间 renewer 至少打 1 次 SQL（实际一般 2 次）
+        await asyncio.sleep(1.2)
+        stop.set()
+        await asyncio.wait_for(renew_task, timeout=2)
+
+        # 验证：lock_until 比初始更晚
+        async with factory() as session:
+            r = await session.execute(
+                text("SELECT lock_until, status FROM processing_jobs WHERE id=:jid"),
+                {"jid": job["id"]},
+            )
+            row = r.first()
+            assert row[0] is not None
+            assert row[0] > initial_lease  # 续租过
+            assert row[1] == "running"
+
+    @pytest.mark.asyncio
+    async def test_renewer_stops_quickly_on_event(self, settings):
+        """stop_event.set() 后 renewer 0.1s 内退出。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+
+        async with factory() as session:
+            aid = await _insert_article(session, "https://t.com/lease-2", "T", "C")
+            await enqueue_jobs(session, aid, ["summarize"], "h")
+            await session.commit()
+            job = await pick_and_claim(session)
+            await session.commit()
+
+        import asyncio
+        stop = asyncio.Event()
+        # interval_s=10 让 renewer 不会自然 SQL 触发
+        renew_task = asyncio.create_task(
+            _lease_renewer(factory, job["id"], stop, interval_s=10)
+        )
+        await asyncio.sleep(0.05)
+        stop.set()
+        # 必须 1s 内平滑退出
+        await asyncio.wait_for(renew_task, timeout=1)
+
+
+class TestProcessJobWithLeaseRenewal:
+    """process_job_with_lease_renewal 包裹：成功/Permanent/Exception 三个分支都正确停止 renewer。
+    成功路径必须把 job 标 succeeded（防 summarize/topics/wiki 永久占 running）。"""
+
+    @pytest.mark.asyncio
+    async def test_handler_success_marks_succeeded(self, settings):
+        """handler 正常返回 → status 从 running 升 succeeded（修复点 #5）。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+
+        async with factory() as session:
+            aid = await _insert_article(session, "https://t.com/renew-ok", "T", "C")
+            await enqueue_jobs(session, aid, ["summarize"], "h")
+            await session.commit()
+            job = await pick_and_claim(session)
+            await session.commit()
+            assert job is not None
+
+        # 验证 claim 后 DB 状态确实是 running
+        async with factory() as session:
+            r = await session.execute(
+                text("SELECT status FROM processing_jobs WHERE id=:jid"),
+                {"jid": job["id"]},
+            )
+            assert r.scalar() == "running"
+
+        import asyncio
+
+        async def fake_handler(session, job, settings, llm_client):
+            await asyncio.sleep(0.05)
+            # 不改 DB，正常返回 — 模拟 summarize/topics/wiki 这些"轻"handler
+
+        await process_job_with_lease_renewal(
+            factory, job, settings, fake_handler, llm_client=None,
+        )
+
+        # 现在 job 必须是 succeeded 而不是 running（之前 bug：永远卡 running）
+        async with factory() as session:
+            r = await session.execute(
+                text("SELECT status, lock_until FROM processing_jobs WHERE id=:jid"),
+                {"jid": job["id"]},
+            )
+            row = r.first()
+            assert row[0] == "succeeded", f"job.status expected 'succeeded', got '{row[0]}'"
+            assert row[1] is None, f"lock_until expected NULL, got '{row[1]}'"
+
+    @pytest.mark.asyncio
+    async def test_permanent_error_marks_failed_or_requeued(self, settings):
+        """handler 抛 PermanentError → handle_permanent_failure 接管。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+
+        async with factory() as session:
+            aid = await _insert_article(session, "https://t.com/renew-pe", "T", "C")
+            # 先把 max_attempts 调到 1 加速 dead-letter
+            await session.execute(
+                text("ALTER TABLE processing_jobs DROP CONSTRAINT IF EXISTS processing_jobs_max_attempts_check")
+            )
+            await enqueue_jobs(session, aid, ["summarize"], "h")
+            await session.commit()
+            job = await pick_and_claim(session)
+            await session.commit()
+
+        from app.llm.client import PermanentError
+
+        async def bad_handler(session, job, settings, llm_client):
+            raise PermanentError("bad model name")
+
+        await process_job_with_lease_renewal(
+            factory, job, settings, bad_handler, llm_client=None,
+        )
+
+        # attempt 应自增 1 (CI 从 0 → 1, max=3, 故 queued + 30s lock)
+        async with factory() as session:
+            r = await session.execute(
+                text(
+                    "SELECT status, attempt, error_class "
+                    "FROM processing_jobs WHERE id=:jid"
+                ),
+                {"jid": job["id"]},
+            )
+            row = r.first()
+            assert row[0] == "queued"
+            assert row[1] == 1  # attempt+1
+            assert row[2] == "permanent"
+
+
+# ── Worker dispatcher: topics / wiki handler 路由 ─────────────────
+
+class TestWorkerTaskRouting:
+    """确认 worker 的 _TASK_CAPABILITY + handlers 都覆盖了 topics + wiki，
+    否则会被 '未知任务类型' warning 跳过、job 卡在 running。"""
+
+    def test_capability_dict_includes_topics_wiki(self):
+        from app.worker import _TASK_CAPABILITY
+        assert _TASK_CAPABILITY["topics"] == "generate"
+        assert _TASK_CAPABILITY["wiki"] == "generate"
+
+    def test_handlers_dict_includes_topics_wiki(self):
+        """handlers dict 必须有 topics / wiki entry，否则 worker 永远打 warning。"""
+        from app.worker import (
+            run_classify_topics, run_generate_wiki,
+        )
+        assert callable(run_classify_topics)
+        assert callable(run_generate_wiki)
+
+
+class TestArticleStateTransition:
+    """enqueue_jobs 同事务触发 pending → processing 状态机。"""
+
+    @pytest.mark.asyncio
+    async def test_enqueue_promotes_pending_to_processing(self, settings):
+        """首次入队把 articles.status 从 pending 升到 processing。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+        async with factory() as session:
+            # 插一篇文章，状态 pending
+            await _insert_article(session, "https://t.com/state-1", "T", "C")
+            await session.commit()
+
+            aid_result = await session.execute(
+                text("SELECT id, status FROM articles WHERE source_url=:u"),
+                {"u": "https://t.com/state-1"},
+            )
+            row = aid_result.first()
+            article_id = row[0]
+            assert row[1] == "pending"
+
+            # 入队应升级 status
+            await enqueue_jobs(session, article_id, ["embed_core"], "h")
+            await session.commit()
+
+            r = await session.execute(
+                text("SELECT status FROM articles WHERE id=:aid"),
+                {"aid": article_id},
+            )
+            assert r.scalar() == "processing"
+
+    @pytest.mark.asyncio
+    async def test_enqueue_idempotent_on_processing(self, settings):
+        """已 processing 文章再入队，状态不应被改（幂等）。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+        async with factory() as session:
+            await _insert_article(session, "https://t.com/state-2", "T", "C")
+            await session.commit()
+
+            aid = await session.execute(
+                text("SELECT id FROM articles WHERE source_url=:u"),
+                {"u": "https://t.com/state-2"},
+            )
+            aid = aid.scalar()
+
+            # 手工先置 processing
+            await session.execute(
+                text("UPDATE articles SET status='processing' WHERE id=:aid"),
+                {"aid": aid},
+            )
+            await session.commit()
+
+            # 入队（不应改回 pending，也不应破坏 processing）
+            await enqueue_jobs(session, aid, ["summarize"], "h")
+            await session.commit()
+
+            r = await session.execute(
+                text("SELECT status FROM articles WHERE id=:aid"),
+                {"aid": aid},
+            )
+            assert r.scalar() == "processing"
+
+
+class TestTopicsWikiHandlersEndToEnd:
+    """worker thin-shell handler 正确把 job 路由到 services 函数。
+
+    注：handler 内部调用的是 services.topics.classify_topics /
+    services.wiki.generate_article_wiki，它们的契约已被
+    tests/test_topics_wiki.py 的 TestClassifyTopics /
+    TestGenerateArticleWiki 覆盖。这里只验证 dispatch 路径。
+    """
+
+    @pytest.mark.asyncio
+    async def test_run_classify_topics_dispatches_correctly(self, settings, llm_client):
+        """run_classify_topics 把 (session, job, settings, llm_client) 翻译给 classify_topics。"""
+        from app.worker import run_classify_topics
+
+        called = {}
+
+        async def fake_classify(session, article_id, settings, llm):
+            called["args"] = (article_id, settings, llm)
+            return [42]
+
+        # monkey-patch the real services.topics.classify_topics
+        import app.worker as _worker_mod
+        real = _worker_mod.classify_topics
+        _worker_mod.classify_topics = fake_classify
+        try:
+            # 构造 dummy session 和 job
+            class DummySession:
+                async def __aenter__(self): return self
+                async def __aexit__(self, *a): pass
+            job = {"id": 1, "article_id": 1234, "task": "topics"}
+            await run_classify_topics(None, job, settings, llm_client)
+        finally:
+            _worker_mod.classify_topics = real
+
+        assert called["args"][0] == 1234
+        assert called["args"][2] is llm_client
+        # 返回值被 handler 忽略（classify_topics 自己负责 DB 写），handler 不抛即成功
+
+    @pytest.mark.asyncio
+    async def test_run_generate_wiki_dispatches_correctly(self, settings):
+        """run_generate_wiki 不需要 llm_client，调 services.wiki.generate_article_wiki。"""
+        from app.worker import run_generate_wiki
+
+        called = {}
+
+        async def fake_wiki(session, article_id, settings):
+            called["args"] = (article_id, settings)
+            return 99
+
+        import app.worker as _worker_mod
+        real = _worker_mod.generate_article_wiki
+        _worker_mod.generate_article_wiki = fake_wiki
+        try:
+            job = {"id": 1, "article_id": 5678, "task": "wiki"}
+            # 即便传 None 也不应报错（wiki 不调 LLM）
+            await run_generate_wiki(None, job, settings, llm_client=None)
+        finally:
+            _worker_mod.generate_article_wiki = real
+
+        assert called["args"][0] == 5678

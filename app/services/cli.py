@@ -558,7 +558,9 @@ async def _status():
 @app.command()
 def retry(
     article_id: int = typer.Argument(help="文章 ID"),
-    task: str = typer.Argument(help="任务名称 (summarize|embed_core|embed_summary)"),
+    task: str = typer.Argument(
+        help="任务名称 (summarize|embed_core|embed_summary|topics|wiki)"
+    ),
 ):
     """重试指定文章的任务（走对应 complete_* 钩子）。"""
     _run_async(_retry(article_id, task))
@@ -570,12 +572,12 @@ async def _retry(article_id: int, task: str):
 
     settings = load_settings()
     # 按 task 选择对应能力的 provider
-    if task in ("summarize",):
+    if task in ("summarize", "topics"):
         capability = "generate"
     elif task in ("embed_core", "embed_summary"):
         capability = "embed"
     else:
-        capability = "generate"  # 默认用 generate（未知 task 仍可尝试）
+        capability = "generate"  # 默认用 generate（wiki 实际不需要 LLM，仍走 generate 客户端兼容）
     provider = build_provider(capability, settings)
     llm_client = LLMClient(provider=provider, max_concurrency=1)
 
@@ -605,6 +607,12 @@ async def _retry(article_id: int, task: str):
             await run_embed_core(session, job, settings, llm_client)
         elif task == "embed_summary":
             await run_embed_summary(session, job, settings, llm_client)
+        elif task == "topics":
+            from app.services.topics import classify_topics
+            await classify_topics(session, article_id, settings, llm_client)
+        elif task == "wiki":
+            from app.services.wiki import generate_article_wiki
+            await generate_article_wiki(session, article_id, settings)
         else:
             console.print(f"[red]未知任务: {task}[/red]")
             return
