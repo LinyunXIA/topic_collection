@@ -368,44 +368,54 @@ async def _list_articles(limit: int, topic: str | None):
 @app.command()
 def search(
     query: str = typer.Argument(help="搜索关键词"),
+    mode: str = typer.Option("hybrid", "--mode", "-m", help="检索模式: hybrid|semantic|keyword"),
     limit: int = typer.Option(20, "--limit", "-l"),
 ):
-    """关键词全文搜索。"""
-    _run_async(_search(query, limit))
+    """混合检索（hybrid=RRF 融合 / semantic=纯向量 / keyword=纯关键词）。"""
+    _run_async(_search(query, mode, limit))
 
 
-async def _search(query: str, limit: int):
+async def _search(query: str, mode: str, limit: int):
+    from app.services.search import search as hybrid_search
+
     settings = load_settings()
-    async with get_session(settings) as session:
-        article_ids = await search_articles_fts(session, query, limit)
 
-        if not article_ids:
+    # 语义/hybrid 模式需要 LLM client
+    llm_client = None
+    if mode in ("hybrid", "semantic"):
+        try:
+            from app.llm.omlx import OMLXProvider
+            from app.llm.client import LLMClient as _LC
+            provider = OMLXProvider(base_url=settings.llm.endpoint, generation_model=settings.llm.model)
+            llm_client = _LC(provider=provider, max_concurrency=1)
+            health = await llm_client.healthcheck()
+            if not health.healthy:
+                console.print("[yellow]⚠️  LLM 不可用，降级为关键词模式[/yellow]")
+                llm_client = None
+                mode = "keyword"
+        except Exception:
+            mode = "keyword"
+
+    async with get_session(settings) as session:
+        resp = await hybrid_search(session, query, settings, llm_client, mode, limit)
+
+        if not resp.results:
             console.print(f"[yellow]未找到匹配「{query}」的文章[/yellow]")
             return
 
-        # 获取详情
-        result = await session.execute(
-            text(
-                "SELECT id, title, status, lang FROM articles "
-                "WHERE id = ANY(:ids)"
-            ),
-            {"ids": article_ids},
-        )
-        rows = {r["id"]: dict(r) for r in result.mappings().all()}
-
-        table = Table(title=f"搜索结果: {query}")
+        table = Table(title=f"搜索结果: {query} [{resp.mode}]")
         table.add_column("ID", style="dim")
         table.add_column("标题", max_width=50)
-        table.add_column("状态")
-        table.add_column("语言")
+        table.add_column("来源")
+        table.add_column("分数", justify="right")
 
-        for aid in article_ids:
-            row = rows.get(aid, {})
+        for r in resp.results:
+            source_color = "cyan" if r.source == "article" else "magenta"
             table.add_row(
-                str(aid),
-                row.get("title", "?")[:50],
-                row.get("status", "?"),
-                row.get("lang", ""),
+                str(r.id),
+                r.title[:50],
+                f"[{source_color}]{r.source}[/{source_color}]",
+                f"{r.score:.4f}",
             )
 
         console.print(table)
