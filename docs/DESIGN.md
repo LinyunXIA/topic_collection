@@ -3,7 +3,7 @@
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述（目录结构 / DDL / 接口）只在一处维护、另一处引用，避免漂移
 > 版本：v0.10 · 2026-08-19 · 切片一完成（与 PRD v0.9 同步）
-> v0.10：**切片一+切片二完成**——**语言检测 pycld3→lingua-language-detector**（§2，pycld3 需 protobuf 编译器无法在 3.14 安装，lingua 纯 Python、75 语言支持）；**Docker 端口 5432→5433**（§5.4/§9，宿主机 5433 避免与本地 PG 冲突）；§14 切片一 1.1-1.9 + 切片二 2.1-2.4 + Day 1 全部完成；**真实环境验收**：20 篇 HN 文章端到端跑通（20/20 summary + 40+ embedding）；**60/60 pytest 全部通过**；切片二新增混合检索 `search(q)`（语义 top-k ∪ 关键词 top-k → RRF 融合，§7）+ CLI `--mode hybrid|semantic|keyword`
+> v0.10：**切片一+二+三完成**——**语言检测 pycld3→lingua-language-detector**（§2）；**Docker 端口 5432→5433**（§5.4/§9）；§14 切片一 1.1-1.9 + 切片二 2.1-2.4 + 切片三 3.1-3.3 + Day 1 全部完成；**真实环境验收**：20 篇 HN 文章端到端跑通（20/20 summary + 40+ embedding）；**75/75 pytest 全部通过**；切片二新增混合检索 `search(q)`（RRF 融合，§7）+ CLI `--mode`；切片三新增 topic CRUD + classify_topics LLM 慢路径 + wiki 词条生成
 > v0.9：**架构审查四轮——SQL 逻辑错误 + done 判定补洞 + 文档同步清理**——
 >   **硬伤 6（mention_count 合并错行）**——§6 dedup 命中步骤 1 SQL 拆两条：loser 只置 `status='done', dedupe_of=winner`，新增步骤 1.5 将 loser 的 `mention_count` 累加到 winner（原 SQL 错写为 loser 自身翻倍，winner 一分没拿）；§6 多跳扁平化段文字说明一致；
 >   **硬伤 7（processing→done 判定两个洞）**——§6 状态机 `processing→done` 规则简化为「每次 job 进入终态后检查：该文章不存在任何 queued/running job → 置 done」，与任务集合无关，不再维护非可选 task 清单；`complete_summarize` 职责 ⑥ + `complete_embed` 职责 ④ + 永久失败死信路径各加 done 检查；覆盖关键词命中（topics 缺席自动满足）与失败路径（无钩子触发）两个漏洞；
@@ -839,10 +839,10 @@ feeds:
 - [x] 2.4 验收：PRD §15 验收 9（混合检索 P95 < 100ms，召回 100%；RRF 融合）
 
 **切片三：主题 + Wiki 词条**（对应验收 3/5）
-- [ ] 3.1 `app/services/topics.py` 完善：topic CRUD + `match_keywords()` 快路径 + `classify_topics` LLM 慢路径（合并规则见 §6）
-- [ ] 3.2 `app/services/wiki.py`：文章词条生成（`related_json` = 同主题 article top-5，§6）
-- [ ] 3.3 CLI 补：`topic add` / `topic list` / `list --topic`
-- [ ] 3.4 验收：PRD §15 验收 3（主题跨源聚合）/ 5（Wiki 按**关键词**全文搜索，主题/实体浏览 P2）
+- [x] 3.1 `app/services/topics.py` 完善：topic CRUD + `match_keywords()` 快路径 + `classify_topics` LLM 慢路径（合并规则见 §6）
+- [x] 3.2 `app/services/wiki.py`：文章词条生成（`related_json` = 同主题 article top-5，§6）
+- [x] 3.3 CLI 补：`topic add` / `topic list` / `list --topic`
+- [x] 3.4 验收：PRD §15 验收 3（主题跨源聚合）/ 5（Wiki 按**关键词**全文搜索，主题/实体浏览 P2）
 
 **横切**：
 - [ ] X.1 `app/scheduler.py`：fetch_all + drain_queue + pg_backup（**自动化补充，主触发是 `tc backup` CLI**，§10）+ cleanup_fetch_events（§10）
