@@ -141,6 +141,73 @@ topic_collection/
 ├── data/  logs/  scripts/  tests/
 ```
 
+### 3.1 Phase 2 模块职责（详细）
+
+#### `app/api/` 路由文件（FastAPI，Phase 2 上线）
+
+| 文件 | 职责 |
+|---|---|
+| `deps.py` | `Depends` 工厂：`get_session`、`get_settings`、`get_llm_client`、`get_current_user`（本地单用户 = 占位返回固定 user；不做鉴权） |
+| `dashboard.py` | `GET /` 概览：流水线统计、队列深度、LLM 健康横幅、最近 20 篇、源健康；`GET/POST /settings` 模型与并发配置 |
+| `feeds.py` | `GET /feeds` 列表 + 筛选；`POST /feeds` 新增/编辑（form）；`POST /feeds/{id}/fetch` 立即抓取；`POST /feeds/{id}/disable` 禁用 |
+| `articles.py` | `GET /articles` 列表 + 筛选 + 分页；`GET /articles/{id}` 详情（Tab：原文/摘要/翻译/实体/相关话题/Wiki）；`POST /articles/{id}/retry/{task}` 手动重试；`POST /articles/{id}/undedupe` 撤销去重；`GET /api/articles/{id}/similar` 同主题相似文章 |
+| `wiki.py` | `GET /wiki` 词条索引（按 kind 分组）；`GET /wiki/{slug}` 词条页；`GET /wiki/{slug}/raw` 纯 Markdown（导出用） |
+| `search.py` | `GET /search?q=` 混合检索（关键词+语义+Reranker），结果含文章+Wiki 高亮片段 |
+| `graph.py` | `GET /graph` 图谱页（HTMX partial 渲染 force-graph）；`GET /api/graph.json` 数据 JSON（filter via query） |
+| `topics.py` | `GET /topics` 主题列表（跨源聚合视图：主题×源×文章数）；`GET/POST /topics/{id}` 编辑；`POST /topics/{id}/reclassify` 重算近窗 |
+| `reports.py` | `GET /reports` 报告列表；`GET /reports/{id}` 报告渲染；`POST /reports/{id}/retry` 重新生成；`GET /reports/{id}/export.md` Markdown 下载 |
+| `health.py` | `GET /api/health` LLM 队列 worker 状态；`GET /api/llm-status` LLM ping（每 30s htmx 轮询） |
+
+#### `app/web/` 前端层级（Jinja2 + HTMX 1.x）
+
+```
+templates/
+├── base.html                 # 全局 layout：左侧 sidebar + 顶部 llm-status 横幅 + content block
+├── components/
+│   ├── pagination.html       # 通用分页
+│   ├── htmx_helpers.html     # hx-target/hx-swap 宏
+│   ├── toast.html            # 操作反馈
+│   └── error_banner.html     # 路由错误展示
+├── partials/                 # HTMX partial swap（hx-get/hx-post 返回）
+│   ├── article_row.html
+│   ├── topic_chip.html
+│   ├── feeds_table.html
+│   ├── graph_filter.html
+│   └── report_card.html
+├── overview.html
+├── feeds/{list,edit}.html
+├── articles/{list,detail}.html
+├── wiki/{index,page}.html
+├── graph/page.html
+├── topics/{list,edit}.html
+├── reports/{list,view}.html
+├── settings/page.html
+└── search/results.html
+
+static/
+├── htmx.min.js               # vendored 离线
+├── echarts.min.js            # vendored 离线
+├── sortable.min.js           # vendored 离线
+├── pico.min.css              # classless CSS（Pico CSS subset）
+└── app.js                    # 自写：sidebar 折叠、图表初始化、Spinner
+```
+
+#### `app/services/` Phase 2 新增
+
+- `entities.py` — `extract_entities(article_id)` / `upsert_entities(...)` / `link_relations(...)` / `merge_aliases(...)` / `resolve_entity(name)` / `entity_relations_graph(entity_id, depth=1)`
+- `graph.py` — `graph_json(*, topic_id=None, entity_type=None, since_days=None) -> dict` 含 ECharts 4 字段：`{categories, nodes, links, filters}`；`graph_node_articles(node_id)` 节点回看文章
+- `reports.py` — `generate_daily_report()` / `generate_weekly_report()` / `_aggregate_stats(period_start, period_end)` / `_render_html(markdown)` (markdown lib extras=`toc,fenced-code,tables`) / `_mark_failed(report_id, error)`
+
+#### `app/ingest/api.py`（Phase 2 骨架）
+
+`fetch_api(feed) -> list[FeedItem]`：读取 `feeds.config_json` 含 `{endpoint, method='GET', params, headers, rate_limit_per_hour, items_path, mapper:{title, url, author, time, content}}` → httpx 调用 → jmespath 提 items → mapper 字段映射 → `FeedItem` 列表。**stricter than RSS**：source_url 用 mapper 提取的稳定字段（如 HN `id`），无则 content_hash 提供兜底。HN/GitHub/arXiv starter yaml 见 §9。
+
+#### 跨层约定
+
+- **API 路由只做路由 + 表单校验 + 调 service，不写业务** —— 与 §6 运维模式一致
+- **HTMX partial 模板继承 `_partial.html`** 避免套 base.html 完整 layout
+- **WebUI 不可用时（开发期或 oMLX 掉线期）**：模板渲染走降级分支，UI 仍可浏览已 `done` 文章，流水线状态如实展示（不隐藏）
+
 ---
 
 ## 4. LLM Provider 抽象（核心）
@@ -220,6 +287,86 @@ class GenerateResult: text: str; finish_reason: str; usage: dict | None; latency
 | `classify_topics` | JSON `{"scores":{topic_id:0.87}}` |
 | `generate_wiki_entry` | 中文 Markdown 词条 |
 | `generate_report` | 中文 Markdown |
+
+### 4.6.1 Phase 2 提示词契约展开（实施细节）
+
+#### `extract_entities`（Phase 2 切片 2.3）
+
+完整输出 schema：
+
+```json
+{
+  "entities": [
+    {
+      "name": "Qwen3",
+      "surface": "Qwen3",
+      "type": "model",
+      "aliases": ["通义千问 3", "Qwen-3", "千问三代"],
+      "description": "阿里巴巴发布的开源大语言模型系列，第三代。",
+      "canonical_name_zh": "通义千问 3",
+      "confidence": 0.92
+    }
+  ],
+  "relations": [
+    {
+      "subject": "Qwen3",
+      "predicate": "developed_by",
+      "object": "Alibaba",
+      "confidence": 0.85,
+      "evidence_span": "Qwen3 由阿里巴巴达摩院开源..."
+    }
+  ]
+}
+```
+
+**严格约束**（写入前在 `entities.upsert` 服务层校验）：
+
+1. **`grounding` 规则**：每个 entity 的 `surface` 必须在原文 `content_text` 子串内（`surface in content_text`）；若 LLM 给出的 surface 不在原文，由 `services/entities.normalize_surface()` 自动修正为原文最近邻 span，仍找不到 → `confidence *= 0.5`；找不到且无法对齐 → 丢弃
+2. **跨语言归一**：所有实体都必须有 `canonical_name_zh`（即使原文是英文，也要给中文规范化名，存 `entities.aliases_json` + `entities.canonical_name`）；形成跨语言别名岛屿统一（"OpenAI"/"开放AI" → 同一 entity）
+3. **type 枚举**：`person | org | product | model | technology | concept | event | location | other`（LLM prompt 给定）；存 `entities.entity_type`
+4. **别名合并策略**：upsert `entities` 表时按 `(entity_type, canonical_name_zh)` UNIQUE 冲突，新实体的 `aliases` 数组与既有 `aliases_json` 取并集（dedupe）
+
+#### `generate_entity_wiki` / `generate_topic_wiki`（Phase 2 切片 2.4）
+
+- **输入**：`entity_id` 或 `topic_id` + 关联文章 summaries 片段
+- **输出**：Markdown 词条
+  ```markdown
+  # 通义千问 3
+
+  **别名**：Qwen3、Qwen-3
+  **类型**：模型
+  **首次提及**：2026-08-15 in article 1234
+  **置信度**：0.92
+
+  ## 概述
+
+  通义千问 3（Qwen3）是阿里巴巴达摩院于 2025 年开源的大语言模型系列...
+
+  ## 出现文章（5 篇）
+
+  | # | 标题 | 摘要 |
+  |---|---|---|
+  | 1234 | Qwen3 发布 | ... |
+
+  ## 关系
+
+  - 由 [Alibaba](slug:entity-alibaba) 开发
+  - 同家族：[Qwen2.5](slug:entity-qwen25)
+  ```
+- **强制 constraint**：词条内容**只**引用 ground-truth 来源（相关 article_ids），不输出 LLM 自由发挥的"介绍性散文"——通过 prompt 限定 + 后处理 cite 校验
+
+#### `generate_report`（Phase 2 切片 2.5）
+
+- **输入**：`stats: dict`（schema 见 §10）+ `period: {start, end}` + `report_type: 'daily'|'weekly'`
+- **输出**：中文 Markdown 综合
+- **结构 prompt 约束**：
+  - 第 1 章：本周期概览（统计直引）
+  - 第 2 章：Top 主题 + 精华摘要（每主题一段 LLM 综合）
+  - 第 3 章：实体/关系增长（Top N）
+  - 第 4 章：源健康
+  - 第 5 章：潜在异常（队列积压、LLM 延迟飙升）
+- **style**：中性、纪实风格；不允许 LLM 制造统计量（Prompt 明确给出 `stats`，要求只引用 `stats` 中的数字）
+- **后处理**：服务端 `markdown(md, extras=['toc','fenced-code','tables'])` 渲染为 HTML，同事务写 `reports.content_html`
 
 ### 4.7 适配器层（LLMAdapter，Phase 1+）
 
@@ -419,6 +566,89 @@ CREATE TABLE fetch_events (
 );
 ```
 
+### 5.1.5 Phase 2 增量 DDL（与 §14 切片同步迁移）
+
+Phase 2 表已经在 Phase 1 DDL 预创建（`entities`、`relations`、`translations`、`reports`、`wiki_pages`），但 Phase 2 任务对字段/索引有微调，落到 Alembic 增量迁移：
+
+#### `entities` 表 Phase 2 增量（切片 2.3）
+
+```sql
+-- 弃用 canonical_name UNIQUE：跨语言/别名的 entity 必须按 (entity_type, canonical_name_zh) 归并
+ALTER TABLE entities RENAME COLUMN canonical_name TO canonical_name_zh;
+ALTER TABLE entities DROP CONSTRAINT entities_canonical_name_key;
+ALTER TABLE entities ADD CONSTRAINT entities_uniq_per_type_zh
+  UNIQUE (entity_type, canonical_name_zh);
+CREATE INDEX entities_aliases_gin_idx ON entities USING GIN (aliases_json);
+```
+
+迁移步骤：
+1. 现有数据若有 `(type='org', canonical_name='OpenAI')` 与 `(type='org', canonical_name='开放AI')` 两条，`merge_aliases()` 服务先把后者 `aliases_json` 并入前者 `aliases_json`、再 DELETE 后者
+2. 切换 UNIQUE 约束、加 GIN 索引
+
+#### `relations` 表 Phase 2 增量（切片 2.3 + 2.4）
+
+```sql
+-- 同一三元组 (s, p, o) 可能在多篇文章里出现；
+-- source_article_id 改成 JSONB 列表维护所有来源文章，避免多行 UNIQUE 冲突丢失
+ALTER TABLE relations ADD COLUMN source_articles_json JSONB NOT NULL DEFAULT '[]'::jsonb;
+ALTER TABLE relations ALTER COLUMN source_article_id DROP NOT NULL;
+CREATE INDEX relations_subject_idx ON relations (subject_id);
+CREATE INDEX relations_object_idx ON relations (object_id);
+```
+
+图谱遍历：
+
+```sql
+-- 给定实体 X 的 1-hop 邻接（subject 方向）
+SELECT r.predicate, e2.canonical_name_zh, r.confidence
+FROM relations r JOIN entities e2 ON e2.id = r.object_id
+WHERE r.subject_id = :eid
+UNION ALL
+SELECT r.predicate, e1.canonical_name_zh, r.confidence
+FROM relations r JOIN entities e1 ON e1.id = r.subject_id
+WHERE r.object_id = :eid;
+```
+
+#### `wiki_pages` 表 Phase 2 增量（切片 2.4）
+
+```sql
+-- Wiki 全文索引列（与 articles.tsv 同模式，但 Phase 1 DDL 漏了）
+ALTER TABLE wiki_pages ADD COLUMN tsv tsvector;
+CREATE INDEX wiki_tsv_idx ON wiki_pages USING GIN (tsv);
+-- search() 跨表 UNION：articles ∪ wiki_pages（§7 切片 2.6）
+```
+
+#### `reports` 表 Phase 2 增量（切片 2.5）
+
+```sql
+-- 失败可重试：需要 status / error / started_at / completed_at
+ALTER TABLE reports ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded'
+  CHECK (status IN ('pending','running','succeeded','failed'));
+ALTER TABLE reports ADD COLUMN started_at TIMESTAMPTZ;
+ALTER TABLE reports ADD COLUMN completed_at TIMESTAMPTZ;
+ALTER TABLE reports ADD COLUMN error TEXT;
+-- 同一 period 同一 type 唯一：避免日重复生成（覆盖即可）
+CREATE UNIQUE INDEX reports_period_uniq ON reports (report_type, period_start, period_end);
+```
+
+#### `processing_jobs` 任务枚举 Phase 2 增量（切片 2.3 + 2.6）
+
+```sql
+-- 当前 CHECK 已含 'summarize','translate','entities','topics','wiki','embed_core','embed_summary'
+-- Phase 2 新增：实体/主题 wiki 任务独立入队
+ALTER TABLE processing_jobs DROP CONSTRAINT processing_jobs_task_check;
+ALTER TABLE processing_jobs ADD CONSTRAINT processing_jobs_task_check
+  CHECK (task IN ('summarize','translate','extract_entities','topics','wiki',
+                  'generate_entity_wiki','generate_topic_wiki',
+                  'embed_core','embed_summary'));
+```
+
+#### DDL 迁移顺序与兼容性
+
+1. 所有 ALTER TABLE 均 `IF EXISTS/IF NOT EXISTS` 幂等（多次跑脚本不报错）
+2. 新增 CHECK 约束前先 `UPDATE processing_jobs SET task=...` 把已存在的未知 task 映射到合法值（不能因为加约束让 worker 任务跑挂）
+3. 索引加 `CONCURRENTLY`（生产无锁），dev 阶段无所谓
+
 ### 5.2 向量维度决策（MRL 截断至 1536）
 
 - `Qwen3-Embedding-8B-4bit-DWQ` **模型最大输出 4096 维**，但 pgvector HNSW 索引有 2000 维硬上限（索引元组进 8KB 页），4096 直接建不了；`halfvec` 最多 4000 仍不够
@@ -515,9 +745,82 @@ fetch → normalize → dedup(url_hash/content_hash) → clean → 入队 proces
 | `embed_core` | 1 | 新文章（title+body） | Qwen3-Embedding-8B |
 | `summarize` | 2 | 新文章；**近似去重命中后跳过**（活跃 job 走 supersede，§6 去重段） | Qwen3.8-27B |
 | `topics` | 3 | **`summarize` 落地后 + 关键词未命中**（LLM 读 `summary_zh` 而非外文全文，token 省一个量级、跨语言主题判定更稳）；主题变更（重算，限窗口见 §6） | Qwen3.8-27B |
-| `wiki` | 4 | 摘要落地后（实体 P2） | Qwen3.8-27B |
+| `extract_entities` | 3（与 topics 并列优先级；FIFO 排序选其一） | `summarize` 完成后（cascade，同事务入队）；可手动 `tc article <id> extract` | Qwen3.8-27B |
+| `wiki` | 4 | 摘要落地后（Phase 1 article wiki） | Qwen3.8-27B |
+| `generate_topic_wiki` | 5 | `topics` 完成后首次落地 / 主题关键词变更（`tc topic edit`） | Qwen3.8-27B |
+| `generate_entity_wiki` | 5（与 generate_topic_wiki 并列 FIFO） | `extract_entities` 完成后，**只在**新 entity 或 entity.description 显著变更时入队 | Qwen3.8-27B |
 | `embed_summary` | 6 | `summarize` 成功后（summary）**或手动 `tc retry summarize`**——**必须走同一条钩子 `complete_summarize()`，不能只有自动流水线触发**（否则手动重生成后 summary 向量停在旧版本） | Qwen3-Embedding-8B |
-| `translate` | 低 | lang≠zh 且用户触发 | Qwen3.8-27B |
+| `translate` | 7（最低；Phase 2 用户触发为主） | 自动：`lang != 'zh' AND` 用户设置 `ingestion.auto_translate: true`；手动：WebUI "翻译" 按钮 / `tc translate <article_id>` | Qwen3.8-27B |
+
+**Phase 2 入队补全（与 §14 切片对应）**：
+
+#### 任务级触发图
+
+```text
+新文章入库（ingest / api / scrape）：
+  └─ embed_core
+       └─ summarize (Phase 1)
+            └─ embed_summary (Phase 1)
+                 (去重命中则同事务 done; loser)
+            └─ topics (Phase 1)
+                 └─ generate_topic_wiki   (Phase 2 首次)
+            └─ extract_entities          (Phase 2 cascade)
+                 └─ generate_entity_wiki (Phase 2，仅新 entity)
+            └─ wiki (Phase 1 article wiki)
+```
+**优先级配对原则**（数字越小越先）：embed_core(1) 必然先；summarize(2) 与 extract_entities(3) 串行（summarize 先，无内容不抽实体）；topics(3) 与 extract_entities(3) 同优先级 FIFO；wiki(4) 与 generate_*_wiki(5) 严格串行；embed_summary(6) 最后。
+
+**并发冲突**：虽然 `extract_entities` 与 `topics` 同优先级 3，但 worker `pick_and_claim` 加 `FOR UPDATE SKIP LOCKED` 取一条，按 `ORDER BY priority, created_at` FIFO → 这两者按入队时间依次。**没有死锁**，因为 LLM 调用只读 `summaries` / `articles`，互不阻塞。
+
+#### `extract_entities` 详细触发
+
+- **`complete_summarize` 同事务** 入队 `extract_entities`（`enqueue_jobs(article_id, ['topics', 'extract_entities'], ...)`）
+- 若文章 `match_keywords()` 命中 → `topics` 不入队（仅 `extract_entities` 入队）
+- 手动 `tc article <id> extract`：同 `tc retry` 流程（§6），强制再跑（supersede + 新 job）
+
+#### `generate_entity_wiki` 详细触发
+
+`extract_entities` 完成后由 `complete_extract` 钩子（同事务）：
+
+```sql
+-- 对 extract_entities 输出的每个 entity，判是否需要生 wiki：
+SELECT e.id FROM entities e
+WHERE e.id = ANY(:extracted_ids)
+  AND (
+    NOT EXISTS (SELECT 1 FROM wiki_pages WHERE ref_id = e.id AND kind = 'entity')
+    OR EXISTS (
+      SELECT 1 FROM entity_change_log
+      WHERE entity_id = e.id AND changed_at > (SELECT updated_at FROM wiki_pages WHERE ref_id = e.id LIMIT 1)
+    )
+  );
+-- 命中 → enqueue_jobs 多个 generate_entity_wiki（同任务 type 共用 priority 5，FIFO）
+```
+
+`entity_change_log` 临时表（或者简单做法：每次 extract 实测时比对 `description` 是否变化 ≥ N%、aliases 是否有新项；满足则触发生成）。Phase 2 切片 2.3 实施细节定。
+
+#### `generate_topic_wiki` 详细触发
+
+`topics` 完成后由 `complete_topics` 钩子（同事务）：
+
+- **首次**：topic 完成无 wiki_page → 入队 `generate_topic_wiki`
+- **关键词变更**：用户 `tc topic edit` 或 `tc topic add` 同步触发近 30 天 reclassify（§6 主题分类规则）→ 同一事务 supersede 旧 `generate_topic_wiki` job + 入队新 job
+
+#### `translate` 详细触发
+
+- **自动**：`ingestion.auto_translate: true`（config，§9）→ `cleaner.clean_article()` 阶段在 `articles` 写入后立即 `enqueue_jobs(article_id, ['translate'], ...)`
+- **手动**：
+  - `tc translate <article_id>`：CLI 命令
+  - WebUI `/articles/{id}` 详情页 → POST `/articles/{id}/retry/translate` 入队
+- **结果落表**：`translations` 表（Phase 1 DDL 已就绪）；`articles.translated_content` **不复制**（避免双数据源，UI 查 `translations`）
+- **LLM 输入**：原文 + `key_points`（同 articles）+ `target_language: 'zh'`（prompt 强制输出简体中文，§4.6）
+- **content_hash 版本守卫**：`UNIQUE(article_id, src_lang, tgt_lang, model)` upsert + `WHERE EXCLUDED.content_hash = (SELECT content_hash FROM articles WHERE id = EXCLUDED.article_id)`（§6 `complete_*` 通用守卫，与 summaries 同模式）
+
+#### Phase 2 入队规则补充说明
+
+- **`extract_entities` / `generate_entity_wiki` / `generate_topic_wiki` 都是幂等入队**（§6 入队语义，`ON CONFLICT DO NOTHING`）：重复 cascade 不会创建重复 job
+- **`translate` 与 `summarize` 在同一篇文章上不冲突**：summarize 读 articles.content_text，translate 也读 articles.content_text；两个任务并发跑没有写竞争，content_hash 守卫各自负责（§6 状态机原子性段）
+- **`generate_*_wiki` 与 `wiki` 同帧**：article wiki 在 `summarize` 后即生成；entity/topic wiki 在 extract/classify 后才生成——它们彼此独立、不互相依赖
+- **取消 / 跳过**：用户可 `tc retry <article_id> <task>` 强制 supersede（§6 重试入口）；手动 `tc article <id> extract` 同效果
 
 **backpressure**：单次 fetch 每个 feed **入库不限**（文章全量写 `articles`，入库便宜、丢文章无法挽回），**仅限 LLM job 入队数** `ingestion.max_items_per_fetch`（默认 50），超限截断**入队**并记 `fetch_events` 水位告警——并发=1 下千条 feed 首抓会积压数小时（27B 20–60s/篇），不限流会让 `fetch_interval_hours` 越积越多。`drain_queue`（§10）每 30s 额外扫描一次补入队，**谓词精确**：`WHERE a.status='pending' AND a.dedupe_of IS NULL AND NOT EXISTS (SELECT 1 FROM processing_jobs j WHERE j.article_id=a.id)`——精确命中「被截断未入队」的文章（状态仍 pending、未被 dedup 命中、不存在任何 processing_jobs 行），**不碰任何处理过或已被 dedup 命中的文章**。旧谓词「`status='pending' 且无任何**活跃** job`」的三大连锁问题（详见 §6 文章状态机迁移触发点）：
 - 文章若实现时一直停在 `pending`（极易发生，旧文档未定义迁移触发点），处理过的文章（succeeded job 非活跃）每 30s 被重新入队——全库空转
@@ -532,6 +835,261 @@ fetch → normalize → dedup(url_hash/content_hash) → clean → 入队 proces
 - **降级**：host 持续返回 429/5xx → 进 `feeds.fetch_failures` 计数，达 `feed_disable_after` 自动禁用（§6 重试矩阵）
 
 **Phase 1 wiki 词条 `related_json` 规范**：Phase 1 不抽实体（`entities` task 不入队），`related_json` = 同主题 article 列表（来自 `article_topics`，按 `score DESC, published_at DESC` 取前 5）；P2 实体抽取上线后，`related_json` 合并"同主题 + 共现实体"两组链接
+
+### 6.X Phase 2 wiki 完整版（切片 2.4 + 2.5 / 2.6 完整 Wiki）
+
+Phase 1 wiki 仅 `kind='article'` 一种。Phase 2 完整 Wiki：每篇 wiki_pages 一篇词条，按 `kind` 分四种：
+
+#### `wiki_pages.slug` 命名规则（Phase 2）
+
+| kind | slug 模板 | 例子 |
+|---|---|---|
+| `article` | `<title-slugified>-<article_id>` | `qwen3-launches-and-evaluates-2026-1234` |
+| `topic` | `topic-<topic.name-slugified>` | `topic-rag` |
+| `entity` | `entity-<canonical_name_zh-slugified>` | `entity-tongyiqianwen-3` |
+| `manual` | 用户提供 slug（unique 校验） | `index`、`welcome` |
+
+**冲突处理**：
+- 同 `kind=article` 用 article_id 后缀即可（DB 已 UNIQUE）
+- 同 `kind=topic/entity` 用 `topic-{name}-{topic_id}` / `entity-{zh-name}-{entity_id}` 末尾追加 id 保证全局唯一
+- `kind=manual` slug 用户输入时校验 DB UNIQUE，冲突 422 + 提示已有的 slug
+
+#### `related_json` 三组合并算法（Phase 2）
+
+```sql
+-- 给定 article_id，目标：related_json = 去重、合并同篇后的 top 10
+-- 数据源：
+WITH same_topic AS (
+  SELECT a.id, a.title, at.score, 'topic' AS src
+  FROM article_topics at
+  JOIN articles a ON a.id = at.article_id
+  WHERE at.topic_id IN (SELECT topic_id FROM article_topics WHERE article_id = :aid)
+    AND a.dedupe_of IS NULL AND a.id != :aid
+  ORDER BY at.score DESC, a.published_at DESC LIMIT 5
+),
+same_entity AS (
+  SELECT a.id, a.title, 0.5 AS score, 'entity' AS src
+  FROM entities e
+  JOIN relations r ON (r.subject_id = e.id OR r.object_id = e.id)
+  JOIN articles a ON (a.id = r.source_article_id)
+  WHERE e.id IN (
+    -- 当前文章涉及的 entities（来自 article_entities 关联表，本计划未列，留 §16 限制）
+    -- Phase 2 引入 article_entities 表；切片 2.3 实施时落地
+  )
+    AND a.dedupe_of IS NULL AND a.id != :aid
+  GROUP BY a.id, a.title
+  ORDER BY COUNT(*) DESC, a.published_at DESC LIMIT 5
+),
+same_feed AS (
+  SELECT a.id, a.title, 0.3 AS score, 'feed' AS src
+  FROM articles a
+  WHERE a.feed_id = (SELECT feed_id FROM articles WHERE id = :aid)
+    AND a.id != :aid AND a.dedupe_of IS NULL
+  ORDER BY a.published_at DESC LIMIT 3
+)
+SELECT jsonb_agg(jsonb_build_object('id', id, 'title', title, 'src', src, 'score', score) ORDER BY score DESC) AS related_json
+FROM (
+  SELECT * FROM same_topic
+  UNION SELECT * FROM same_entity
+  UNION SELECT * FROM same_feed
+) all_rel LIMIT 10;
+```
+
+**输出 `related_json`**：list[dict] 每个含 `id / title / src (topic|entity|feed) / score`；store as JSONB in `wiki_pages.related_json`。前端的 wiki 页右侧栏按 `src` 分组渲染（"相关话题"、"共现实体"、"同源文章"）。
+
+#### `article_entities` 表（Phase 2 切片 2.3 必备，DDL 在此声明，迁移脚本见 §5.1）
+
+```sql
+-- 当前文章涉及的实体 = 抽取产物的落地表
+CREATE TABLE article_entities (
+  article_id BIGINT REFERENCES articles(id) ON DELETE CASCADE,
+  entity_id BIGINT REFERENCES entities(id) ON DELETE CASCADE,
+  confidence NUMERIC,
+  surface TEXT,                       -- 该 entity 在本文出现的原文子串
+  first_seen_at TIMESTAMPTZ DEFAULT now(),
+  PRIMARY KEY (article_id, entity_id)
+);
+CREATE INDEX article_entities_entity_idx ON article_entities (entity_id);
+```
+
+无此表 → `related_json` 算法拿不到"本文涉及的 entities"，等同 §16 限制。
+
+#### Wiki 渲染（Phase 2 Markdown 模板）
+
+- **article wiki**：标题 + 摘要 + 要点 + 原文链接 + `## 相关话题` + `## 共现实体` + `## 同源文章`（按 related_json 分组）+ `## 元数据` (lang, published_at, source_url)
+- **topic wiki**：定义 + 启用关键词列表 + Top 50 相关文章表格 + `## 该主题下 Top 实体`（按 article_entities 聚合）+ 元数据
+- **entity wiki**：别名卡片 + 描述 + `## 首次提及` + `## 关联文章` + `## 关系图`（ECharts 1-hop fragment）
+- **manual wiki**：完全 Markdown，用户编辑
+
+### 6.Y Phase 2 实体抽取与归并（切片 2.3 详细算法）
+
+#### `extract_entities(article_id, content_text, lang)` → 输出 → 落库
+
+```python
+async def run_extract_entities(session, job, settings, llm_client):
+    """读 article.content_text, 调 LLM, 写 entities + relations + article_entities"""
+    article_id = job["article_id"]
+    content_hash = job["content_hash"]
+    
+    art = await session.execute(
+        text("SELECT title, content_text, lang FROM articles WHERE id=:aid"), {"aid": article_id}
+    )
+    row = art.mappings().first()
+    if not row or not row["content_text"]:
+        raise PermanentError(f"article {article_id} 内容为空")
+    
+    sys_p, user_p = get_prompt(
+        "extract_entities", title=row["title"], content=row["content_text"][:8000], lang=row["lang"]
+    )
+    model = settings.llm.generate.model
+    resp = await llm_client.generate(
+        GenerateRequest(
+            model=model,
+            messages=[{"role": "system", "content": sys_p},
+                      {"role": "user", "content": user_p}],
+            json_mode=True,
+        )
+    )
+    parsed = parse_with_repair(resp.text, expected_keys=["entities", "relations"])
+    if not parsed:
+        raise PermanentError(f"JSON 解析失败: {resp.text[:200]}")
+    
+    await complete_extract(session, article_id, content_hash, parsed, settings)
+
+
+async def complete_extract(session, article_id, content_hash, parsed, settings):
+    """公共钩子（同事务）：
+    1. entities upsert（按 (entity_type, canonical_name_zh) UNIQUE 冲突；aliases/description/mention_count 合并）
+    2. grounding 校验：surface 必须在原文；不通过 confidence *= 0.5 / 丢弃
+    3. article_entities upsert（confidence, surface）
+    4. relations upsert（按 (subject_id, predicate, object_id) UNIQUE 冲突；source_articles_json 追加）
+    5. 决定 generate_entity_wiki 入队（仅 entity 是新的 / description 变更）
+    6. check_and_set_done
+    """
+    # 1. entities upsert
+    for ent in parsed.get("entities", []):
+        # grounding 校验
+        if ent.get("surface") and ent["surface"] not in content_text:
+            ent["confidence"] = (ent.get("confidence") or 0.5) * 0.5
+            if ent["confidence"] < 0.1:
+                continue  # 丢弃
+        # aliases_json 合并：现有 + 新
+        await session.execute(
+            text("""
+                INSERT INTO entities (canonical_name_zh, aliases_json, entity_type, description, mention_count, confidence)
+                VALUES (:zh, :aliases_json, :type, :desc, 1, :conf)
+                ON CONFLICT (entity_type, canonical_name_zh) DO UPDATE SET
+                  aliases_json = entities.aliases_json || EXCLUDED.aliases_json,
+                  description = CASE WHEN EXCLUDED.confidence > entities.confidence
+                                     THEN EXCLUDED.description ELSE entities.description END,
+                  mention_count = entities.mention_count + 1,
+                  confidence = GREATEST(entities.confidence, EXCLUDED.confidence),
+                  last_seen_at = now()
+            """),
+            {
+                "zh": ent["canonical_name_zh"],
+                "aliases_json": json.dumps(ent.get("aliases", []), ensure_ascii=False),
+                "type": ent.get("type", "other"),
+                "desc": ent.get("description"),
+                "conf": ent.get("confidence", 0.5),
+            }
+        )
+    
+    # 取回 entity_id 映射
+    eid_map = await _build_entity_id_map(session, parsed)
+    
+    # 3. article_entities upsert
+    for ent in parsed.get("entities", []):
+        eid = eid_map.get(ent["canonical_name_zh"])
+        if not eid:
+            continue
+        await session.execute(
+            text("""
+                INSERT INTO article_entities (article_id, entity_id, confidence, surface)
+                VALUES (:a, :e, :c, :s)
+                ON CONFLICT (article_id, entity_id) DO UPDATE SET
+                  confidence = GREATEST(article_entities.confidence, EXCLUDED.confidence),
+                  surface = EXCLUDED.surface
+            """),
+            {"a": article_id, "e": eid, "c": ent.get("confidence", 0.5), "s": ent.get("surface")}
+        )
+    
+    # 4. relations upsert
+    for rel in parsed.get("relations", []):
+        sid = eid_map.get(rel["subject"])
+        oid = eid_map.get(rel["object"])
+        if not sid or not oid:
+            continue
+        await session.execute(
+            text("""
+                INSERT INTO relations (subject_id, predicate, object_id, source_articles_json, confidence, last_seen_at)
+                VALUES (:s, :p, :o, jsonb_build_array(:aid::text), :c, now())
+                ON CONFLICT (subject_id, predicate, object_id) DO UPDATE SET
+                  source_articles_json = relations.source_articles_json || EXCLUDED.source_articles_json,
+                  confidence = GREATEST(relations.confidence, EXCLUDED.confidence),
+                  last_seen_at = now()
+            """),
+            {"s": sid, "p": rel["predicate"], "o": oid, "aid": article_id, "c": rel.get("confidence", 0.5)}
+        )
+    
+    # 5. 决定 generate_entity_wiki 入队
+    new_entity_ids = await _detect_new_or_changed_entities(session, article_id, eid_map.values())
+    if new_entity_ids:
+        await enqueue_jobs(session, article_id, ["generate_entity_wiki"], content_hash)
+    
+    # 6. done 检查
+    await check_and_set_done(session, article_id)
+
+
+async def _build_entity_id_map(session, parsed):
+    """把 parsed.entities[].canonical_name_zh 映射回 entities.id（先 INSERT 再 SELECT）"""
+    zh_names = [e["canonical_name_zh"] for e in parsed.get("entities", [])]
+    if not zh_names:
+        return {}
+    r = await session.execute(
+        text("SELECT id, canonical_name_zh FROM entities WHERE canonical_name_zh = ANY(:names)"),
+        {"names": zh_names}
+    )
+    return {row["canonical_name_zh"]: row["id"] for row in r.mappings()}
+
+
+async def _detect_new_or_changed_entities(session, article_id, entity_ids):
+    """判断哪些 entity 是新出现的 / description 改了的，需要生 wiki。
+    实现：对照 entities.description_old_json（触发器维护的旧值快照）的差异，
+    或简化为：entity 出现首次（无 article 关联历史）→ 需要 wiki。
+    本计划留具体策略给切片 2.3 实施。"""
+    ...
+```
+
+#### 实体归并算法（merge_aliases 服务）
+
+防止 LLM 在不同文章里对同一实体给出不同规范化名（"OpenAI" / "Open AI" / "开放AI" 等）：
+
+```python
+async def merge_aliases(session, alias: str, type: str, canonical_zh: str):
+    """把 alias 折叠到 canonical_zh：模糊匹配 + 人工/规则合并。
+    
+    触发场景：用户 'tc topic edit' 改关键词、用户 'tc entity merge' 命令、periodic job 扫描。
+    模糊匹配：pg_trgm (Postgres 内置) `similarity(a.canonical_name_zh, :alias) > 0.6`
+    """
+    # 1. 模糊查询候选
+    candidates = await session.execute(text("""
+        SELECT id, canonical_name_zh, aliases_json, mention_count
+        FROM entities
+        WHERE entity_type = :type
+          AND (canonical_name_zh % :alias OR :alias = ANY(SELECT jsonb_array_elements_text(aliases_json)))
+    """), {"type": type, "alias": alias})
+    # 2. 相似度 > 0.6 的合并入主实体
+    ...
+```
+
+`pg_trgm` 扩展 Phase 2 启用：`CREATE EXTENSION IF NOT EXISTS pg_trgm;`。
+
+#### 性能与可扩展性
+
+- **单篇抽取**：5–30 entity / 10–50 relations / 27B 30–60s / 篇
+- **并发=1**：~50 篇/小时 串行；后台 worker 顺序跑，可接受（Phase 1 单进程方案）
+- **批量回灌**：万篇级 P3 `tc reclassify --all` 类似 `tc extract --all`（enqueue 所有 `status='done'` 还未 `extract_entities` 的文章），放后台 worker 跑数小时；`recover_count + 1` 防崩溃续跑
 
 **主题分类规则（关键词快路径 + LLM 慢路径，P1）**：
 - **快路径（关键词预匹配）**：`match_keywords()` 对新文章 title+content 检查启用主题的关键词——命中即记 `article_topics(method='keyword')`，score 由命中强度计算（title 命中加权 + 命中词数），**命中即计入、不跑 LLM**（省调用）
@@ -723,6 +1281,164 @@ search(q):
 - **多粒度向量**：同一文章最多 3 行（title/summary/body）；`search(q)` 三粒度都参与，top-k 后按 `article_id` 去重保留最高分；`/articles/{id}/similar` 用该文章 `summary` 向量做查询，即「相关文章」
 - oMLX `/v1/embeddings` 不可用时：语义通道关闭，仅关键词（Dashboard 提示）
 
+### 7.1 Phase 2 检索增强（Rerank + 相似文章 + Wiki 跨表检索，§14 切片 2.6）
+
+#### Rerank 路径（Cohere 风格入参，§15 #9）
+
+```python
+async def search(
+    q: str,
+    *,
+    use_rerank: bool = False,
+    mode: Literal["hybrid", "semantic", "keyword"] = "hybrid",
+    page: int = 1,
+    page_size: int = 20,
+    filters: SearchFilters | None = None,
+) -> SearchResult:
+    ...
+    # 1) 走 §7 Phase 1 算法拿混合 top-N（N=60）
+    candidates: list[Candidate] = await _rrf_fuse(q, top_n=60, filters=filters)
+    # candidates 含 {article_id, title, snippet, rrf_score, source: article|wiki}
+    
+    # 2) 可选 rerank
+    if use_rerank:
+        try:
+            docs = [c.title + "\n" + c.snippet for c in candidates]
+            reranked = await llm.rerank(q, docs, top_n=len(docs))
+            candidates = [candidates[i] for i in reranked]
+        except (NotImplementedError, httpx.HTTPStatusError, asyncio.TimeoutError):
+            # 降级链：oMLX /v1/rerank 不可用 → 进程内 bge-reranker-v2-m3
+            try:
+                candidates = await _rerank_local_bge(q, candidates)
+            except Exception:
+                # 双层降级都失败 → 不重排（保持 RRF 顺序）
+                logger.warning("rerank 不可用，使用 RRF 顺序")
+    
+    # 3) 分页
+    return SearchResult(items=candidates[(page-1)*page_size : page*page_size], total=N)
+```
+
+#### Rerank 入参（PRD §8 已实测 oMLX 支持）
+
+```http
+POST {omlx_base}/v1/rerank
+Authorization: (本机不鉴权)
+Content-Type: application/json
+
+{
+  "model": "Qwen3-Reranker-4B-mxfp8",
+  "query": "RAG 系统性能优化",
+  "documents": ["<doc1>", "<doc2>", ...],
+  "top_n": 20
+}
+```
+
+**出参**：
+
+```json
+{
+  "results": [
+    {"index": 4, "relevance_score": 0.92},
+    {"index": 1, "relevance_score": 0.81},
+    ...
+  ]
+}
+```
+
+**降级**：oMLX `/v1/rerank` → 进程内 `bge-reranker-v2-m3`（用 transformers 库，懒加载，~3GB 内存驻留）→ 不重排（仅 RRF）。降级链由 `LLMClient.rerank()` 内置 try/except 透明处理。
+
+#### 进程内 bge-reranker-v2-m3 集成（降级层）
+
+```python
+# app/llm/local_reranker.py（仅在 oMLX /v1/rerank 不可用时实例化）
+from sentence_transformers import CrossEncoder
+import threading
+
+_local_reranker: CrossEncoder | None = None
+_local_reranker_lock = threading.Lock()
+
+def get_local_reranker() -> CrossEncoder:
+    global _local_reranker
+    if _local_reranker is None:
+        with _local_reranker_lock:
+            if _local_reranker is None:
+                _local_reranker = CrossEncoder("BAAI/bge-reranker-v2-m3")
+    return _local_reranker
+```
+
+仅懒加载第一次 `LLMClient.rerank()` 失败后实例化（避免默认占用 3GB 内存）。
+
+#### Wiki 跨表检索（search() 一并支持）
+
+```sql
+-- articles UNION wiki_pages 后 RRF 融合
+WITH semantic_articles AS (
+  SELECT article_id AS ref_id, 'article' AS kind, vector <=> :q_vec AS distance
+  FROM article_embeddings WHERE model = :active_model
+  ORDER BY distance LIMIT 60
+),
+semantic_wikis AS (
+  -- Wiki 无独立向量，靠相关 article 的相关性传递（rank boost）
+  SELECT wp.id AS ref_id, 'wiki' AS kind, sa.distance * 1.05 AS distance
+  FROM semantic_articles sa
+  JOIN wiki_pages wp ON wp.kind IN ('article','topic','entity')
+                     AND (wp.kind='article' AND wp.ref_id=sa.ref_id
+                          OR wp.kind='topic' AND wp.ref_id IN (...))  -- 该文章所属 topic 的 wiki
+  ...
+  ORDER BY distance LIMIT 60
+),
+keyword_articles AS (
+  SELECT id AS ref_id, 'article' AS kind, ts_rank(tsv, websearch_to_tsquery('simple', :q)) AS rank
+  FROM articles WHERE tsv @@ websearch_to_tsquery('simple', :q) LIMIT 60
+),
+keyword_wikis AS (
+  SELECT id AS ref_id, 'wiki' AS kind, ts_rank(tsv, websearch_to_tsquery('simple', :q)) AS rank
+  FROM wiki_pages WHERE tsv @@ websearch_to_tsquery('simple', :q) LIMIT 60
+)
+-- RRF 融合四个集合，按 ref_id + kind 去重（一篇 wiki + 一篇 article 不同 kind 都计入）
+```
+
+**Wiki 全文索引列**（`wiki_pages.tsv`）在 §5.1.5 已声明；触发器维护：`BEFORE INSERT OR UPDATE ON wiki_pages` 执行 `NEW.tsv = to_tsvector('simple', jieba_join(NEW.title || ' ' || NEW.content_md))`。
+
+#### 相似文章推荐（Phase 2 切片 2.6）
+
+`GET /api/articles/{id}/similar?top_k=10`
+
+```sql
+SELECT a.id, a.title, ae.vector <=> target.vector AS distance, at.score AS topic_score
+FROM article_embeddings target
+JOIN article_embeddings ae ON ae.model = target.model
+                           AND ae.kind = 'summary'
+                           AND ae.article_id != target.article_id
+JOIN articles a ON a.id = ae.article_id
+WHERE target.article_id = :aid AND target.kind = 'summary'
+  AND a.dedupe_of IS NULL
+  AND a.lang = (SELECT lang FROM articles WHERE id = :aid)
+ORDER BY distance
+LIMIT :top_k * 3;  -- 取 3 倍候选再做主题加权
+
+-- 同主题文章额外加分（已在 article_topics 里的）
+SELECT art.*, 1.0 / (1 + distance) + COALESCE(topic_score, 0) * 0.3 AS combined_score
+FROM ... ORDER BY combined_score LIMIT :top_k;
+```
+
+Phase 1 仅做纯向量 top-k，Phase 2 加入"同主题加权"提升相关性。
+
+#### 检索结果展示（Phase 2）
+
+WebUI `/search` 页：
+- 顶部：高级筛选（feed/topic/lang/status/date range）
+- 中部：混合结果 list，每条含 kind 标识（article/wiki）、title、snippet 高亮、score 列
+- Wiki 结果与 article 结果视觉同等权重，UI 上方有 toggle "全部 / 仅文章 / 仅 Wiki"
+- 右侧栏：相关实体卡片（聚合本批结果的 entities top 5）
+
+#### 性能约束（P95 < 100ms）
+
+- 语义通道：`ef_search=64`（§5.2 已配置），N=60 召回 + rerank < 50ms
+- 关键词通道：tsvector 命中几十条，rank + 高亮 < 20ms
+- Wiki 跨表 UNION：与文章同量级
+- LLM rerank（oMLX）：本地 27B 60 docs ~1-3s（不阻塞首屏，可异步二次渲染）
+
 ---
 
 ## 8. RESTful API / Web 路由（Phase 2：WebUI）
@@ -744,6 +1460,107 @@ Web 页面（Jinja2 服务端渲染 + HTMX 片段）+ 少量 JSON 端点。**Pha
 | `GET /reports`，`GET /reports/{id}` | 报告列表/渲染（P2） |
 
 **内部约定**：FastAPI lifespan 启动顺序 = init_db（校验 vector 扩展/维度=1536）→ 探测 oMLX 三端点 → `recover_interrupted()`（**租约回收**：仅回收 `status='running' AND lock_until<now()` 的过期行，**先于 worker 启动**，避免与新领取竞争）→ 启动 scheduler + worker task。
+
+### 8.1 Phase 2 路由详细规格（实施蓝图）
+
+Phase 1 仅 CLI 入口，Phase 2 起 WebUI。**核心约定**：API 路由**只做**路由 + 表单校验 + 调 service（薄壳），业务逻辑全在 `app/services/`；HTMX partial swap 走 `_partial.html` 子模板（避免每次都套 base layout）。
+
+| Method+Path | 模板 | 关键参数 | 错误码 | 备注 |
+|---|---|---|---|---|
+| `GET /` | `overview.html` | — | 500 | 渲染统计卡片、queue 表、最近 20 articles、LLM 健康横幅 |
+| `GET /api/health` | JSON | — | 200 / 503 | `{llm_healthy, queue_depth, last_healthcheck_at}`，HTMX `hx-get` 每 30s |
+| `GET /feeds` | `feeds/list.html` | `?type=rss\|api\|scrape&enabled=` | 200 | 表格 + 状态徽标（healthy/degraded/disabled） |
+| `GET /feeds/new` | `feeds/edit.html` | — | 200 | 新增表单 |
+| `POST /feeds` | redirect → `/feeds/{id}` | form: `name,url,type,enabled,config_json` | 422 | type=rss/api/scrape；config_json 按 type schema 校验 |
+| `GET /feeds/{id}/edit` | `feeds/edit.html` | path: feed_id | 404 | 编辑表单 |
+| `POST /feeds/{id}` | redirect → `/feeds/{id}` | form | 422 / 404 | 更新 |
+| `POST /feeds/{id}/fetch` | partial swap | — | 404 / 503 | 立即抓取一次（HTMX 显示 toast） |
+| `POST /feeds/{id}/disable` | partial swap | — | 404 | 禁用；不删记录 |
+| `GET /articles` | `articles/list.html` | `?feed=&topic=&status=&q=&page=` (size=20) | 200 | 筛选表格 + FTS 搜索框 + 分页 + 多选批量重试 |
+| `GET /articles/{id}` | `articles/detail.html` | path | 404 | 7 个 Tab：原文/摘要/翻译/实体/相关话题/Wiki；状态栏 |
+| `POST /articles/{id}/retry/{task}` | partial swap | path: id, task | 404 / 422 | task ∈ summarize\|extract_entities\|topics\|wiki\|translate\|embed_core\|embed_summary |
+| `POST /articles/{id}/undedupe` | redirect → `/articles/{id}` | path | 404 | 清 dedupe_of + status='processing'（让重跑全任务） |
+| `GET /api/articles/{id}/similar` | JSON | `?top_k=10` | 404 | 相似文章（§7.1） |
+| `GET /wiki` | `wiki/index.html` | `?kind=article\|topic\|entity\|manual&q=` | 200 | 按 kind 分组的卡片索引 |
+| `GET /wiki/{slug}` | `wiki/page.html` | path | 404 | 渲染 Markdown + 元数据 + related_json 三栏 |
+| `GET /wiki/{slug}/raw` | markdown 文本 | path | 404 | 导出用，HTML 自动渲染关闭 |
+| `GET /search` | `search/results.html` | `?q=&mode=hybrid\|semantic\|keyword&use_rerank=true&page=` | 200 | 混合结果 + 高亮 + facets |
+| `GET /graph` | `graph/page.html` | — | 200 | ECharts 力导向图 + 筛选面板 |
+| `GET /api/graph.json` | JSON | `?topic_id=&entity_type=&since_days=&max_nodes=300` | 422 | 图谱数据（§6.4 切片） |
+| `GET /topics` | `topics/list.html` | `?enabled=` | 200 | 跨源聚合表：主题×源×文章数 |
+| `GET /topics/new` | `topics/edit.html` | — | 200 | 新增表单 |
+| `POST /topics` | redirect → `/topics/{id}` | form: `name,keywords_csv,description` | 422 | 同步触发近 30 天 reclassify（§6 主题分类规则） |
+| `GET /topics/{id}/edit` | `topics/edit.html` | path | 404 | |
+| `POST /topics/{id}` | redirect → `/topics/{id}` | form | 422 / 404 | 改关键词同步触发 |
+| `POST /topics/{id}/reclassify` | partial swap | path | 404 | 手动触发近窗重算（§6 reclassify_recent_days） |
+| `GET /reports` | `reports/list.html` | `?report_type=daily\|weekly&limit=` | 200 | 报告卡片列表 |
+| `GET /reports/{id}` | `reports/view.html` | path | 404 | Markdown 渲染 + TOC + 元数据 + 重试按钮 |
+| `GET /reports/{id}/export.md` | markdown 文本 | path | 404 | Markdown 下载 |
+| `POST /reports/{id}/retry` | partial swap | path | 404 | 重新生成（覆盖原 content） |
+| `GET /settings` | `settings/page.html` | — | 200 | LLM 模型配置、并发、调度时间 |
+| `POST /settings` | partial swap → reload | form | 422 | 部分字段需重启 worker 才生效，UI 提示 |
+
+#### HTMX 策略
+
+| 场景 | 模式 |
+|---|---|
+| **列表筛选/翻页/排序** | `hx-get="..." hx-target="#list-region" hx-swap="innerHTML" hx-push-url="true"` |
+| **表单 POST** | `hx-post="..." hx-target="#result-region" hx-swap="innerHTML"` → 服务端返回 toast partial |
+| **长操作**（retry/fetch-now） | `hx-post hx-trigger="click"` + `hx-indicator="#spinner-{id}"` + spinners |
+| **健康横幅轮询** | `<div hx-get="/api/health" hx-trigger="every 30s" hx-swap="outerHTML">` |
+| **图表 lazy mount** | ECharts 客户端 init，server 端仅返回 option JSON |
+| **无限滚动**（articles list） | `IntersectionObserver` + `hx-get` `hx-trigger="revealed"` |
+
+#### 健康横幅与 LLM 状态显示
+
+- 顶部 `<div id="llm-status-bar" hx-get="/api/health" hx-trigger="every 30s">`
+- 内容：绿色 `✅ LLM healthy (omlx, 180ms)` / 黄色 `⚠ LLM degraded (5xx 3/10 in last min)` / 红色 `❌ LLM down (last healthcheck 4m ago)` / 灰色 `unknown`
+- HTMX swap outerHTML 自然更新 banner
+
+#### 错误形态（HTTP 状态码）
+
+| 状态 | 触发场景 | 渲染 |
+|---|---|---|
+| 200 / 302 | 正常 | base.html 渲染 |
+| 400 | JSON 解析失败（worker 日志） | 不进 UI：CLI `tc status` 看 |
+| 404 | 路由 / ref_id / slug 找不到 | `errors/404.html` |
+| 422 | 表单字段校验失败（pydantic ValidationError） | `errors/422.html` + 字段错误高亮 |
+| 500 | DB down / templates 渲染失败 | `errors/500.html` + 错误栈（dev）/ 友好页（prod，DEV mode flag） |
+| 503 | LLM down + 用户操作需要 LLM | toast："LLM 不可用，操作暂存队列等恢复" |
+
+#### Vendored 资源（无 CDN，离线可用）
+
+```
+app/static/
+├── htmx.min.js          # 1.x latest
+├── echarts.min.js       # 5.x latest（force-graph / force-layout）
+├── sortable.min.js      # 列表排序（如 dashboard 拖卡片）
+├── pico.min.css         # classless CSS，10KB
+└── app.js               # 自写：sidebar 折叠、图表初始化、htmx 配置
+```
+
+注：**不使用 build pipeline**（无 webpack/vite），所有 JS 通过 `<script src="/static/...js">` 直接引入；CSS 走 `<link rel="stylesheet">`。`base.html` 头部聚合，模板继承避免重复加载。
+
+#### WebUI 单页预算
+
+- 静态资源总预算 ≤ 200KB gzip（htmx 14KB + echarts 150KB + sortable 11KB + pico 10KB + app.js 5KB）
+- 首屏 SSR：Jinja2 渲染（不进客户端 bundle，原始 HTML）
+- 后端耗时目标：列表页 < 200ms / 详情页 < 300ms / 图谱页 JSON < 500ms（含 PG 查询）
+
+#### API 路由命名约定（与 `app/api/*.py` 文件对应）
+
+| 路由文件 | 含 routes |
+|---|---|
+| `dashboard.py` | `/`, `/api/health`, `/api/llm-status` |
+| `settings.py` | `/settings` |
+| `feeds.py` | `/feeds*` |
+| `articles.py` | `/articles*`, `/api/articles/{id}/similar` |
+| `wiki.py` | `/wiki*` |
+| `search.py` | `/search` |
+| `graph.py` | `/graph`, `/api/graph.json` |
+| `topics.py` | `/topics*` |
+| `reports.py` | `/reports*` |
+| `health.py` | `/api/health`（或并入 dashboard.py） |
 
 ---
 
@@ -840,6 +1657,333 @@ feeds:
 | weekly_report | 周一 08:00 | 周报（P2） |
 | healthcheck | 每 5m | LLM 健康探测，更新 `LLMClient.healthy` 与 Dashboard 横幅；Phase 1 单进程下与 worker 共享 `healthy`，worker 仍保留自探测兜底（§4.4 / §6，掉线可能发生在两次探测之间） |
 
+### 10.1 Phase 2 报告（切片 2.5 完整设计）
+
+#### `reports.stats_json` schema（每日）
+
+```json
+{
+  "period": {
+    "start": "2026-08-19T00:00:00+08:00",
+    "end":   "2026-08-19T23:59:59+08:00"
+  },
+  "articles_total": 23,
+  "articles_by_source": [
+    {"feed_id": 1, "name": "Hacker News", "count": 12},
+    {"feed_id": 4, "name": "TechCrunch", "count": 8},
+    {"feed_id": 2, "name": "arXiv cs.CL", "count": 3}
+  ],
+  "summaries_generated": 23,
+  "embeddings_generated": 92,
+  "topics_top": [
+    {"topic_id": 3, "name": "RAG", "delta_articles": 5, "delta_articles_prev_week": 2},
+    {"topic_id": 1, "name": "LLM Agent", "delta_articles": 3}
+  ],
+  "entities_new": 47,
+  "relations_new": 112,
+  "graph_delta": {
+    "nodes_added": 47,
+    "edges_added": 112,
+    "top_new_entities": [
+      {"id": 12, "canonical_name_zh": "通义千问 3", "entity_type": "model", "mention_count": 7}
+    ]
+  },
+  "queue_stats": {
+    "queued": 0,
+    "running": 2,
+    "failed": 1,
+    "succeeded_today": 19,
+    "consecutive_failures": 0
+  },
+  "feed_health": {
+    "healthy": 8,
+    "degraded": 1,
+    "disabled": 0,
+    "degraded_list": [{"feed_id": 2, "failures": 3}]
+  },
+  "llm": {
+    "latency_p95_ms": 28400,
+    "requests_count": 86,
+    "errors_count": 2,
+    "token_est": {"prompt": 312000, "completion": 87000}
+  }
+}
+```
+
+#### 周报 `stats_json` 增量字段
+
+```json
+{
+  "topics_top20": [...],                 // 替代 topics_top
+  "topic_essays": {                       // 每个主题一段 LLM 综合（不写回 table，stats 内联）
+    "3": "RAG 本周热度继续上升 ... 关键文章 5 篇集中在 ...",
+    "1": "LLM Agent 在 X、Y、Z 文章中提到 ..."
+  },
+  "graph_growth": {
+    "nodes_added_total": 312,
+    "edges_added_total": 870,
+    "top_new_entities": [...],
+    "top_new_relations": [{"subject_id": 12, "predicate": "developed_by", "object_id": 8}]
+  },
+  "storage_advice": "本周新增 0.5GB，建议 P3 启动 article_versions 裁剪任务"  // (P2 月报)
+}
+```
+
+#### 报告生成算法（`app/services/reports.py`）
+
+```python
+async def generate_daily_report(session, report_dt: datetime):
+    report_id = await _create_pending_report(session, "daily", period_start, period_end)
+    try:
+        # 1. SQL 聚合 → stats dict
+        stats = await _aggregate_stats(session, period_start, period_end)
+        # 2. LLM 综合
+        sys_p, user_p = get_prompt(
+            "generate_report",
+            report_type="daily", stats=json.dumps(stats, ensure_ascii=False),
+            period_start=period_start.isoformat(), period_end=period_end.isoformat(),
+        )
+        resp = await llm_client.generate(GenerateRequest(
+            model=settings.llm.generate.model,
+            messages=[{"role": "system", "content": sys_p}, {"role": "user", "content": user_p}],
+            json_mode=False,
+        ))
+        content_md = resp.text.strip()
+        # 3. Markdown → HTML 渲染
+        content_html = markdown(content_md, extensions=["toc", "fenced_code", "tables"])
+        # 4. 同事务写 content_md + content_html + stats_json + 状态 succeeded
+        await session.execute(text("""
+            UPDATE reports
+            SET status='succeeded', content_md=:md, content_html=:html,
+                stats_json=:stats_json::jsonb, completed_at=now()
+            WHERE id=:rid
+        """), {"rid": report_id, "md": content_md, "html": content_html, "stats_json": json.dumps(stats)})
+        await session.commit()
+    except Exception as e:
+        await _mark_failed(session, report_id, str(e))
+        raise
+
+
+async def _aggregate_stats(session, period_start, period_end) -> dict:
+    """单 SQL 查询聚合所有维度；失败/重试拆分；entity 取 top 5"""
+    r = await session.execute(text("""
+        SELECT
+          (SELECT COUNT(*) FROM articles WHERE created_at BETWEEN :s AND :e AND dedupe_of IS NULL) AS articles_total,
+          (SELECT jsonb_agg(jsonb_build_object('feed_id', f.id, 'name', f.name, 'count', c.cnt) ORDER BY c.cnt DESC)
+           FROM (SELECT feed_id, COUNT(*) cnt FROM articles
+                 WHERE created_at BETWEEN :s AND :e AND dedupe_of IS NULL
+                 GROUP BY feed_id) c JOIN feeds f ON f.id = c.feed_id) AS articles_by_source,
+          ...
+    """), {"s": period_start, "e": period_end})
+    return r.mappings().first()  # dict
+```
+
+**伪 SQL 实际由 SQL 聚合查询拆解填充，详情留给切片 2.5 实施。**
+
+#### scheduler 触发
+
+```python
+# app/scheduler.py 新增
+
+scheduler.add_job(
+    generate_daily_report,
+    CronTrigger(hour=8, minute=0),
+    args=[],  # 用 now() 自取当日
+    id="daily_report",
+    name="Generate daily report at 08:00",
+    replace_existing=True,
+)
+scheduler.add_job(
+    generate_weekly_report,
+    CronTrigger(day_of_week="mon", hour=8, minute=0),
+    args=[],
+    id="weekly_report",
+    name="Generate weekly report Mon 08:00",
+    replace_existing=True,
+)
+```
+
+**周期定义集中在 `app.config.ScheduleSettings`**（§9）：
+- `daily_report_hour: int = 8` / `daily_report_minute: int = 0`
+- `weekly_report_day_of_week: str = 'mon'` / `weekly_report_hour: int = 8`
+
+#### 失败重试策略
+
+- 报告生成失败（如 LLM 503、Markdown 解析失败）→ `_mark_failed` 写 `reports.status='failed'` + `reports.error`
+- WebUI `/reports/{id}` 显示"上次生成失败，[立即重试]"按钮 → `POST /reports/{id}/retry` 调 `generate_daily_report(force_overwrite=True)`
+- 同一 `(report_type, period_start, period_end)` 唯一 → 重试覆盖旧记录
+
+### 10.2 Phase 2 API 连接器（切片 2.7 完整设计）
+
+#### `feeds.config_json` schema（按 `type='api'`）
+
+```json
+{
+  "endpoint": "https://hacker-news.firebaseio.com/v0/topstories.json",
+  "method": "GET",
+  "headers": {"User-Agent": "topic_collection/0.1"},
+  "params": {},
+  "auth": null,
+  "rate_limit_per_hour": 60,
+  "items_path": "$",                     // jmespath：从返回 JSON 提取 id 列表
+  "id_to_detail": {                      // 拿 detail：每个 id 调一次
+    "endpoint_template": "https://hacker-news.firebaseio.com/v0/item/{id}.json",
+    "method": "GET"
+  },
+  "mapper": {
+    "title":    "title",
+    "url":      "url",
+    "author":   "by",
+    "time":     "time",                   // epoch seconds
+    "content":  ["text", "url"]           // jmespath 路径或 [field_for_text, fallback_url]
+  },
+  "language_hint": "en"                   // 默认 en，可选
+}
+```
+
+#### `app/ingest/api.py: fetch_api(feed) -> list[FeedItem]`
+
+```python
+async def fetch_api(feed: FeedRow) -> list[FeedItem]:
+    cfg = feed["config_json"]
+    async with httpx.AsyncClient(timeout=30, headers=cfg.get("headers", {})) as client:
+        # 1. 拉列表
+        resp = await client.request(cfg["method"], cfg["endpoint"], params=cfg.get("params", {}))
+        resp.raise_for_status()
+        ids = jmespath.search(cfg["items_path"], resp.json()) or []
+        # 2. 拉详情（每个 id）
+        results: list[FeedItem] = []
+        for id_ in ids[: feed.get("max_items_per_fetch", 50)]:
+            detail_url = cfg["id_to_detail"]["endpoint_template"].format(id=id_)
+            detail = await client.request(cfg["id_to_detail"]["method"], detail_url)
+            detail.raise_for_status()
+            doc = detail.json()
+            results.append(_map_to_feed_item(doc, cfg["mapper"], cfg.get("language_hint")))
+        return results
+
+
+def _map_to_feed_item(doc: dict, mapper: dict, lang: str) -> FeedItem:
+    return FeedItem(
+        source_url=jmespath.search(mapper["url"], doc) or "",
+        title=jmespath.search(mapper["title"], doc) or "(no title)",
+        author=jmespath.search(mapper["author"], doc) or "",
+        published_at=datetime.fromtimestamp(jmespath.search(mapper["time"], doc), tz=UTC),
+        content_text=jmespath.search(mapper["content"], doc) or "",
+        lang=lang,
+    )
+```
+
+#### Starter 配置示例（HN / GitHub / arXiv）
+
+```yaml
+# HN top stories → 在 config/feeds.yaml（用户后续编辑）
+- name: "Hacker News Top"
+  type: api
+  url: https://hacker-news.firebaseio.com/v0/topstories.json
+  enabled: true
+  config:
+    endpoint: https://hacker-news.firebaseio.com/v0/topstories.json
+    method: GET
+    rate_limit_per_hour: 60
+    items_path: $
+    id_to_detail:
+      endpoint_template: https://hacker-news.firebaseio.com/v0/item/{id}.json
+      method: GET
+    mapper:
+      title: title
+      url: url
+      author: by
+      time: time
+      content: text
+    language_hint: en
+
+- name: "GitHub Trending"
+  type: api
+  url: https://api.github.com/search/repositories
+  enabled: true
+  config:
+    endpoint: https://api.github.com/search/repositories
+    method: GET
+    params:
+      q: "created:>YYYY-MM-DD"
+      sort: stars
+    headers:
+      Accept: application/vnd.github+json
+    rate_limit_per_hour: 60
+    items_path: items
+    mapper:
+      title: full_name
+      url: html_url
+      author: owner.login
+      time: created_at
+      content: description
+    language_hint: en
+
+- name: "arXiv cs.CL"
+  type: api
+  url: http://export.arxiv.org/api/query
+  enabled: true
+  config:
+    endpoint: http://export.arxiv.org/api/query
+    method: GET
+    params:
+      cat: cs.CL
+      max_results: 50
+      sortBy: submittedDate
+      sortOrder: descending
+    rate_limit_per_hour: 30
+    items_path: feed.entry
+    mapper:
+      title: title
+      url: id
+      author: author.name
+      time: published
+      content: summary
+    language_hint: en
+```
+
+#### API 连接器 vs RSS 的差异
+
+- **速率更严**：API 通常有 hourly quota (`GitHub 60/h 未鉴权, 5000/h 鉴权`)，由 `config.feeds[i].config.rate_limit_per_hour` 控制；超出限速本批失败，记 `fetch_events(event_type='rate_limit')`
+- **认证**：Bearer / API key 等在 `config.headers` 注入；token 不入 yaml → 占位 `${GITHUB_TOKEN}` 渲染时从 env 读
+- **错误形态**：HTTP 4xx → `fetch_events(event_type='api_auth_error')`，连续 N 次禁用；429 → 退避重试（与 RSS 相同的 `feed_disable_after` 机制）
+- **content 抓取**：API 连接器自己拉 detail（HN/Reddit 等模式），不用 `scrape.py` 抓详情页——降低对站点的依赖
+
+### 10.3 Phase 2 CLI 命令扩展（与 §4 F11 对齐）
+
+Phase 1 CLI（§3 / PRD §4 F11）：`feeds import | fetch | topic add | topic list | summarize | list | search | article | status | retry | backup`。
+
+Phase 2 加：
+
+| 命令 | 切片 | 含义 |
+|---|---|---|
+| `tc reclassify [--all] [--topic <id>] [--days <N>]` | 2.3 + 2.5 兜底 | 主题关键词全量重算。默认仅重算近 30 天（复用 `topics.reclassify_recent_days`，§9）；`--all` 强制全量；`--topic <id>` 仅重算该主题；写 `match_keywords()` + 入队 `topics` job 或补 `generate_topic_wiki` |
+| `tc extract <article_id>` | 2.3 | 手动入队 `extract_entities` 任务（supersede 旧 + 新 job），同 `tc retry` 流程 |
+| `tc translate <article_id> [--force]` | 2.2 | 手动入队 `translate`；`--force` 强制 supersede（即便已存在翻译） |
+| `tc entity merge <canonical_zh_a> <canonical_zh_b>` | 2.3 | 把 A 的所有引用、提及、aliases 合并到 B（merge_aliases 服务），A 软删除或保留？本计划选软删除：`status='merged'` 字段（Phase 2 增量） |
+| `tc entity search <query>` | 2.3 | CLI 直接查实体（不像 WebUI 走 `/api/entities?q=`，CLI 直接调 `services.entities.resolve_entity`） |
+| `tc report list [--type daily\|weekly] [--limit 20]` | 2.5 | 查看历史报告 |
+| `tc report show <id>` | 2.5 | 终端渲染 Markdown（rich 渲染）或纯文本打印 content_md |
+| `tc report export <id>` | 2.5 | 写到 `data/reports/report-{type}-{period}.md` |
+| `tc report retry <id>` | 2.5 | 重新生成（覆盖 reports 行） |
+| `tc graph export [--topic <id>] [--since <days>] [--out data/graphs/x.json]` | 2.4 | 导出 `services.graph.graph_json()` JSON |
+| `tc graph stats` | 2.4 | 节点 / 边 / top 实体统计 |
+| `tc search --rerank` | 2.6 | 走 `search(use_rerank=True)` 路径，ranking 给分 |
+| `tc backfill extract_entities [--all]` | 2.3 兜底 | 给历史 done 文章补 extract；并发=1 按时间倒序 enqueue（运行时间可能数小时，不阻塞 worker） |
+
+#### CLI 与 WebUI 的关系
+
+- CLI = 单机调试 / 脚本化运维；WebUI = 日常浏览
+- 一份 service 层（`app/services/*.py`）两端共享
+- CLI 不发 HTTP 给 WebUI（避免 uvicorn 启动依赖，反向亦不可行）
+- 进度显示：CLI 长操作（`extract --all`、`backfill`）用 `rich.progress`；WebUI 长操作用 htmx spinner + toast
+
+#### 性能预算
+
+- `tc reclassify`（仅 30 天）：万级 articles 也只需几分钟（`match_keywords` 内存 jieba 匹配，无 LLM 调用）
+- `tc backfill extract_entities`（万级）：27B 50 秒/篇 × 10000 = 数小时；放后台跑，提供进度条 + 中断恢复
+- `tc report generate --now`：直接调 `generate_daily_report`，不等待 scheduler；调试用
+
 ---
 
 ## 11. 错误处理与降级总表
@@ -881,6 +2025,20 @@ feeds:
 - **db**：pytest + 临时 Postgres（docker compose 测试库）；向量维度校验用例
 - **降级**：mock `/v1/embeddings` 404 → 断言语义通道降级
 - **结构化日志（D4）**：**双 sink**——① 结构化 JSON（job 级规约 `job_id/task/attempt/latency_ms/error_class`，写 `logs/tc-YYYYMMDD.jsonl`，供 `tc status` 排障与 grep）② 人类可读 Rich 控制台滚动日志（PRD §13，开发期终端实时看）。二者经同一 `logging` 配置分流到不同 handler、不互斥；卡住的 running job 可凭 JSON 日志定位（`tc status` 的排障底座）。`error_class` 与 §5.1 `processing_jobs.error_class` 对齐（transient/permanent）
+
+### 13.1 Phase 2 测试分类（切片 2.1–2.7 配套）
+
+| 类别 | 切片 | 测试形态 |
+|---|---|---|
+| **D7 WebUI smoke** | 2.1 | FastAPI TestClient + Jinja2 templates → 字符串包含关键文案（"LLM 健康"、"队列"、"搜索"等）；不测视觉；POST 路由用 form/CSRF token；HTMX 部分路由通过 `HX-Request: true` header 触发并断言返回 partial 不含 `<html>` / 含 htmx-triggered swap target |
+| **D8 实体归并** | 2.3 | `services.entities.upsert_entities` 幂等 + 别名合并；`merge_aliases` 折叠 OpenAI/开放 AI 到同一 entity；`extract_entities` 完整 pipeline（用 FakeLLM 回放 fixture `entities_fixture.json`）→ 断言 article_entities / relations / entities 三表行数 + relations.source_articles_json |
+| **D9 报告 schema** | 2.5 | `_aggregate_stats` 跑真实 DB（test seed）→ 断言 `stats_json` 字段全；`_render_html` 输入 Markdown → 输出 HTML 不为空 + 含 `<h1>`/`<table>` 等；`generate_daily_report` 跑通（FakeLLM）→ reports.status 变 succeeded + content_md / content_html / stats_json 三字段都写 |
+| **D10 图谱 + 搜索扩展** | 2.4 + 2.6 | `graph_json(filters=...)` 返回 `{categories, nodes, links}` 三字段全；每个 link 含 subject/object/predicate/confidence；ECharts 兼容（与 echarts.min.js 一致字段名）。`search(use_rerank=True)` 在 FakeLLM 下返回按相关性排序结果；`similar(article_id)` 按 HNSW 距离排序 |
+| **D11 翻译完整** | 2.2 | `services.translations.upsert_translation` content_hash 守卫；`run_translate` 走 FakeLLM `translate` fixture 回放；tc translate CLI + WebUI POST 都入队正确 |
+| **D12 API 连接器** | 2.7 | `fetch_api(feed)` mock httpx 返回 fixture → list[FeedItem] 字段映射正确；jmespath 提 items / 模板 URL 渲染；rate_limit_per_hour 触发 fetch_events |
+| **D13 DDL 迁移幂等** | 2.3–2.6 | `alembic upgrade head` 重复执行不报错；降级回滚后数据一致；DDL 增量 §5.1.5 跨表引用不漏 |
+| **D14 CLI smoke** | 2.3–2.7 | `tc reclassify --all`、`tc report export`、`tc graph export`、`tc translate` 全跑 typer 入口 → 不抛异常 + 输出符合预期格式 |
+| **D15 性能基准 (Phase 2 维度)** | 2.6 | search P95 < 100ms（万级向量 + Wiki 跨表）；图谱 JSON 序列化 < 500ms（300 节点）；报告生成 end-to-end < 60s（含 LLM FakeLLM 即时回放，但 schema 聚合 < 5s） |
 
 ---
 
@@ -940,6 +2098,75 @@ feeds:
   - handler 成功返回后**统一**写 `status='succeeded'`（process_job_with_lease_renewal 内）：summarize/topics/wiki 这类"轻 handler"不再卡 running
 - [x] ++.4 测试：6+13+1 = 14 新单测（test_unit.py +2 generate.model fallback；test_crosscutting.py +6 worker routing/state machine/topics wiki handlers/end-to-end + 6 recover/lease/process_job_with_lease_renewal + 1 替换）。**148 → 162 passed**
 
+**Phase 2（WebUI Dashboard + 实体/翻译/报告/图谱/高级检索/API 连接器）**：
+
+> Phase 2 在 Phase 1+ 基础上展开。**所有切片 [ ] 实施完后** 新增测试覆盖 §13 D7–D15；§5.1.5 增量 DDL 完整迁移在本批次完成。
+
+**切片 2.1 WebUI Dashboard 骨架（验收 1 回归 + 2 部分 UI 触发）**：
+- [ ] 2.1.1 `app/main.py: create_app()` + lifespan 顺序：init_db → probe oMLX 三端点 → recover_interrupted → 启动 scheduler + worker task；`uvicorn app.main:app --host 127.0.0.1 --port 7111`
+- [ ] 2.1.2 `app/api/{deps,health,dashboard,settings}.py` 路由骨架，**全部只做路由 + 调 service**，业务逻辑零侵入
+- [ ] 2.1.3 `app/web/templates/base.html` + `components/` + `static/` vendored JS（htmx/echarts/sortable/pico）——见 §8.1 vendored 资源清单
+- [ ] 2.1.4 HTMX partial swap 模式 + 错误形态（404/422/500）—— §8.1 HTMX 策略
+- [ ] 2.1.5 D7 smoke 测试；WebUI 默认绑定 127.0.0.1，无 CSRF（本地单用户）
+
+**切片 2.2 中文翻译（验收 #2 全）**：
+- [ ] 2.2.1 `app/services/llm_tasks.py: run_translate()` 读 `articles.content_text` + `summaries.summary_text`，调 `generate` 中文 prompt（§4.6 translate 契约），`complete_translate` 钩子写 `translations` 表（content_hash 守卫与 summaries 同模式）
+- [ ] 2.2.2 `complete_summarize` 同事务入队 `translate`（仅当 `articles.lang != 'zh' AND` user config `ingestion.auto_translate: true`）；手动：WebUI "翻译" 按钮 → POST `/articles/{id}/retry/translate` + `tc translate <article_id>`
+- [ ] 2.2.3 D11 翻译测试（`tc translate` CLI + WebUI POST + translations 行写入）
+- [ ] 2.2.4 §8 详情页新增 "翻译" Tab，渲染 `translations.translated_content` + `translated_title`；空时显示空 state + CTA "翻译"
+
+**切片 2.3 实体抽取与归并（验收 #4 部分前置）**：
+- [ ] 2.3.1 §5.1.5 entities / relations / article_entities DDL 增量迁移（含 pg_trgm 扩展）
+- [ ] 2.3.2 `app/services/entities.py: extract_entities()` + 完整 pipeline（grounding 校验、upsert、merge_aliases）：见 §6.Y 伪代码
+- [ ] 2.3.3 `complete_summarize` cascade 入队 `extract_entities`（与 topics 并列 priority 3，FIFO）
+- [ ] 2.3.4 `complete_extract` 钩子：写 entities + relations + article_entities → 触发 `generate_entity_wiki` 仅在 entity 首次/description 变更
+- [ ] 2.3.5 `app/services/entities.py: merge_aliases(canonical_a, canonical_b)` 服务（pg_trgm 模糊匹配 + 强制合并）
+- [ ] 2.3.6 CLI：`tc extract <article_id>` / `tc entity merge` / `tc entity search`
+- [ ] 2.3.7 D8 实体归并测试：extract pipeline end-to-end + merge_aliases 折叠 + aliases_json GIN 索引生效
+- [ ] 2.3.8 §10.3 `tc backfill extract_entities [--all]`（历史 done 文章补跑，可中断恢复）
+
+**切片 2.4 知识图谱（验收 #4 全）**：
+- [ ] 2.4.1 `app/services/graph.py: graph_json(*, topic_id, entity_type, since_days, max_nodes=300)` 返回 `{categories, nodes, links, filters}`（ECharts 5.x force-graph 兼容字段名）
+- [ ] 2.4.2 `app/api/graph.py: GET /graph` （Jinja2 + force-graph mounted via echarts）+ `GET /api/graph.json`（filter via query）
+- [ ] 2.4.3 graph_filter UI 控件（topic multi-select + entity_type checkbox + 时间 slider）
+- [ ] 2.4.4 CLI：`tc graph export [--topic] [--since] [--out]` / `tc graph stats`
+- [ ] 2.4.5 D10 图谱测试：graph_json 形状 + ECharts 兼容 round-trip；300 节点 JSON 序列化 < 500ms
+- [ ] 2.4.6 节点点击 → 跳回相关文章（侧栏 modal 与 §8 `/articles` 列表复用）
+
+**切片 2.5 报告（验收 #6 全）**：
+- [ ] 2.5.1 §5.1.5 reports.status / started_at / completed_at / error 列 DDL 增量；`reports_period_uniq` UNIQUE 索引
+- [ ] 2.5.2 `app/services/reports.py: _aggregate_stats(period_start, period_end)` 单 SQL 聚合（articles/summaries/embeddings/topics/entities/relations/queue/feeds/llm 全字段）
+- [ ] 2.5.3 `generate_daily_report(report_dt)` + `generate_weekly_report()` 服务（§10.1 伪代码）：stats → prompt → LLM → markdown → HTML（`markdown(md, extras=['toc','fenced_code','tables'])`）→ 同事务写 reports
+- [ ] 2.5.4 §4.6 `generate_report` prompt 落地（中文 Markdown 5 章结构 + 不允许制造统计量约束）
+- [ ] 2.5.5 scheduler `daily_report`(08:00) + `weekly_report`(周一 08:00) 注册（§10.1）
+- [ ] 2.5.6 `app/api/reports.py: GET /reports` + `GET /reports/{id}` + `POST /reports/{id}/retry` + `GET /reports/{id}/export.md`
+- [ ] 2.5.7 CLI：`tc report list / show / export / retry / generate --now`
+- [ ] 2.5.8 D9 报告测试：stats_json schema 完整 + HTML 渲染非空 + 失败 → `status='failed'` + error 字段
+
+**切片 2.6 高级检索（验收 #9 增强）**：
+- [ ] 2.6.1 `app/services/search.py: search(*, use_rerank=False, mode='hybrid', page=1, page_size=20, filters)` 加 `use_rerank` 路径（§7.1 算法）
+- [ ] 2.6.2 `LLMClient.rerank()` 透明降级链：oMLX `/v1/rerank` → 进程内 `bge-reranker-v2-m3`（§7.1 懒加载）→ 不重排（保持 RRF）
+- [ ] 2.6.3 §5.1.5 `wiki_pages.tsv` 加列 + 跨表 UNION RRF（§7.1 Wiki 跨表检索 SQL）
+- [ ] 2.6.4 `app/api/articles.py: GET /api/articles/{id}/similar?top_k=10` 同主题加权相似（§7.1 SQL）
+- [ ] 2.6.5 `app/web/templates/search/results.html` 高级筛选 + Rerank toggle + Wiki/Article 切换
+- [ ] 2.6.6 CLI：`tc search --rerank --mode rerank` 终态展示
+- [ ] 2.6.7 D10 搜索扩展测试：use_rerank 排序正确；D15 性能基准 P95 < 100ms 万级 + Wiki
+
+**切片 2.7 API 连接器（验收 #1 + F9）**：
+- [ ] 2.7.1 `app/ingest/api.py: fetch_api(feed)` + `_map_to_feed_item(doc, mapper, lang)`（§10.2 完整实现）
+- [ ] 2.7.2 `feeds.config_json` schema（§10.2 完整定义）+ Alembic 不需迁移（config_json 早就是 JSONB）
+- [ ] 2.7.3 §9 `config/feeds.yaml` 注释示例三件：HN / GitHub Trending / arXiv cs.CL（user 直接复制即可）
+- [ ] 2.7.4 rate_limit_per_hour 触发 `fetch_events(event_type='rate_limit')`；连续 4xx → `fetch_failures+1` → `feed_disable_after` 禁用（与 RSS 同机制）
+- [ ] 2.7.5 D12 API 连接器测试：mock httpx 返回 fixture → 字段映射正确 + jmespath 提 items 正确 + 模板 URL 渲染正确
+
+**切片 2.8 Phase 2 综合验收（验收 #2 / #4 / #6 / #14）**：
+- [ ] 2.8.1 实环境跑通：HN 真实文章 → summarize → extract_entities → topics → wiki → translate → daily report D+1 → graph.json 渲染
+- [ ] 2.8.2 验收 #2（翻译）：外文文章一键译为简体中文，UI 可见
+- [ ] 2.8.3 验收 #4（图谱）：实体节点与关系边可点击跳回文章
+- [ ] 2.8.4 验收 #6（报告）：日报/周报按计划生成，Dashboard 查看 + 导出 Markdown
+- [ ] 2.8.5 整体性能：单篇 27B 文章 end-to-end < 2min；搜索 P95 < 100ms；图谱加载 < 1s
+- [ ] 2.8.6 ≥ 162 + N 新测试全部通过（D7–D15），CI 全绿
+
 ---
 
 ## 15. oMLX 实测结论（2026-08-12）
@@ -964,3 +2191,29 @@ feeds:
 - **外键策略**：产物 / 向量 / 队列 / 主题归属统一 `ON DELETE CASCADE`（删文章/主题/Feed 自动清理孤儿行）；`dedupe_of`、`articles.feed_id`、`relations.source_article_id` 用 `ON DELETE SET NULL`（保留引用方转独立）；仅 `wiki_pages.ref_id` 为多态引用无法建 FK（§5.1 注释），靠应用层校验——P3 归档裁剪直接受益于级联
 - **生成/嵌入共用并发=1**：**待验证假设**——oMLX 按请求切换模型会抖动加载是真，但 MLX 统一内存可同时常驻多模型（27B-4bit ≈14GB + 8B 嵌入 ≈5GB，64GB+ Mac 装得下，无需切换、无抖动）。若实测同时常驻可行，信号量改 per-capability 一槽（gen/embed 各一），embed 不被 27B 阻塞、语义索引吞吐翻倍。P1 先按 1，实测后升 2（§4.4）
 - **主题关键词快路径跳过 LLM 分类**：命中关键词的文章 `method=keyword` 入库、**整篇跳过 LLM 分类**，不会被评估到其他未命中关键词的主题——主题质量高度依赖关键词设计，LLM 不补救。为已知召回取舍，P3 `tc reclassify` 全量重跑兜底（PRD §15 #3 / §16）；P2 可加「命中关键词也跑 LLM 复议其他主题」选项
+
+### 16.1 Phase 2 已知限制（与 §14 切片同步）
+
+| # | 限制 | 影响 | 缓解 |
+|---|---|---|---|
+| 1 | **WebUI 单进程 uvicorn `workers=1`** | 中高并发用户场景（数个并行浏览）下，长 LLM 调用可能阻塞其他请求 | 单用户本地工具场景可接受；多 worker 化需要 LLM client 共享状态，问题复杂 |
+| 2 | **Jinja2 SSR 全栈**：所有页面服务端渲染，无客户端 bundle，TTFB 受 LLM 影响 | 首屏渲染依赖后端 + DB 响应时间，慢时 200-500ms（可接受） | 已通过 SSR 简化部署，不切换 Client Component |
+| 3 | **ECharts 大图（>2000 节点）需前端 LOD** | 图谱页超过 ~2000 节点直接渲染会卡 | 节点 max=300（filter 参数）；超出时分批聚合（`graph_json` 取 top N；Phase 3 加 ELK/force-graph clustering） |
+| 4 | **`/v1/rerank` 降级到 `bge-reranker-v2-m3` 需进程内常驻 ~3GB** | 长时占用内存；冷启动 lazy-load 需 5-10 秒 | 不常驻可接受；启用与否由 config 控制 |
+| 5 | **`tc reclassify --all` 万级文章库下跑数小时** | 单次命令长时间运行 | 默认仅重算 30 天（`reclassify_recent_days`）；CLI 支持 `--topic <id>` 缩小范围；后台 worker 异步模式（Phase 3） |
+| 6 | **HTMX partial swap 模板继承开销** | 列表翻页频繁时 Jinja2 render 重渲染（每次 ~30ms） | 静态模板不依赖 DB 上下文，已是 O(small)；Phase 3 切 Client Component 进一步降延迟 |
+| 7 | **`wiki_pages.ref_id` 多态无 FK** | 删 article/topic/entity 时需应用层同事务删对应 wiki_page，遗漏会留孤儿 | §6.3 实施细节明确 wiki_pages 删除顺序；统一 `services.wiki.delete_orphan_pages()` 提供 |
+| 8 | **entities.canonical_name_zh UNIQUE 变更需数据迁移** | Phase 1 已有 `canonical_name` UNIQUE 的数据库需要迁移脚本（§5.1.5） → 需手动 merge_aliases 折叠 | Alembic 迁移内置 `merge_aliases` 调用；DEV 环境可重置 |
+| 9 | **LLM 报告生成走 27B ≥ 50 秒/天** | scheduler 每日 8:00 触发，CPU 占用 ~1min + 数据库聚合 ~5s | 不可见影响；周报更长；Phase 3 加缓存（同 period 直接读上次） |
+| 10 | **图谱性能 vs 节点数线性增长** | 1000+ 节点的 relations UNION 不走索引，遍历 O(N) | 本地个人库典型 <500 节点，可接受；超过加 redis 缓存 + 增量构建 |
+| 11 | **API 连接器速率限制为本机配置** | 用户错配 `rate_limit_per_hour=10000` 会打爆被对端 ban | `feeds.config_json` 校验提供合理上限；UI 显示"上次请求被 429 警告" |
+| 12 | **Phase 2 增量 DDL 不可拆分为更小 patch** | §5.1.5 所有 `ALTER TABLE` 在同一 Alembic revision；多列加约束需同步 | Phase 2 单一 revision 即可，上线后无关键依赖 |
+
+---
+
+## 17. 文档元约定（Phase 2 新增）
+
+- **结构性内容只在一处维护**：PRD §11 已锁定本原则（消除副本漂移）；DESIGN.md 与 CLAUDE.md 互引不重复
+- **Phase 2 实施细节以本文件 §8 / §10.1 / §10.2 / §10.3 / §6.X / §7.1 为权威**；任何 PRD 与本文件冲突以本文件为准（PRD 是产品合同，DESIGN 是工程蓝图；以"实现上 PRD 可被调整"原则落地）
+- **章节交叉引用规范**：本文用 `§X.Y` 引节、`§X` 引节首；引 PRD 用 `PRD §X`；引 PRD #X 引验收条目
+- **未来追加的 P3 任务**：新增 P3 段而非塞入既有 Phase 2 切片，保持 §14 切片粒度一致
