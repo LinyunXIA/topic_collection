@@ -4,14 +4,14 @@
 > 前置：切片一~三 + 横切 86/86 已通过（见 slice1/2/3_test_report.md）
 > Python：3.14.6 · pytest：9.1.1 · SQLAlchemy：2.0.52 · asyncpg：0.31.0
 > DB：PostgreSQL 17 + pgvector 0.8.6（Docker, port 5433）
-> LLM：FakeLLMProvider（内存 mock）+ OpenAIProvider（mock HTTP）
+> LLM：FakeLLMProvider（内存 mock）+ OpenAIProvider/OMLXProvider（mock HTTP）
 
 ---
 
 ## 测试结果总览
 
 ```
-============================= 116 passed in 3.17s ==============================
+============================= 148 passed in 3.07s ==============================
 ```
 
 | 类别 | 切片一~三 | Phase 1+ 新增 | 合计 |
@@ -19,10 +19,11 @@
 | 集成测试（PRD 验收） | 30 | 0 | 30 |
 | 横切测试 | 11 | 4 | 15 |
 | OpenAI Provider 测试 | 0 | 26 | 26 |
+| Adapter 测试 | 0 | 22 | 22 |
 | 搜索测试 | 12 | 0 | 12 |
 | 主题+Wiki 测试 | 15 | 0 | 15 |
 | 单元测试 | 18 | 0 | 18 |
-| **合计** | **86** | **30** | **116** |
+| **合计** | **86** | **62** | **148** |
 
 **116 tests, 0 failures, 3.17s**
 
