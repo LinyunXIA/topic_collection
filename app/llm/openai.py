@@ -51,6 +51,21 @@ class OpenAIProvider:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
+    @staticmethod
+    def _strip_think_tags(text: str) -> str:
+        """清理思考模型的 <think>...</think> 标签和 ```json 代码围栏。
+
+        MiniMax-M3 等思考模型即使开启 json_mode，响应仍可能包含
+        think 块和代码围栏。返回纯 JSON 文本供下游 parse_with_repair 处理。
+        """
+        import re
+        # 去除 <think>...</think> 块
+        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
+        # 去除 ```json ... ``` 代码围栏
+        text = re.sub(r"```(?:json)?\s*\n?", "", text)
+        text = re.sub(r"```\s*$", "", text)
+        return text.strip()
+
     async def generate(self, req: GenerateRequest) -> GenerateResult:
         """POST /v1/chat/completions"""
         payload: dict[str, Any] = {
@@ -75,8 +90,9 @@ class OpenAIProvider:
         data = resp.json()
         latency_ms = now_ms() - t0
         choice = data["choices"][0]
+        text = self._strip_think_tags(choice["message"]["content"])
         return GenerateResult(
-            text=choice["message"]["content"],
+            text=text,
             finish_reason=choice.get("finish_reason", ""),
             usage=data.get("usage"),
             latency_ms=latency_ms,
