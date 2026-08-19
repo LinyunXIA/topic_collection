@@ -578,6 +578,66 @@ async def _retry(article_id: int, task: str):
         console.print(f"[green]✅ {task} 完成[/green]")
 
 
+# ── topic ──────────────────────────────────────────────────────────
+
+@app.command()
+def topic(
+    action: str = typer.Argument(help="add | list"),
+    name: str = typer.Option(None, "--name", "-n", help="主题名称 (add 时必填)"),
+    keywords: str = typer.Option(None, "--keywords", "-k", help="关键词，逗号分隔 (add 时必填)"),
+    description: str = typer.Option("", "--desc", "-d", help="主题描述"),
+):
+    """管理主题。add = 创建主题；list = 列出所有主题。"""
+    _run_async(_topic(action, name, keywords, description))
+
+
+async def _topic(action: str, name: str | None, keywords: str | None, description: str):
+    from app.services.topics import create_topic, list_topics, reclassify_recent
+
+    settings = load_settings()
+    factory = get_session_factory(settings)
+
+    if action == "add":
+        if not name or not keywords:
+            console.print("[red]add 需要 --name 和 --keywords[/red]")
+            return
+        kw_list = [k.strip() for k in keywords.split(",") if k.strip()]
+        async with factory() as session:
+            topic_id = await create_topic(session, name, kw_list, description)
+            await session.commit()
+            console.print(f"✅ 主题「{name}」已创建 (id={topic_id})")
+
+            # 同步触发近窗重算（DESIGN §6）
+            console.print(f"🔄 重算近 {settings.topics.reclassify_recent_days} 天文章...")
+            requeued = await reclassify_recent(session, topic_id, settings)
+            await session.commit()
+            console.print(f"   入队 {requeued} 个 topics job（LLM 慢路径）")
+
+    elif action == "list":
+        async with factory() as session:
+            topics = await list_topics(session)
+            if not topics:
+                console.print("[yellow]没有主题[/yellow]")
+                return
+            table = Table(title="主题列表")
+            table.add_column("ID", style="dim")
+            table.add_column("名称")
+            table.add_column("关键词")
+            table.add_column("状态")
+            for t in topics:
+                kw = t.get("keywords_json") or []
+                status = "✅" if t.get("enabled") else "❌"
+                table.add_row(
+                    str(t["id"]),
+                    t["name"],
+                    ", ".join(kw[:5]) + ("..." if len(kw) > 5 else ""),
+                    status,
+                )
+            console.print(table)
+    else:
+        console.print(f"[red]未知操作: {action}[/red]")
+
+
 # ── backup ─────────────────────────────────────────────────────────
 
 @app.command()
