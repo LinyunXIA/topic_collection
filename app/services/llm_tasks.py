@@ -248,11 +248,13 @@ async def complete_embed(
             )
 
         # 1. embeddings upsert（content_hash 版本守卫）
+        # 注意：:vec::vector 的 :: 会被 asyncpg 误解析，改用 format=true 内联向量
+        vec_str = "[" + ",".join(str(v) for v in vector) + "]"
         await session.execute(
             text(
                 "INSERT INTO article_embeddings "
                 "(article_id, kind, model, content_hash, dim, vector) "
-                "VALUES (:aid, :kind, :model, :ch, :dim, :vec::vector) "
+                "VALUES (:aid, :kind, :model, :ch, :dim, CAST(:vec AS vector)) "
                 "ON CONFLICT (article_id, kind, model) DO UPDATE "
                 "SET content_hash=EXCLUDED.content_hash, "
                 "    dim=EXCLUDED.dim, "
@@ -266,7 +268,7 @@ async def complete_embed(
                 "model": model,
                 "ch": content_hash,
                 "dim": dim,
-                "vec": str(vector),
+                "vec": vec_str,
             },
         )
 

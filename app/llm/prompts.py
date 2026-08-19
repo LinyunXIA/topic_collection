@@ -69,12 +69,15 @@ TRANSLATE_USER = "请将以下内容翻译为简体中文，只输出翻译结�
 
 def get_prompt(task: str, **kwargs) -> tuple[str, str]:
     """获取指定任务的 (system, user) 提示词对。"""
-    prompts = {
-        "summarize": (SUMMARIZE_SYSTEM, SUMMARIZE_USER.format(**kwargs)),
-        "classify_topics": (CLASSIFY_TOPICS_SYSTEM, CLASSIFY_TOPICS_USER.format(**kwargs)),
-        "generate_wiki_entry": (WIKI_ENTRY_SYSTEM, WIKI_ENTRY_USER.format(**kwargs)),
-        "translate": (TRANSLATE_SYSTEM, TRANSLATE_USER.format(**kwargs)),
+    # 注意：不要用 dict 字面量，Python 会立即计算所有 value 的 .format()
+    # 只 format 需要的那一个
+    templates = {
+        "summarize": (SUMMARIZE_SYSTEM, SUMMARIZE_USER),
+        "classify_topics": (CLASSIFY_TOPICS_SYSTEM, CLASSIFY_TOPICS_USER),
+        "generate_wiki_entry": (WIKI_ENTRY_SYSTEM, WIKI_ENTRY_USER),
+        "translate": (TRANSLATE_SYSTEM, TRANSLATE_USER),
     }
-    if task not in prompts:
-        raise ValueError(f"未知任务: {task}，可用: {list(prompts.keys())}")
-    return prompts[task]
+    if task not in templates:
+        raise ValueError(f"未知任务: {task}，可用: {list(templates.keys())}")
+    system, user_template = templates[task]
+    return system, user_template.format(**kwargs)
