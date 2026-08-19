@@ -60,6 +60,11 @@ class OpenAIProvider:
         """发送 POST 请求并返回 JSON 响应。"""
         async with httpx.AsyncClient(timeout=timeout) as client:
             resp = await client.post(url, headers=self._headers(), json=payload)
+            if resp.status_code != 200:
+                logger.error(
+                    "API %s %s → %d: %s",
+                    resp.request.method, url, resp.status_code, resp.text[:500],
+                )
             resp.raise_for_status()
         return resp.json()
 
