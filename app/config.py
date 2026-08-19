@@ -13,7 +13,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 class DBSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TC_DB_")
 
-    dsn: str = "postgresql+asyncpg://tc:tc@localhost:5432/topic_collection"
+    dsn: str = "postgresql+asyncpg://tc:tc@localhost:5433/topic_collection"
     pool_size: int = 5
     vector_dim: int = 1536
 

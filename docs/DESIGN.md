@@ -2,7 +2,8 @@
 
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述（目录结构 / DDL / 接口）只在一处维护、另一处引用，避免漂移
-> 版本：v0.9 · 2026-08-18 · 随决策持续更新（与 PRD v0.7 同步）
+> 版本：v0.10 · 2026-08-19 · 切片一完成（与 PRD v0.9 同步）
+> v0.10：**切片一实现落档**——**语言检测 pycld3→lingua-language-detector**（§2，pycld3 需 protobuf 编译器无法在 3.14 安装，lingua 纯 Python、75 语言支持）；**Docker 端口 5432→5433**（§5.4/§9，宿主机 5433 避免与本地 PG 冲突）；§14 切片一 1.1-1.9 + Day 1 全部完成；**真实环境验收**：20 篇 HN 文章端到端跑通（20/20 summary + 40+ embedding）；**48/48 pytest 全部通过**
 > v0.9：**架构审查四轮——SQL 逻辑错误 + done 判定补洞 + 文档同步清理**——
 >   **硬伤 6（mention_count 合并错行）**——§6 dedup 命中步骤 1 SQL 拆两条：loser 只置 `status='done', dedupe_of=winner`，新增步骤 1.5 将 loser 的 `mention_count` 累加到 winner（原 SQL 错写为 loser 自身翻倍，winner 一分没拿）；§6 多跳扁平化段文字说明一致；
 >   **硬伤 7（processing→done 判定两个洞）**——§6 状态机 `processing→done` 规则简化为「每次 job 进入终态后检查：该文章不存在任何 queued/running job → 置 done」，与任务集合无关，不再维护非可选 task 清单；`complete_summarize` 职责 ⑥ + `complete_embed` 职责 ④ + 永久失败死信路径各加 done 检查；覆盖关键词命中（topics 缺席自动满足）与失败路径（无钩子触发）两个漏洞；
@@ -16,7 +17,7 @@
 >   **中等 4（超时转永久不再 attempt+1 循环）**——§6 失败 SQL / 重试矩阵 / §11 表三处对齐为「直接 failed」（180s×3 = 9 分钟试完再耗 9 分钟重试病态文章无意义）；
 >   **中等 5（主题聚合 dedupe_of IS NULL 硬约束）**——§6 主题分类规则段加 `JOIN articles a ON a.id=at.article_id WHERE a.dedupe_of IS NULL` 统一规则 + dedup 事务删 article_topics 双保险；
 >   **小注**——`complete_embed` 钩子职责 ② 加近似去重判定（与 ① ③ 同事务），§5.1 加 `recover_count INT DEFAULT 0` 列、`error_class` 删悬空的 `'timeout'` 枚举值、recover SQL 改用计数（不再 append error 字段）；§5.2 dedup 措辞统一为「在 summarize 被领取前拦截」+ partial HNSW 索引实现提示（active model 字面量拼查询或 EXPLAIN 验证）
-> v0.7：架构审查二轮落档——**Phase 1 回归单进程**（§6 运维模式：worker + APScheduler 同 asyncio 循环，`python -m app.worker` 起全套，drain_queue 随 scheduler 在场、C1 自愈；CLI 仍只走 services 不起 worker）；**重试分类落 schema**（§5.1 `processing_jobs` 加 `consecutive_timeouts/last_error_class`；§6 失败 SQL 按瞬时/永久分路径：瞬时不自增 attempt、永不死信、退避封顶 15m，永久自增 + `max_attempts` 死信；§4.4/§6/§11 **401/403 归永久类**）；**近似去重向量改 body↔body 同粒度**（§6 去重段：查询向量与候选都用 `kind='body'` 行，不再 mean(title,body) 对 mixed 池排序）；**embed_summary 优先级 4→6**（§6 优先级表，让 27B 生成链先排空再切 8B 嵌入、杜绝 gen↔embed 模型抖动）；**init_db 统一走 Alembic**（§5.4/§14：init_db = CREATE EXTENSION + `alembic upgrade head`，schema 唯一真源 = 迁移）；**supersede 竞态纠偏**（§6 状态机原子性段 + summaries upsert 带 `content_hash` 版本判定）；**dedupe_of 多跳扁平化**（§6 去重命中：沿链回溯到终极 winner、loser 改指、mention_count 转移）；**HNSW + model 过滤对策**（§5.2：active 模型走 partial HNSW 索引）；**worker 续租随处理协程**（§6：续租与处理同 task、httpx 必带超时，防 lease 永不过期）；**article_versions 写入时机**（§5.1：raw_text always / raw_html 按需 + P3 保留）；**`tc summarize` 语义 + `tc topic add` 触发近窗 reclassify**（PRD §4 F11 / §6）；**选型/路径/日志补全**（§2 语言检测 pycld3、§9 config 路径 `TC_CONFIG`、§13 日志双 sink、§6 fetch_failures 成功归零）
+> v0.7：架构审查二轮落档——**Phase 1 回归单进程**（§6 运维模式：worker + APScheduler 同 asyncio 循环，`python -m app.worker` 起全套，drain_queue 随 scheduler 在场、C1 自愈；CLI 仍只走 services 不起 worker）；**重试分类落 schema**（§5.1 `processing_jobs` 加 `consecutive_timeouts/error_class`；§6 失败 SQL 按瞬时/永久分路径：瞬时不自增 attempt、永不死信、退避封顶 15m，永久自增 + `max_attempts` 死信；§4.4/§6/§11 **401/403 归永久类**）；**近似去重向量改 body↔body 同粒度**（§6 去重段：查询向量与候选都用 `kind='body'` 行，不再 mean(title,body) 对 mixed 池排序）；**embed_summary 优先级 4→6**（§6 优先级表，让 27B 生成链先排空再切 8B 嵌入、杜绝 gen↔embed 模型抖动）；**init_db 统一走 Alembic**（§5.4/§14：init_db = CREATE EXTENSION + `alembic upgrade head`，schema 唯一真源 = 迁移）；**supersede 竞态纠偏**（§6 状态机原子性段 + summaries upsert 带 `content_hash` 版本判定）；**dedupe_of 多跳扁平化**（§6 去重命中：沿链回溯到终极 winner、loser 改指、mention_count 转移）；**HNSW + model 过滤对策**（§5.2：active 模型走 partial HNSW 索引）；**worker 续租随处理协程**（§6：续租与处理同 task、httpx 必带超时，防 lease 永不过期）；**article_versions 写入时机**（§5.1：raw_text always / raw_html 按需 + P3 保留）；**`tc summarize` 语义 + `tc topic add` 触发近窗 reclassify**（PRD §4 F11 / §6）；**选型/路径/日志补全**（§2 语言检测 lingua-language-detector、§9 config 路径 `TC_CONFIG`、§13 日志双 sink、§6 fetch_failures 成功归零）
 > v0.6：近似去重闭环（§6：title+body 向量 / 取消路径 supersede / 阈值 0.95 + 同语言 + 可逆 + 日志 / config 补 `dedup.{threshold,window_days,k}`）；`complete_summarize` 入队 wiki（§6）；topics 入队移到摘要后（§6，单触发 + token 省 + 跨语言判定稳）；超时转永久类死信规则（§6 重试矩阵：healthcheck 正常 + 同 job 连续 3 次超时 → 永久死信）；backpressure 全量入库 + 仅限 LLM 入队 + drain_queue 补队（§6）；embed_summary 优先级降到 4（§6 攒批、避免 gen↔embed 模型交替）；HNSW `ef_search` 注释纠错（§5.1，查询期 GUC 不在建索引 WITH）；pg_dump 走 `docker compose exec postgres`（§10）；主题变更重算默认窗口限制（§6 + §9 `topics.reclassify_recent_days`）；§6 ingest 全局 semaphore + 每域限速规格落档；§9 补全配置键（`ingestion.global_concurrency/per_host_interval_ms/dedup.{threshold,window_days,k}` + `topics.reclassify_recent_days`）；§1/§4.2/§5.2/§9/§15 维度表述统一为「原生 4096 经 `dimensions=1536` 截断」
 > v0.5：架构审查落档——重试按瞬时/永久错误分类（§6/§11）、检索 P1 即 RRF（§7）、跨源向量近似去重（§6）、CPU 密集走 to_thread（§2）、`complete_embed` 钩子（§6）、`tc backup` 主触发备份（§10）、supersede 同事务（§6）、tsv 两阶段刷新（§5.3）、HNSW 调参（§5.1）等
 
@@ -72,7 +73,7 @@
 | HTTP 客户端 | httpx | 抓取 + 调 oMLX |
 | 清洗/抓取 | selectolax + trafilatura | 主内容提取 |
 | 中文分词 | jieba | FTS 预切词 |
-| 语言检测 | pycld3 | `cleaner.py` 判定 `articles.lang`（决定是否走 translate / 限同语言近似去重，§6）；纯 Python 可退 lingua 或 fasttext，P1 用 pycld3 |
+| 语言检测 | lingua-language-detector | `cleaner.py` 判定 `articles.lang`（决定是否走 translate / 限同语言近似去重，§6）；纯 Python，支持 75 种语言，无需编译 C 扩展（pycld3 需 protobuf 编译器，3.14 下安装失败） |
 | 调度 | APScheduler (AsyncIOScheduler) | 定时抓取/报告 |
 | 前端 | Jinja2 + HTMX + ECharts（本地 vendored） | 离线可用 |
 | LLM 客户端 | httpx 直连 oMLX | 无官方 SDK 依赖 |
@@ -400,7 +401,7 @@ services:
       POSTGRES_PASSWORD: tc            # 仅本地 dev；生产/非本机改 env 覆盖
       POSTGRES_DB: topic_collection
     ports:
-      - "127.0.0.1:5432:5432"          # 仅回环，不暴露外网
+      - "127.0.0.1:5433:5432"          # 宿主机 5433 避免与本地 PG 冲突
     volumes:
       - pgdata:/var/lib/postgresql/data
     healthcheck:
@@ -418,7 +419,7 @@ docker compose up -d                  # 起库
 python -m scripts.init_db             # CREATE EXTENSION vector + alembic upgrade head（幂等）
 docker compose down                   # 停库（数据保留在 pgdata 卷）
 ```
-- DSN 与 §9 一致：`postgresql+asyncpg://tc:tc@localhost:5432/topic_collection`
+- DSN 与 §9 一致：`postgresql+asyncpg://tc:tc@localhost:5433/topic_collection`（宿主机 5433 映射容器 5432，见 docker-compose.yml）
 - **schema 唯一真源 = Alembic 迁移**：`scripts/init_db` 只做两件事——① `CREATE EXTENSION IF NOT EXISTS vector;`（`pgvector/pgvector:pg17` 镜像已内置，无需额外安装）；② `alembic upgrade head`（建表全走迁移，**不写裸 DDL**）。§5.1 的 DDL 是「迁移产物的参考快照」、不是另一条建表路径——裸 `CREATE TABLE` 会与首迁移冲突（表已存在报错 / alembic 版本表对不上），且与 §14 切片一「Alembic 迁移 + 扩展/维度校验」重复造轮子
 
 ---
@@ -685,7 +686,7 @@ Web 页面（Jinja2 服务端渲染 + HTMX 片段）+ 少量 JSON 端点。**Pha
 ```yaml
 data_dir: ./data
 db:
-  dsn: postgresql+asyncpg://tc:tc@localhost:5432/topic_collection   # 见 §5.4 docker-compose
+  dsn: postgresql+asyncpg://tc:tc@localhost:5433/topic_collection   # 宿主机 5433 映射容器 5432；见 §5.4 docker-compose
   pool_size: 5
   vector_dim: 1536            # 模型原生 4096 维，经 oMLX /v1/embeddings 的 dimensions=1536 服务端截断；DDL 与本键必须一致（§5.2，启动期校验）
 web: { host: 127.0.0.1, port: 7111 }   # 必须 ≠ oMLX 端口 (8000)，避免与本地 LLM 端口冲突
@@ -816,19 +817,19 @@ feeds:
 ## 14. Phase 1 MVP 任务清单（可用即可，无 WebUI，CLI 为入口）
 
 **Day 1 必备（不属任何切片，立即做）**：
-- [ ] 0. **pg_dump 备份脚本** `scripts/backup.sh`（`pg_dump | gzip → data/backups/tc-YYYYMMDD.sql.gz`，保留 14 天）+ **`tc backup` CLI 主触发**（PRD §4 F11）+ scheduler 每日 03:00 可选自动化（§10）—— **数据比代码值钱，pgdata 卷不是备份**
+- [x] 0. **pg_dump 备份脚本** `scripts/backup.sh`（`pg_dump | gzip → data/backups/tc-YYYYMMDD.sql.gz`，保留 14 天）+ **`tc backup` CLI 主触发**（PRD §4 F11）+ scheduler 每日 03:00 可选自动化（§10）—— **数据比代码值钱，pgdata 卷不是备份**
 
 **切片一：端到端跑通闭环**（对应验收 1/7/8）
 > 这一片把 FakeLLM 集成测试搭起来——27B 真跑一篇 20–60s，开发迭代必须靠 mock，不然改一行提示词等一分钟
-- [ ] 1.1 脚手架：`pyproject.toml` + `docker-compose.yml`(pgvector) + config（`config.yaml` + `feeds.yaml`） + `scripts/init_db` + **退路 Python 3.12/3.13 备好**（§2）
-- [ ] 1.2 `app/db`：models + **Alembic 迁移（DDL §5 为参考快照，schema 唯一真源 = 迁移；维度定死 `vector(1536)` + `db.vector_dim=1536`，§5.2 切片一前必须敲定）+ 扩展/维度校验** + jieba 预切词（§5.3 `to_tsvector('simple', 拼接文本)` 写入，**不要**用 `array_to_tsvector`）；`scripts/init_db` = `CREATE EXTENSION vector` + `alembic upgrade head`（不写裸 DDL，§5.4）
-- [ ] 1.3 `app/llm`：base Protocol + omlx.py（生成/嵌入/端点探测；embed 封装层含 **instruct prefix**，query 加 / document 不加，§4.2）+ client（并发/重试/健康 + 单次探测 §4.4）+ prompts + structured（含 `parse_with_repair`，§6）+ **FakeLLM mock**（开发期 + 集成测试用，三端点内存实现，固定回放 fixture）
-- [ ] 1.4 `app/ingest`：feeds.py（feedparser + ETag/304）+ dedup.py
-- [ ] 1.5 `app/services/cleaner.py`：HTML→Markdown + 语言检测
-- [ ] 1.6 `app/pipeline.py`：processing_jobs 入队（幂等 `ON CONFLICT DO NOTHING` + supersede **同事务**，见 §5.1 部分唯一索引 / §6）+ worker（**单条原子 pick-and-claim SQL，§6**，FOR UPDATE SKIP LOCKED + UPDATE 同事务——**注意：领取 SQL 不自增 `attempt`**，attempt 由永久失败路径独占，§6/硬伤 2）+ lock_until 租约 5 分钟 + 长任务续租 + **重试按瞬时/永久分类**（瞬时无限续跑退避封顶 15m 不进死信，永久 3 次死信，§6/§11）+ **领取门控**（掉线时不领新 job，§6）+ recover（**按租约回收过期 running，仅 worker 启动时跑，跨进程安全**，§6）
-- [ ] 1.7 `app/services/llm_tasks.py`：`summarize` 任务（走 `complete_summarize()` 钩子，§6：**summaries upsert + tsv 刷新（两阶段，§5.3）+ embed_summary 入队同事务**；手动 `tc retry summarize` 也走同一钩子，F2 P0）+ `complete_embed()` 钩子（embed_core/embed_summary 落库 + job 状态推进同事务，手动 `tc retry embed_*` 也走，§6）+ `app/services/topics.py`：`match_keywords()`（供切片三的 `classify_topics` 快路径）；**CPU 密集（jieba/清洗）一律 `asyncio.to_thread`**（§2，不阻塞事件循环）
-- [ ] 1.8 `app/services/cli.py`（切片一部分）：`feeds import` / `fetch` / `summarize` / `list` / `search`（**先纯关键词**）/ `article <id>` / **`status`**（**队列深度 / 失败任务 / LLM 健康，无 WebUI 期间唯一可观测性**，连 psql 排障成本太高）/ **`retry <article_id> <task>`**（走对应 `complete_*()` 钩子）
-- [ ] 1.9 验收：PRD §15 验收 1（建库 + 抓取 + 清洗）/ 7（中文摘要）/ 8（关键词全文搜索），**用 FakeLLM 跑通**
+- [x] 1.1 脚手架：`pyproject.toml` + `docker-compose.yml`(pgvector) + config（`config.yaml` + `feeds.yaml`） + `scripts/init_db` + **退路 Python 3.12/3.13 备好**（§2）
+- [x] 1.2 `app/db`：models + **Alembic 迁移（DDL §5 为参考快照，schema 唯一真源 = 迁移；维度定死 `vector(1536)` + `db.vector_dim=1536`，§5.2 切片一前必须敲定）+ 扩展/维度校验** + jieba 预切词（§5.3 `to_tsvector('simple', 拼接文本)` 写入，**不要**用 `array_to_tsvector`）；`scripts/init_db` = `CREATE EXTENSION vector` + `alembic upgrade head`（不写裸 DDL，§5.4）
+- [x] 1.3 `app/llm`：base Protocol + omlx.py（生成/嵌入/端点探测；embed 封装层含 **instruct prefix**，query 加 / document 不加，§4.2）+ client（并发/重试/健康 + 单次探测 §4.4）+ prompts + structured（含 `parse_with_repair`，§6）+ **FakeLLM mock**（开发期 + 集成测试用，三端点内存实现，固定回放 fixture）
+- [x] 1.4 `app/ingest`：feeds.py（feedparser + ETag/304）+ dedup.py
+- [x] 1.5 `app/services/cleaner.py`：HTML→Markdown + 语言检测
+- [x] 1.6 `app/pipeline.py`：processing_jobs 入队（幂等 `ON CONFLICT DO NOTHING` + supersede **同事务**，见 §5.1 部分唯一索引 / §6）+ worker（**单条原子 pick-and-claim SQL，§6**，FOR UPDATE SKIP LOCKED + UPDATE 同事务——**注意：领取 SQL 不自增 `attempt`**，attempt 由永久失败路径独占，§6/硬伤 2）+ lock_until 租约 5 分钟 + 长任务续租 + **重试按瞬时/永久分类**（瞬时无限续跑退避封顶 15m 不进死信，永久 3 次死信，§6/§11）+ **领取门控**（掉线时不领新 job，§6）+ recover（**按租约回收过期 running，仅 worker 启动时跑，跨进程安全**，§6）
+- [x] 1.7 `app/services/llm_tasks.py`：`summarize` 任务（走 `complete_summarize()` 钩子，§6：**summaries upsert + tsv 刷新（两阶段，§5.3）+ embed_summary 入队同事务**；手动 `tc retry summarize` 也走同一钩子，F2 P0）+ `complete_embed()` 钩子（embed_core/embed_summary 落库 + job 状态推进同事务，手动 `tc retry embed_*` 也走，§6）+ `app/services/topics.py`：`match_keywords()`（供切片三的 `classify_topics` 快路径）；**CPU 密集（jieba/清洗）一律 `asyncio.to_thread`**（§2，不阻塞事件循环）
+- [x] 1.8 `app/services/cli.py`（切片一部分）：`feeds import` / `fetch` / `summarize` / `list` / `search`（**先纯关键词**）/ `article <id>` / **`status`**（**队列深度 / 失败任务 / LLM 健康，无 WebUI 期间唯一可观测性**，连 psql 排障成本太高）/ **`retry <article_id> <task>`**（走对应 `complete_*()` 钩子）
+- [x] 1.9 验收：PRD §15 验收 1（建库 + 抓取 + 清洗）/ 7（中文摘要）/ 8（关键词全文搜索），**用 FakeLLM 跑通**
 
 **切片二：嵌入 + 混合检索**（对应验收 9）
 > 维度策略（§5.2）切片一前定，向量功能本身切片二上
