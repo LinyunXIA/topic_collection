@@ -229,6 +229,7 @@ async def complete_embed(
     content_hash: str,
     embeddings: list[tuple[str, list[float], int]],
     settings: Settings,
+    job: dict | None = None,
 ) -> None:
     """complete_embed() 公共钩子（DESIGN §6）。
 
@@ -274,23 +275,25 @@ async def complete_embed(
 
     # 2. 近似去重判定（仅 embed_core 的 body 完成后）
     is_body_embed = any(k == "body" for k, _, _ in embeddings)
-    is_core = job["task"] == "embed_core"
+    is_core = job is not None and job.get("task") == "embed_core"
     if is_body_embed and is_core:
         await _check_near_dedup(session, article_id, settings)
 
     # 3. job 状态推进
-    await session.execute(
-        text(
-            "UPDATE processing_jobs SET status='succeeded', lock_until=NULL, updated_at=now() "
-            "WHERE id=:jid AND status='running'"
-        ),
-        {"jid": job["id"]},
-    )
+    if job is not None:
+        await session.execute(
+            text(
+                "UPDATE processing_jobs SET status='succeeded', lock_until=NULL, updated_at=now() "
+                "WHERE id=:jid AND status='running'"
+            ),
+            {"jid": job["id"]},
+        )
 
     # 4. done 检查
     await check_and_set_done(session, article_id)
 
-    logger.info("complete_embed: article=%d task=%s 完成", article_id, job["task"])
+    task_name = job.get("task", "unknown") if job else "unknown"
+    logger.info("complete_embed: article=%d task=%s 完成", article_id, task_name)
 
 
 async def _check_near_dedup(
