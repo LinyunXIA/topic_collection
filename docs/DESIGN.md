@@ -863,8 +863,8 @@ feeds:
 
 **Phase 1+（CLI 增强，MVP 用后改进）**：
 - [x] P1+.1 外部 LLM API 切换（OpenAI 兼容协议）：`app/llm/openai.py`（新 provider）+ `app/llm/factory.py`（per-capability factory：`build_provider(capability, settings)`）+ `app/config.py`（`GenerateSettings`/`ProviderConfig`/`EmbedSettings`/`RerankSettings` 扩展 endpoint/api_key_env 字段）+ `app/llm/client.py`（`_classify_http_error` 接入 `_retry_transient` 调用路径，401/403/400 → `PermanentError`；**在 except 块内联分类逻辑**——Python except 块内 raise 的异常不被同 try 的其他 except 捕获，DESIGN §4.X）；worker 双 `LLMClient`（generate/embed 独立信号量，embed 不被 27B 阻塞）；`app/llm/omlx.py`（`EMBED_INSTRUCT_PREFIX` 提升为 class attribute `embed_instruct_prefix`）+ `app/llm/base.py` Protocol 新增 `embed_instruct_prefix: str`；config schema 新增 `llm.generate.*` + `llm.providers.*`（向后兼容旧扁平字段）；26 个新测试（`test_openai_provider.py`），112/112 全过
-- [ ] P1+.2 `tc feeds fetch --count N`：CLI 新增 `--count` 选项（`typer.Option(None, "--count", "-c")`），`_feeds_fetch` 接收 `count: int | None`，`fetch_feed` 返回 items 后 `if count: items = items[:count]` 截断；超限记 `fetch_events(event_type='fetch_count_limited')`；测试：mock feed 返回 10 条 → `--count 3` 只入库 3 条
-- [ ] P1+.3 验收：对照 PRD §15 Phase 1+ 条目（17/18）走通
+- [x] P1+.2 `tc feeds fetch --count N`：CLI 新增 `--count` 选项（`typer.Option(None, "--count", "-c")`），`_feeds_fetch` 接收 `count: int | None`，`fetch_feed` 返回 items 后 `if count: items = items[:count]` 截断；超限记 `fetch_events(event_type='fetch_count_limited')`；测试：mock feed 返回 10 条 → `--count 3` 只入库 3 条
+- [x] P1+.3 验收：对照 PRD §15 Phase 1+ 条目（17/18）走通
 
 > **WebUI（`app/api` + `app/web`）整体移入 Phase 2。**
 

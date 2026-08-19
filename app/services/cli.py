@@ -50,12 +50,13 @@ def _run_async(coro):
 def feeds(
     action: str = typer.Argument(help="import | fetch"),
     feed_name: str = typer.Option(None, "--name", "-n", help="指定 feed 名称"),
+    count: int = typer.Option(None, "--count", "-c", help="限制抓取条数（从第一条起按顺序取 N 条）"),
 ):
     """管理订阅源。import = 同步 feeds.yaml → DB；fetch = 抓取文章。"""
     if action == "import":
         _run_async(_feeds_import())
     elif action == "fetch":
-        _run_async(_feeds_fetch(feed_name))
+        _run_async(_feeds_fetch(feed_name, count))
     else:
         console.print(f"[red]未知操作: {action}[/red]")
         raise typer.Exit(1)
@@ -113,8 +114,8 @@ async def _feeds_import():
     console.print("[green]✅ feeds import 完成[/green]")
 
 
-async def _feeds_fetch(feed_name: str | None = None):
-    """抓取文章并入队。"""
+async def _feeds_fetch(feed_name: str | None = None, count: int | None = None):
+    """抓取文章并入队。count 限制单次抓取条数（从第一条起按顺序取 N 条）。"""
     from app.ingest.feeds import FeedFetcher
 
     settings = load_settings()
@@ -147,6 +148,20 @@ async def _feeds_fetch(feed_name: str | None = None):
                     etag=feed["etag"],
                     last_modified=feed["last_modified"],
                 )
+
+                # --count 截断：从第一条起按顺序取 N 条（DESIGN P1+.2）
+                if count is not None and len(items) > count:
+                    truncated = len(items) - count
+                    items = items[:count]
+                    console.print(f"  ⚠️  截断: 从 {truncated + count} 条中取前 {count} 条（--count={count}）")
+                    # 记 fetch_events 审计
+                    await session.execute(
+                        text(
+                            "INSERT INTO fetch_events (feed_id, event_type, ok, item_count) "
+                            "VALUES (:fid, 'fetch_count_limited', true, :cnt)"
+                        ),
+                        {"fid": feed["id"], "cnt": truncated},
+                    )
 
                 new_count = 0
                 for item in items:

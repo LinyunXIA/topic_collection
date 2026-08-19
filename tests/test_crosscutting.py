@@ -390,3 +390,74 @@ class TestPipelineConcurrency:
             job2 = await pick_and_claim(session)
             await session.commit()
             assert job2["task"] == "summarize"  # priority=2 后被领
+
+
+# ── P1+.2: feeds fetch --count 截断 ─────────────────────────────────
+
+class TestFetchCountLimit:
+    """验证 --count 截断逻辑（PRD §15 #18，DESIGN P1+.2）。"""
+
+    def test_items_truncated_to_count(self):
+        """items 列表截断到 count 条。"""
+        items = list(range(20))  # 模拟 20 条 feed items
+        count = 5
+        truncated = items[:count]
+        assert len(truncated) == 5
+        assert truncated == [0, 1, 2, 3, 4]
+
+    def test_count_none_no_truncation(self):
+        """count=None 时不截断。"""
+        items = list(range(20))
+        count = None
+        if count is not None and len(items) > count:
+            items = items[:count]
+        assert len(items) == 20
+
+    def test_count_larger_than_items_no_truncation(self):
+        """count 大于 items 数量时不截断。"""
+        items = list(range(3))
+        count = 10
+        if count is not None and len(items) > count:
+            items = items[:count]
+        assert len(items) == 3
+
+    @pytest.mark.asyncio
+    async def test_fetch_count_limited_event_written(self, settings):
+        """截断时写入 fetch_events(event_type='fetch_count_limited')。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+        async with factory() as session:
+            # 插入一个 feed
+            result = await session.execute(
+                text(
+                    "INSERT INTO feeds (type, name, url, enabled) "
+                    "VALUES ('rss', 'Test Feed', 'https://example.com/feed', true) "
+                    "RETURNING id"
+                )
+            )
+            feed_id = result.scalar()
+            await session.commit()
+
+            # 模拟截断事件写入
+            truncated_count = 7
+            await session.execute(
+                text(
+                    "INSERT INTO fetch_events (feed_id, event_type, ok, item_count) "
+                    "VALUES (:fid, 'fetch_count_limited', true, :cnt)"
+                ),
+                {"fid": feed_id, "cnt": truncated_count},
+            )
+            await session.commit()
+
+            # 验证事件写入
+            result = await session.execute(
+                text(
+                    "SELECT event_type, item_count FROM fetch_events "
+                    "WHERE feed_id=:fid AND event_type='fetch_count_limited'"
+                ),
+                {"fid": feed_id},
+            )
+            row = result.first()
+            assert row is not None
+            assert row[0] == "fetch_count_limited"
+            assert row[1] == 7

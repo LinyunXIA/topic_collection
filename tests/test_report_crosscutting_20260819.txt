@@ -5,18 +5,22 @@ rootdir: /Users/linyunxia/PycharmProjects/topic_collection
 configfile: pyproject.toml
 plugins: asyncio-1.4.0, anyio-4.14.2
 asyncio: mode=Mode.AUTO, debug=False, asyncio_default_fixture_loop_scope=session, asyncio_default_test_loop_scope=function
-collecting ... collected 11 items
+collecting ... collected 15 items
 
-tests/test_crosscutting.py::TestRetryClassification::test_transient_failure_does_not_consume_attempt PASSED [  9%]
-tests/test_crosscutting.py::TestRetryClassification::test_permanent_failure_consumes_attempt PASSED [ 18%]
-tests/test_crosscutting.py::TestRetryClassification::test_permanent_failure_dead_letter PASSED [ 27%]
-tests/test_crosscutting.py::TestRetryClassification::test_transient_timeout_increments_consecutive PASSED [ 36%]
-tests/test_crosscutting.py::TestRetryClassification::test_done_check_when_all_jobs_terminal PASSED [ 45%]
-tests/test_crosscutting.py::TestNearDedup::test_identical_vectors_trigger_dedup PASSED [ 54%]
-tests/test_crosscutting.py::TestNearDedup::test_different_content_not_dedup PASSED [ 63%]
-tests/test_crosscutting.py::TestPipelineConcurrency::test_enqueue_idempotent PASSED [ 72%]
-tests/test_crosscutting.py::TestPipelineConcurrency::test_pick_and_claim_skips_locked PASSED [ 81%]
-tests/test_crosscutting.py::TestPipelineConcurrency::test_pick_and_claim_empty_queue PASSED [ 90%]
-tests/test_crosscutting.py::TestPipelineConcurrency::test_priority_ordering PASSED [100%]
+tests/test_crosscutting.py::TestRetryClassification::test_transient_failure_does_not_consume_attempt PASSED [  6%]
+tests/test_crosscutting.py::TestRetryClassification::test_permanent_failure_consumes_attempt PASSED [ 13%]
+tests/test_crosscutting.py::TestRetryClassification::test_permanent_failure_dead_letter PASSED [ 20%]
+tests/test_crosscutting.py::TestRetryClassification::test_transient_timeout_increments_consecutive PASSED [ 26%]
+tests/test_crosscutting.py::TestRetryClassification::test_done_check_when_all_jobs_terminal PASSED [ 33%]
+tests/test_crosscutting.py::TestNearDedup::test_identical_vectors_trigger_dedup PASSED [ 40%]
+tests/test_crosscutting.py::TestNearDedup::test_different_content_not_dedup PASSED [ 46%]
+tests/test_crosscutting.py::TestPipelineConcurrency::test_enqueue_idempotent PASSED [ 53%]
+tests/test_crosscutting.py::TestPipelineConcurrency::test_pick_and_claim_skips_locked PASSED [ 60%]
+tests/test_crosscutting.py::TestPipelineConcurrency::test_pick_and_claim_empty_queue PASSED [ 66%]
+tests/test_crosscutting.py::TestPipelineConcurrency::test_priority_ordering PASSED [ 73%]
+tests/test_crosscutting.py::TestFetchCountLimit::test_items_truncated_to_count PASSED [ 80%]
+tests/test_crosscutting.py::TestFetchCountLimit::test_count_none_no_truncation PASSED [ 86%]
+tests/test_crosscutting.py::TestFetchCountLimit::test_count_larger_than_items_no_truncation PASSED [ 93%]
+tests/test_crosscutting.py::TestFetchCountLimit::test_fetch_count_limited_event_written PASSED [100%]
 
-============================== 11 passed in 0.71s ==============================
+============================== 15 passed in 0.83s ==============================

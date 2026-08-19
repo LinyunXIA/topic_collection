@@ -82,7 +82,7 @@
 | F8 | 日报/周报 | 每日/每周自动生成报告（主题热度、精华摘要、源健康、图谱增长） | P2 |
 | F9 | 开放 API 连接器 | 配置化连接 HN / GitHub / arXiv 等（骨架 P2，广度 P3） | P2/P3 |
 | F10 | 网页抓取 | 礼貌抓取 + 主内容提取（readability、反爬礼仪、增量抓取） | P3 |
-| F11 | CLI（Phase 1 主入口） | `feeds import` / `topic add`（**同步触发近 30 天 `match_keywords()` 重算 + 未命中关键词文章入队 `topics`，§6/§15 #3**） / `topic list` / `fetch` / `summarize`（**作用域 = 全部 `status='pending'`（无 summary）的文章；可选 `--article <id>` 单篇强制重生成走 `complete_summarize()` 钩子，§6**） / `list [--topic]` / `search` / `article <id>` / **`status`**（队列深度 / 失败任务 / LLM 健康，**无 WebUI 期间唯一可观测性**） / **`retry <article_id> <task>`**（走 `complete_*()` 钩子，详见 DESIGN §6）；**`backup`**（`pg_dump` 备份主触发，DESIGN §10，数据比代码值钱）；report/graph 导出留 Phase 2；**`reclassify`**（P3，主题关键词快路径跳过 LLM 分类的兜底全量重跑，§15 #3） | P0 |
+| F11 | CLI（Phase 1 主入口） | `feeds import` / `fetch`（**`--count N` 限制单次抓取条数，Phase 1+**） / `topic add`（**同步触发近 30 天 `match_keywords()` 重算 + 未命中关键词文章入队 `topics`，§6/§15 #3**） / `topic list` / `summarize`（**作用域 = 全部 `status='pending'`（无 summary）的文章；可选 `--article <id>` 单篇强制重生成走 `complete_summarize()` 钩子，§6**） / `list [--topic]` / `search` / `article <id>` / **`status`**（队列深度 / 失败任务 / LLM 健康，**无 WebUI 期间唯一可观测性**） / **`retry <article_id> <task>`**（走 `complete_*()` 钩子，详见 DESIGN §6）；**`backup`**（`pg_dump` 备份主触发，DESIGN §10，数据比代码值钱）；report/graph 导出留 Phase 2；**`reclassify`**（P3，主题关键词快路径跳过 LLM 分类的兜底全量重跑，§15 #3） | P0 |
 | F12 | 告警 | 主题命中、Feed 故障、LLM 掉线时通知（桌面/邮件） | P3 |
 
 ---
