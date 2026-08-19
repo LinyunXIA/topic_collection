@@ -220,6 +220,54 @@ class GenerateResult: text: str; finish_reason: str; usage: dict | None; latency
 | `generate_wiki_entry` | 中文 Markdown 词条 |
 | `generate_report` | 中文 Markdown |
 
+### 4.7 适配器层（LLMAdapter，Phase 1+）
+
+**问题**：不同 OpenAI 兼容 API（oMLX / MiniMax / DeepSeek / OpenAI）在请求和响应格式上有差异（think 标签、json_mode 可靠性、endpoint 路径、temperature 支持等）。每换一个 provider 都要改代码。
+
+**方案**：统一 DTO + ProviderPatch 声明式配置。
+
+```
+GenerateRequest (内部DTO)
+    ↓ LLMAdapter.build_generate_payload() + ProviderPatch
+OpenAI 标准 payload
+    ↓ HTTP POST
+Raw JSON Response
+    ↓ LLMAdapter.parse_generate_response() + ProviderPatch
+GenerateResult (内部DTO，text 已清理 think/围栏)
+```
+
+**三层分工**：
+- **Provider（openai.py / omlx.py）**：只做 HTTP 传输（headers、timeout、error handling），请求/响应格式委托给 adapter
+- **LLMAdapter（adapter.py）**：80% 通用 OpenAI 逻辑（构建 payload、解析 response、strip think/fences）
+- **ProviderPatch（patches.py）**：20% 差异声明（config 驱动，不改代码）
+
+**ProviderPatch 字段**：
+
+| 字段 | 类型 | 默认 | 说明 |
+|---|---|---|---|
+| `send_dimensions` | bool | false | embed 是否发 dimensions 参数（oMLX=true，外部=false） |
+| `dimensions_value` | int | 1536 | dimensions 值 |
+| `drop_request_fields` | list[str] | [] | 要移除的请求字段（如 DeepSeek-R1 不支持 temperature） |
+| `extra_body_fields` | dict | {} | 额外请求字段 |
+| `strip_think_tags` | bool | false | 清理 `<think>...</think>` 块 |
+| `strip_code_fences` | bool | false | 清理 ` ```json ... ``` ` 代码围栏 |
+| `finish_reason_map` | dict | {} | finish_reason 值映射 |
+| `chat_path` | str | /v1/chat/completions | chat 端点路径（DeepSeek 用 /chat/completions） |
+| `embed_path` | str | /v1/embeddings | embed 端点路径 |
+| `models_path` | str | /v1/models | 模型列表端点路径 |
+
+**预定义 Patch**（`app/llm/patches.py`）：
+- `OMLX_PATCH`：`send_dimensions=True, dimensions_value=1536`
+- `MINIMAX_PATCH`：`strip_think_tags=True, strip_code_fences=True`
+- `DEEPSEEK_CHAT_PATCH`：`chat_path="/chat/completions"`
+- `DEEPSEEK_REASONER_PATCH`：`strip_think_tags=True, chat_path="/chat/completions", drop_request_fields=["temperature"]`
+- `OPENAI_PATCH`：空（标准 OpenAI 无特殊 patch）
+
+**新增 provider 流程（零代码改动）**：
+1. `config.yaml` 加 `providers.xxx: {endpoint, api_key_env, patch: {...}}`
+2. `factory.py` 自动识别 → `_build_openai(patch=ProviderPatch(...))` → provider 用 adapter 处理
+3. 完成
+
 ---
 
 ## 5. 数据模型（PostgreSQL + pgvector）

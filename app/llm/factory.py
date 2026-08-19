@@ -16,6 +16,7 @@ from typing import Literal
 
 from app.config import LLMSettings, Settings
 from app.llm.base import LLMProvider
+from app.llm.patches import ProviderPatch
 
 logger = logging.getLogger(__name__)
 
@@ -41,12 +42,23 @@ def _resolve_api_key(env_name: str | None, backend: str) -> str | None:
     return key
 
 
+def _dict_to_patch(patch_dict: dict | None) -> ProviderPatch | None:
+    """将 config dict 转为 ProviderPatch dataclass。None 或空 dict → None。"""
+    if not patch_dict:
+        return None
+    # 过滤掉 ProviderPatch 不认识的 key（容错）
+    valid_keys = {f.name for f in ProviderPatch.__dataclass_fields__.values()}
+    filtered = {k: v for k, v in patch_dict.items() if k in valid_keys}
+    return ProviderPatch(**filtered) if filtered else None
+
+
 def _build_omlx(
     endpoint: str,
     api_key_env: str | None,
     generation_model: str,
     embedding_model: str,
     rerank_model: str | None,
+    patch: ProviderPatch | None = None,
 ) -> LLMProvider:
     """构造 oMLX provider（本机不鉴权，api_key_env 不用 resolve）。"""
     from app.llm.omlx import OMLXProvider
@@ -57,6 +69,7 @@ def _build_omlx(
         generation_model=generation_model,
         embedding_model=embedding_model,
         rerank_model=rerank_model,
+        patch=patch,
     )
 
 
@@ -65,6 +78,7 @@ def _build_openai(
     api_key_env: str | None,
     generation_model: str,
     embedding_model: str,
+    patch: ProviderPatch | None = None,
 ) -> LLMProvider:
     """构造 OpenAI 兼容 provider（外部 API 必鉴权，fail fast）。"""
     from app.llm.openai import OpenAIProvider
@@ -76,6 +90,7 @@ def _build_openai(
         generation_model=generation_model,
         embedding_model=embedding_model,
         rerank_model=None,  # OpenAI 不支持 rerank
+        patch=patch,
     )
 
 
@@ -131,6 +146,7 @@ def build_provider(
                 api_key_env=provider_cfg.api_key_env,
                 generation_model=model,
                 embedding_model=llm.embed.model,
+                patch=_dict_to_patch(provider_cfg.patch),
             )
         else:
             raise ValueError(

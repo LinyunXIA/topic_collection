@@ -1,6 +1,6 @@
-"""oMLX LLM Provider 实现 — DESIGN §4.2
+"""oMLX LLM Provider — HTTP 传输层（本地推理）
 
-OpenAI 兼容 REST API，本机不鉴权（已实测确认）。
+请求/响应格式委托给 LLMAdapter（80% 通用逻辑 + OMLX_PATCH）。
 三端点：/v1/chat/completions、/v1/embeddings、/v1/rerank。
 """
 
@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from app.llm.adapter import LLMAdapter
 from app.llm.base import (
     EmbedResult,
     GenerateRequest,
@@ -20,6 +21,7 @@ from app.llm.base import (
     RerankResult,
     now_ms,
 )
+from app.llm.patches import OMLX_PATCH, ProviderPatch
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +32,8 @@ _EMBED_INSTRUCT_PREFIX = (
 
 
 class OMLXProvider:
-    """oMLX OpenAI 兼容 Provider。"""
+    """oMLX OpenAI 兼容 Provider — 只做 HTTP 传输。"""
 
-    # Qwen3-Embedding instruct prefix（DESIGN §4.2）
     embed_instruct_prefix: str = _EMBED_INSTRUCT_PREFIX
 
     def __init__(
@@ -42,6 +43,7 @@ class OMLXProvider:
         generation_model: str = "Qwen3.8-27B-MLX-4bit",
         embedding_model: str = "Qwen3-Embedding-8B-4bit-DWQ",
         rerank_model: str | None = "Qwen3-Reranker-4B-mxfp8",
+        patch: ProviderPatch | None = None,
     ):
         self.name = "omlx"
         self.base_url = base_url.rstrip("/")
@@ -49,6 +51,7 @@ class OMLXProvider:
         self.generation_model = generation_model
         self.embedding_model = embedding_model
         self.rerank_model = rerank_model
+        self._adapter = LLMAdapter(patch or OMLX_PATCH)
 
     def _headers(self) -> dict[str, str]:
         """构建请求头：本机不鉴权时不带 Authorization（DESIGN §4.2）。"""
@@ -57,74 +60,34 @@ class OMLXProvider:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
+    async def _post(
+        self, url: str, payload: dict, timeout: float = 180
+    ) -> dict[str, Any]:
+        """发送 POST 请求并返回 JSON 响应。"""
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, headers=self._headers(), json=payload)
+            resp.raise_for_status()
+        return resp.json()
+
     async def generate(self, req: GenerateRequest) -> GenerateResult:
         """POST /v1/chat/completions"""
-        payload: dict[str, Any] = {
-            "model": req.model or self.generation_model,
-            "messages": req.messages,
-            "temperature": req.temperature,
-        }
-        if req.max_tokens is not None:
-            payload["max_tokens"] = req.max_tokens
-        if req.json_mode:
-            payload["response_format"] = {"type": "json_object"}
-
+        payload = self._adapter.build_generate_payload(req, self.generation_model)
         t0 = now_ms()
-        async with httpx.AsyncClient(timeout=req.timeout_s) as client:
-            resp = await client.post(
-                f"{self.base_url}/v1/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-            resp.raise_for_status()
-
-        data = resp.json()
-        latency_ms = now_ms() - t0
-        choice = data["choices"][0]
-        return GenerateResult(
-            text=choice["message"]["content"],
-            finish_reason=choice.get("finish_reason", ""),
-            usage=data.get("usage"),
-            latency_ms=latency_ms,
-        )
+        data = await self._post(self._adapter.chat_url(self.base_url), payload, req.timeout_s)
+        result = self._adapter.parse_generate_response(data, self.generation_model)
+        result.latency_ms = now_ms() - t0
+        return result
 
     async def embed(
         self, texts: list[str], model: str | None = None
     ) -> EmbedResult:
-        """POST /v1/embeddings
-
-        指令感知（DESIGN §4.2）：调用方通过 embed_query/embed_documents 区分，
-        此处不做 prefix 处理——prefix 由 client 封装层统一加。
-        """
-        payload = {
-            "model": model or self.embedding_model,
-            "input": texts,
-            "dimensions": 1536,  # DESIGN §5.2: MRL 截断至 1536
-        }
-
+        """POST /v1/embeddings"""
+        payload = self._adapter.build_embed_payload(texts, model, self.embedding_model)
         t0 = now_ms()
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{self.base_url}/v1/embeddings",
-                headers=self._headers(),
-                json=payload,
-            )
-            resp.raise_for_status()
-
-        data = resp.json()
-        latency_ms = now_ms() - t0
-
-        # 按 index 排序确保顺序一致
-        sorted_data = sorted(data["data"], key=lambda x: x["index"])
-        embeddings = [item["embedding"] for item in sorted_data]
-        dim = len(embeddings[0]) if embeddings else 0
-
-        return EmbedResult(
-            embeddings=embeddings,
-            model=data.get("model", payload["model"]),
-            dim=dim,
-            latency_ms=latency_ms,
-        )
+        data = await self._post(self._adapter.embed_url(self.base_url), payload, timeout=120)
+        result = self._adapter.parse_embed_response(data, self.embedding_model)
+        result.latency_ms = now_ms() - t0
+        return result
 
     async def rerank(
         self, query: str, docs: list[str], top_n: int
@@ -141,15 +104,9 @@ class OMLXProvider:
         }
 
         t0 = now_ms()
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{self.base_url}/v1/rerank",
-                headers=self._headers(),
-                json=payload,
-            )
-            resp.raise_for_status()
-
-        data = resp.json()
+        data = await self._post(
+            f"{self.base_url}/v1/rerank", payload, timeout=120
+        )
         latency_ms = now_ms() - t0
 
         results = sorted(data.get("results", []), key=lambda x: x["index"])
@@ -165,7 +122,7 @@ class OMLXProvider:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
-                    f"{self.base_url}/v1/models",
+                    self._adapter.models_url(self.base_url),
                     headers=self._headers(),
                 )
                 resp.raise_for_status()

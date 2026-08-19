@@ -1,7 +1,7 @@
-"""OpenAI 兼容 LLM Provider 实现 — 外部 API
+"""OpenAI 兼容 LLM Provider — HTTP 传输层
 
-支持 OpenAI / DeepSeek / Moonshot / DashScope (OpenAI-mode) / 智谱 / vLLM 等
-OpenAI 兼容协议的外部 API。Embed/rerank 不走外部（隐私，强制本地）。
+请求/响应格式委托给 LLMAdapter（80% 通用逻辑 + 20% patch）。
+支持 OpenAI / MiniMax / DeepSeek / Moonshot / DashScope 等。
 """
 
 from __future__ import annotations
@@ -11,6 +11,7 @@ from typing import Any
 
 import httpx
 
+from app.llm.adapter import LLMAdapter
 from app.llm.base import (
     EmbedResult,
     GenerateRequest,
@@ -20,12 +21,13 @@ from app.llm.base import (
     RerankResult,
     now_ms,
 )
+from app.llm.patches import ProviderPatch
 
 logger = logging.getLogger(__name__)
 
 
 class OpenAIProvider:
-    """OpenAI 兼容 Provider — 外部 API。"""
+    """OpenAI 兼容 Provider — 只做 HTTP 传输。"""
 
     def __init__(
         self,
@@ -33,7 +35,8 @@ class OpenAIProvider:
         api_key: str | None = None,
         generation_model: str = "gpt-4o-mini",
         embedding_model: str = "text-embedding-3-small",
-        rerank_model: str | None = None,  # OpenAI 不支持 rerank
+        rerank_model: str | None = None,
+        patch: ProviderPatch | None = None,
     ):
         self.name = "openai"
         self.base_url = base_url.rstrip("/")
@@ -41,8 +44,8 @@ class OpenAIProvider:
         self.generation_model = generation_model
         self.embedding_model = embedding_model
         self.rerank_model = rerank_model
-        # OpenAI embedding 不需要 instruct prefix
         self.embed_instruct_prefix: str = ""
+        self._adapter = LLMAdapter(patch or ProviderPatch())
 
     def _headers(self) -> dict[str, str]:
         """构建请求头：外部 API 必须鉴权。"""
@@ -51,100 +54,41 @@ class OpenAIProvider:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
-    @staticmethod
-    def _strip_think_tags(text: str) -> str:
-        """清理思考模型的 <think>...</think> 标签和 ```json 代码围栏。
-
-        MiniMax-M3 等思考模型即使开启 json_mode，响应仍可能包含
-        think 块和代码围栏。返回纯 JSON 文本供下游 parse_with_repair 处理。
-        """
-        import re
-        # 去除 <think>...</think> 块
-        text = re.sub(r"<think>.*?</think>", "", text, flags=re.DOTALL)
-        # 去除 ```json ... ``` 代码围栏
-        text = re.sub(r"```(?:json)?\s*\n?", "", text)
-        text = re.sub(r"```\s*$", "", text)
-        return text.strip()
+    async def _post(
+        self, url: str, payload: dict, timeout: float = 180
+    ) -> dict[str, Any]:
+        """发送 POST 请求并返回 JSON 响应。"""
+        async with httpx.AsyncClient(timeout=timeout) as client:
+            resp = await client.post(url, headers=self._headers(), json=payload)
+            resp.raise_for_status()
+        return resp.json()
 
     async def generate(self, req: GenerateRequest) -> GenerateResult:
         """POST /v1/chat/completions"""
-        payload: dict[str, Any] = {
-            "model": req.model or self.generation_model,
-            "messages": req.messages,
-            "temperature": req.temperature,
-        }
-        if req.max_tokens is not None:
-            payload["max_tokens"] = req.max_tokens
-        if req.json_mode:
-            payload["response_format"] = {"type": "json_object"}
-
+        payload = self._adapter.build_generate_payload(req, self.generation_model)
         t0 = now_ms()
-        async with httpx.AsyncClient(timeout=req.timeout_s) as client:
-            resp = await client.post(
-                f"{self.base_url}/v1/chat/completions",
-                headers=self._headers(),
-                json=payload,
-            )
-            resp.raise_for_status()
-
-        data = resp.json()
-        latency_ms = now_ms() - t0
-        choice = data["choices"][0]
-        text = self._strip_think_tags(choice["message"]["content"])
-        return GenerateResult(
-            text=text,
-            finish_reason=choice.get("finish_reason", ""),
-            usage=data.get("usage"),
-            latency_ms=latency_ms,
-        )
+        data = await self._post(self._adapter.chat_url(self.base_url), payload, req.timeout_s)
+        result = self._adapter.parse_generate_response(data, self.generation_model)
+        result.latency_ms = now_ms() - t0
+        return result
 
     async def embed(
         self, texts: list[str], model: str | None = None
     ) -> EmbedResult:
-        """POST /v1/embeddings
-
-        不传 dimensions 参数（不同 OpenAI 兼容 API 支持情况不一），
-        由下游 complete_embed 钩子统一校验维度。
-        """
-        payload = {
-            "model": model or self.embedding_model,
-            "input": texts,
-        }
-
+        """POST /v1/embeddings"""
+        payload = self._adapter.build_embed_payload(texts, model, self.embedding_model)
         t0 = now_ms()
-        async with httpx.AsyncClient(timeout=120) as client:
-            resp = await client.post(
-                f"{self.base_url}/v1/embeddings",
-                headers=self._headers(),
-                json=payload,
-            )
-            resp.raise_for_status()
-
-        data = resp.json()
-        latency_ms = now_ms() - t0
-
-        sorted_data = sorted(data["data"], key=lambda x: x["index"])
-        embeddings = [item["embedding"] for item in sorted_data]
-        dim = len(embeddings[0]) if embeddings else 0
-
-        return EmbedResult(
-            embeddings=embeddings,
-            model=data.get("model", payload["model"]),
-            dim=dim,
-            latency_ms=latency_ms,
-        )
+        data = await self._post(self._adapter.embed_url(self.base_url), payload, timeout=120)
+        result = self._adapter.parse_embed_response(data, self.embedding_model)
+        result.latency_ms = now_ms() - t0
+        return result
 
     async def rerank(
         self, query: str, docs: list[str], top_n: int
     ) -> RerankResult:
-        """OpenAI 兼容 API 不支持 /v1/rerank（Cohere 风格）。
-
-        Rerank 必须走本地 OMLXProvider（factory 会跳过 OpenAI），
-        此方法不应被调用。
-        """
+        """OpenAI 兼容 API 不支持 /v1/rerank。"""
         raise NotImplementedError(
-            "OpenAI 兼容 provider 不支持 rerank；"
-            "请使用本地 OMLXProvider（factory 会自动选择）"
+            "OpenAI 兼容 provider 不支持 rerank；请使用本地 OMLXProvider"
         )
 
     async def healthcheck(self) -> HealthStatus:
@@ -153,7 +97,7 @@ class OpenAIProvider:
         try:
             async with httpx.AsyncClient(timeout=10) as client:
                 resp = await client.get(
-                    f"{self.base_url}/v1/models",
+                    self._adapter.models_url(self.base_url),
                     headers=self._headers(),
                 )
                 resp.raise_for_status()

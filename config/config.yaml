@@ -37,6 +37,9 @@ llm:
     minimax:
       endpoint: https://api.minimaxi.com
       api_key_env: MiniMax_Key
+      patch:
+        strip_think_tags: true
+        strip_code_fences: true
   # 外部 provider 注册表（仅 OpenAI 兼容协议；多个可同时声明）
   # providers:
   #   openai:

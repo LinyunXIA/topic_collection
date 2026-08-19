@@ -295,7 +295,7 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 | 阶段 | 范围 | 覆盖需求 |
 |---|---|---|
 | **Phase 1 MVP（可用即可，无 WebUI）** | 建库（Postgres + pgvector + tsvector）；RSS 抓取（ETag/去重）；清洗；本地 LLM（oMLX）+ `summarize`(中文) + `embed_core`/`embed_summary`(1536维) + `classify_topics`（关键词+LLM）；基础 Wiki 词条 + 混合检索；**CLI 入口**（feeds import / topic add / topic list / fetch / summarize / list / search / article）；定时抓取+流水线；config（config.yaml + feeds.yaml）+ `docker-compose.yml`(pgvector) | RSS(1a)、LLM Wiki 基础(3)、本地 LLM oMLX(5a)、中文输出(6)、语义检索(pgvector 基础)、定时抓取(2b 部分)、CLI 可用入口(2c 提前) |
-| **Phase 1+（CLI 增强，MVP 用后改进）** | 外部 LLM API 切换（OpenAI 兼容协议，per-capability：generate 可选本地/外部，embed/rerank 强制本地）；`tc feeds fetch --count N` 限制单次抓取条数；`_classify_http_error` 重试分类修复（401/403/400 → PermanentError） | 外部 LLM API(F5a 增强)、CLI 体验优化 |
+| **Phase 1+（CLI 增强，MVP 用后改进）** | 外部 LLM API 切换（OpenAI 兼容协议，per-capability：generate 可选本地/外部，embed/rerank 强制本地）；LLM 适配器层（统一 DTO + ProviderPatch 声明式配置：80% 通用 OpenAI 解析 + 20% 模型特定补丁）；`tc feeds fetch --count N` 限制单次抓取条数；`_classify_http_error` 重试分类修复（401/403/400 → PermanentError） | 外部 LLM API(F5a 增强)、适配器层、CLI 体验优化 |
 | **Phase 2** | **WebUI Dashboard**（概览/Feeds/文章/详情/搜索/设置/图谱/报告页）；混合检索完善（RRF + oMLX Reranker、相似文章推荐）；中文翻译；实体关系抽取→entities/relations 表+合并；图谱页（ECharts）；主题聚合 UI+跨源视图；完整 Wiki（主题/实体词条+交叉链接）；日报/周报；API 连接器骨架 | Web+Dashboard(2a)、报告(2b)、知识图谱(4)、API/爬虫骨架(1b 部分)、主题聚合(1c)、Reranker 增强(3)、混合检索高级(3) |
 | **Phase 3** | API 连接器广度（arXiv/GitHub/通用 OpenAPI）+ 健壮爬虫（readability、反爬礼仪、增量抓取）；高级搜索（过滤/保存搜索/实体搜索）；告警（主题命中/Feed 故障/LLM 掉线）；分任务多模型 A/B；存储归档裁剪 | API/爬虫广度(1b)、高级搜索(3)、告警(12) |
 

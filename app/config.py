@@ -24,10 +24,11 @@ class WebSettings(BaseSettings):
 
 
 class ProviderConfig(BaseSettings):
-    """单个外部 LLM provider 的配置（endpoint + api_key）。"""
+    """单个外部 LLM provider 的配置（endpoint + api_key + patch）。"""
 
     endpoint: str
     api_key_env: str | None = None
+    patch: dict = Field(default_factory=dict)  # ProviderPatch 字段，如 {strip_think_tags: true}
 
 
 class GenerateSettings(BaseSettings):
