@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目状态：切片一+切片二完成，60/60 tests passing
 
-`topic_collection` 是一个**主题信息聚合 + 个人知识库**系统（采集 RSS/API → 本地 LLM 摘要/嵌入 → 可搜索 Wiki + 知识图谱）。**切片一（端到端闭环）和切片二（混合检索）已实现并验收通过**，真实环境 20 篇 HN 文章端到端跑通（20/20 summary + 40+ embedding）。下一步是切片三（主题 + Wiki 词条）。
+`topic_collection` 是一个**主题信息聚合 + 个人知识库**系统（采集 RSS/API → 本地 LLM 摘要/嵌入 → 可搜索 Wiki + 知识图谱）。**切片一（端到端闭环）、切片二（混合检索）、切片三（主题+Wiki）已实现并验收通过**，75/75 tests passing，真实环境 20 篇 HN 文章端到端跑通。Phase 1 MVP 的三个切片全部完成，剩余横切任务（scheduler + X.2/X.3 测试增强）。
 
 **先读这两份文档再动手**（文档用中文撰写，新增文档/注释沿用中文）：
 - `docs/PRD.md` —— 产品需求（做什么、阶段划分、验收标准）
@@ -41,7 +41,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 |---|---|---|---|
 | **切片一** | 脚手架 + DB + LLM + Ingest + Pipeline + CLI | ✅ 完成 | 48 passed |
 | **切片二** | 混合检索（RRF 融合 + CLI --mode） | ✅ 完成 | +12 passed |
-| **切片三** | 主题 + Wiki 词条（PRD 验收 #3/#5） | ⬜ 待开发 | — |
+| **切片三** | 主题 CRUD + classify_topics + Wiki 词条 | ✅ 完成 | +15 passed |
 | Day 1 | 备份脚本 + tc backup | ✅ 完成 | — |
 
 ## 项目结构
@@ -70,9 +70,10 @@ app/
 └── services/
     ├── cleaner.py     # HTML→Markdown（trafilatura）+ 语言检测（lingua）
     ├── llm_tasks.py   # summarize/embed_core/embed_summary + complete 钩子
-    ├── topics.py      # 关键词快路径匹配
+    ├── topics.py      # 主题 CRUD + 关键词匹配 + classify_topics LLM 慢路径
+    ├── wiki.py        # 文章词条生成（Markdown + related_json）
     ├── search.py      # 混合检索（RRF 融合）
-    └── cli.py         # CLI 入口（feeds/summarize/list/search/article/status/retry/backup）
+    └── cli.py         # CLI 入口（feeds/summarize/list/search/article/topic/status/retry/backup）
 ```
 
 ## CLI 命令（已实现）
@@ -97,6 +98,11 @@ tc search "关键词"                    # 混合检索（默认 hybrid）
 tc search "关键词" --mode semantic    # 纯语义
 tc search "关键词" --mode keyword     # 纯关键词
 
+# 主题管理
+tc topic add --name "AI" --keywords "人工智能,LLM,机器学习"
+tc topic list
+tc list --topic "AI"                  # 按主题筛选文章
+
 # 系统管理
 tc status                             # 队列深度 / 失败任务 / LLM 健康
 tc retry <article_id> <task>          # 重试指定任务
@@ -109,7 +115,7 @@ make worker                           # 启动 worker（常驻消费队列）
 ## 运行测试
 
 ```bash
-pytest tests/ -v                      # 60 tests, ~1.7s
+pytest tests/ -v                      # 75 tests, ~2.4s
 ```
 
 测试需要 Docker Postgres 运行（`docker compose up -d`）。
