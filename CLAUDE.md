@@ -38,14 +38,18 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 实现状态（切片进度）
 
 | 切片 | 内容 | 状态 | 测试 |
-|---|---|---|---|
+| :--- | :--- | :--- | ---: |
 | **切片一** | 脚手架 + DB + LLM + Ingest + Pipeline + CLI | ✅ 完成 | 48 passed |
 | **切片二** | 混合检索（RRF 融合 + CLI --mode） | ✅ 完成 | +12 passed |
 | **切片三** | 主题 CRUD + classify_topics + Wiki 词条 | ✅ 完成 | +15 passed |
 | **横切** | scheduler + A1 重试分类 + B4 近似去重 + 验收 | ✅ 完成 | +11 passed |
 | **Phase 1+** | 外部 LLM API 切换 + 适配器层 + fetch --count + 重试分类修复 | ✅ 完成 | +62 passed |
-| Day 1 | 备份脚本 + tc backup | ✅ 完成 | — |
-| | | **合计** | **148 passed** |
+| **Day 1** | 备份脚本 + tc backup | ✅ 完成 | — |
+| **Bugfix** | generate.model fallback regression（worker 切 minimax 后 services 仍用顶层 llm.model） | ✅ 完成 | +2 passed |
+| **Bugfix** | worker 死锁三连修：①recover_interrupted force_all_running 启动期抢锁 ②worker_loop 60s 周期 recover ③任务处理 lease 后台续租（renew_lease 真正接入） | ✅ 完成 | +6 passed |
+| **Bugfix** | topics/wiki handler 缺位（worker 只打 warning 跳过，job 卡 running）+ article 状态机缺 pending→processing（done 永远不触发） | ✅ 完成 | +6 passed |
+
+**测试合计：162 passed**（48 + 12 + 15 + 11 + 62 + 0 + 2 + 6 + 6）
 
 ## 项目结构
 

@@ -497,7 +497,7 @@ fetch → normalize → dedup(url_hash/content_hash) → clean → 入队 proces
 
 **文章状态机**：`pending → processing → done | unparseable | error`（部分任务失败仍可 `done`，详情页可重试单个任务）
 - **迁移触发点（规格明确，否则实现会一直停在 pending，触发硬伤 3）**：
-  - `pending → processing`：worker pick-and-claim 首个该文章 job 时同事务 `UPDATE articles SET status='processing' WHERE id=$1 AND status='pending'`（status 守卫：processing 不会被重复推进，job 锁就够，但显式 status 守卫便于测试断言）
+  - `pending → processing`：**`enqueue_jobs()` 入队时同事务** `UPDATE articles SET status='processing' WHERE id=:aid AND status='pending'`（status 守卫幂等）。实现位置在 `app/pipeline.py` 的 `enqueue_jobs` 头部，最早调用方是 fetch 后入队 + `complete_summarize` 的 cascade 入队。**比 worker pick-and-claim 更靠前触发**，让 `tc list` 在入队后即看到 processing 而非 pending。
   - `processing → done`：**每次** job 进入终态（`succeeded` / `failed` / `superseded`）后，同事务检查：该文章不存在任何 `queued` 或 `running` job → `UPDATE articles SET status='done' WHERE id=$1 AND status='processing'`（**且** `dedupe_of IS NULL`，非 loser）。适用所有路径：关键词命中（topics job 失去入队资格，天然缺席 → 该 job 落地后无剩余 queued/running → 自动 done）、任务失败（fail 后无剩余 → 自动 done）、supersede（旧 job superseded 后若新 job 已不存在 → 自动 done）；embed_summary / translate 失败不阻塞 done（缺席即终态）。**不再维护"非可选 task 清单"**——与任务集合无关的规则不会因新增/删除 task 而产生遗漏
   - `pending → unparseable`：cleaner 阶段 `articles.status='unparseable'` 同事务写入，**跳过所有 LLM 入队**（§6 cleaner / 入队规则表）；worker 领取前查询 articles.status，发现 unparseable **直接标记 `status='superseded'`**（不跳过——跳过的 job 会停在 `running` 直到租约过期被 `recover_interrupted` 回收、再领取再跳过，循环；实际上 unparseable 文章不入队任何 job，此防御分支极少触发，但既然写了就写完整）
   - `processing → error`：保留（当前未触发，留 P3）
@@ -604,15 +604,22 @@ RETURNING *;
 - **领取 SQL 不自增 `attempt`**：旧版 `attempt=attempt+1` 是 v0.5 瞬时不分路径的残留——attempt 现在由永久失败路径独占（§6 失败处理 SQL），瞬时永不消耗 attempt 预算。若领取时 +1，job 经过 N 次瞬时退避后再遇一次永久错误，一次就耗光 `max_attempts` 死信——直接违反「永久 3 次死信」与验收 #7。领取 SQL 只推进 `status='running'` 与续 lease 即可
 
 **worker 运行模型（常驻自驱，非心跳驱动）**：
-- lifespan 启动**单个 asyncio worker task**：`循环 { 领取(SKIP LOCKED) → 无任务 sleep ~1s → 处理完继续 }`；领取与处理都在 await 点让出事件循环，不阻塞 fetch / HTTP
+- lifespan 启动**单个 asyncio worker task**：`循环 { 周期 recover → 领取(SKIP LOCKED) → 无任务 sleep ~1s → 处理（含后台 lease 续租）→ 继续 }`；领取与处理都在 await 点让出事件循环，不阻塞 fetch / HTTP
 - 入队到开始 ≤ 当前在飞任务时长 + ~1s（并发=1 下在飞任务即 LLM 调用时长）
 - **scheduler 的 drain_queue 不参与领取**（避免双领取者歧义），只做维护，见 §10
 - LLM 掉线期间所有 queued 带未来 lock_until → 领取空手返回后 worker **自探测 oMLX**（`GET /v1/models` 一次，§4.4）决定 sleep 退避时长，不空转打 oMLX；Phase 1 单进程下 `LLMClient.healthy` 与 scheduler 共享，但 worker 仍以自探测为准（不盲信 scheduler 5m 快照）
 - **领取门控（可选，推荐 Phase 1 开）**：领取前先自探测，不 healthy 则直接 sleep 退避、**不领新 job**——避免掉线期间新 job（`lock_until NULL`，本会被立刻领取）被领走后立刻失败回滚（瞬时虽不自增 attempt、不进死信，但每个被领走又失败的 job 都会带上未来 `lock_until` 退避，等于把一堆本可立即排队的新 job 提前推到退避队列、拉长恢复后的消费时延）。配合下一节「瞬时错误不自增 attempt、不进死信」双保险，保 PRD §15 #7「恢复后自动续跑」
+- **启动期强制 recover**：`worker_loop` 进入主循环前先 `recover_interrupted(force_all_running=True)`——抢所有 `status='running'` 的 lease（无论 lock_until 是否过期）。仅在 Phase 1 单 worker 假设下成立，处理「前 worker 进程被 Ctrl-C/SIGKILL 强杀、当前 worker 接力、但旧 lease 还没过期」的场景。多 worker 启动会撞锁、误抢，**这个 flag 在 §6 已有注释**
+- **运行期周期 recover**：`worker_loop` 主循环每 `WORKER_RECOVER_PERIOD_S=60s` 跑一次 `recover_interrupted(force_all_running=False)`——仅回收 lock_until 已过期的 running job（多 worker 安全）。覆盖「worker 在线但 LLM 调用 hang 在 httpx 不返」的孤儿 lease
 
 **状态机原子性（lock_until 租约模型 + 事务合并）**：
 - **领取 → 持租约**：见上一段 SQL，pick-and-claim 单条原子同事务；`lock_until` 既是 queued 退避门控、也是 running 存活凭证，**语义统一**
-- **续租（随处理协程，不另起 watchdog）**：长 LLM 任务（>3 分钟）处理中定期 `UPDATE lock_until=now()+INTERVAL '5 minutes' WHERE id=$1 AND status='running'`——**续租逻辑必须与 LLM 调用跑在同一个 asyncio task 内**（在 `await llm.generate()` 外层包一个续租循环，或用 `asyncio.wait_for` + 周期性 `UPDATE`）。**不要**另起独立 watchdog 协程去续租：那样当 LLM 调用 hang（httpx 不返回）时，watchdog 仍会持续续租、lease 永不过期，单 worker concurrency=1 下整条流水线**永久卡死**、`recover_interrupted()` 也救不回来（lease 一直在未来）。续租随处理协程则 hang 时停续租、lease 到期、下次启动 `recover_interrupted()` 回收。**`httpx` 调用必须带 `timeout=`**（GenerateRequest.timeout_s 默认 180s，§4.1）——这是防 hung 的第一道闸，续租随处理协程是第二道。并发=1 下 27B 长文 20–60s 实际不需要续租，但封装层统一处理以防未来 P2 切高并发或长任务
+- **续租（随处理协程，不另起 watchdog）**：实现为独立后台 asyncio task `_lease_renewer(session_factory, job_id, stop_event, interval_s=60)`——`process_job_with_lease_renewal` 处理每个 job 时启动一份，后台每 60s `UPDATE lock_until=now()+INTERVAL '5 minutes' WHERE id=:jid AND status='running'`，handler 返回前 `stop_event.set()` 平滑停（2s 上限）。**续租 task 是后台、不与 handler 争 DB session**。其约束：本节原本的「续租与 LLM 调用同一个 asyncio task」设计即本节的实施；httpx 必须带 timeout（`GenerateRequest.timeout_s=180s`，§4.1）是第一道闸；lease_renewer 同 task 内的后台循环是第二道——hang 时 renewer 自动停、lease 自然到期、worker_loop 周期 recover 兜底回收。**`recover_interrupted(force_all_running=True)`** 是启动期第三道
+- **handler 成功 → succeeded（统一转移）**：`process_job_with_lease_renewal` 在 task_handler 正常返回之后**统一**执行：
+  ```sql
+  UPDATE processing_jobs SET status='succeeded', lock_until=NULL, updated_at=now() WHERE id=:jid;
+  ```
+  之前只有 `complete_embed()` 自己写 succeeded（`run_summarize` / `run_classify_topics` / `run_generate_wiki` 不写），导致 summarize/topics/wiki job 永久卡 running、lock_until 在 renewer 续命下保持有效、`tc status` 持续显示 running。统一转移后 5 个 task type 一视同仁，renewer 2s 内停 + check_and_set_done 触发文章 processing→done。PermanentError/Exception 路径已在原本的 handle_*_failure 函数里处理 succeeded/failed 转移，process_job_with_lease_renewal 补 check_and_set_done 一并推动
 - **完成（产物落库 + 状态推进同事务 + running 守卫）**：
   ```sql
   BEGIN;
@@ -812,6 +819,8 @@ feeds:
       mapper: { title: .title, url: .url, published: .time }
 ```
 
+
+
 **同步机制**（feeds.yaml ↔ DB `feeds` 表）：
 - **DB 为运行时真源**（fetch/worker 从 DB 读 enabled feeds）；**feeds.yaml 为维护清单**
 - `tc feeds import` 命令（或启动时自动同步，幂等）：按 `url` upsert 进 DB——新增插入、变更更新、`enabled=false` 仅停用不删记录
@@ -917,6 +926,19 @@ feeds:
 - [x] P1+.4 LLM 适配器层（统一 DTO + ProviderPatch）：`app/llm/patches.py`（ProviderPatch dataclass + 5 个预定义 patch：OMLX/OPENAI/MINIMAX/DEEPSEEK_CHAT/DEEPSEEK_REASONER）+ `app/llm/adapter.py`（LLMAdapter：build_generate_payload/parse_generate_response + build_embed_payload/parse_embed_response + strip_think_tags/strip_code_fences）；Provider（openai.py/omlx.py）简化为 HTTP 传输壳（委托 adapter）；factory 支持 `provider_cfg.patch` dict→ProviderPatch 转换；config.yaml minimax provider 加 patch 块；MiniMax-M3 通讯验证通过（healthcheck + summarize JSON 解析成功）；22 个 adapter 测试，**148/148 全过**
 
 > **WebUI（`app/api` + `app/web`）整体移入 Phase 2。**
+
+**Phase 1++（Post-MVP 紧急修复与硬化）**：
+- [x] ++.1 OpenAIProvider 错误响应日志：`app/llm/openai.py` `_post()` 在 `raise_for_status()` 之前 `logger.error("API %s %s → %d: %s", ...)` 写入 provider 返回的 JSON body（限长 500 字符）。minimax 这类外部 provider 返回的 `{"type":"error", ...}` body 含丰富诊断信息（unknown model / 不支持的参数等），之前只 raise status_code、调试时黑盒
+- [x] ++.2 `services.llm_tasks.py` + `services.topics.py` 用 `settings.llm.generate.model` 而非顶层 `settings.llm.model` 作 fallback：`run_summarize` / `complete_summarize` / `classify_topics` 三处 fallback 改为 `settings.llm.generate.model if generate else settings.llm.model`（与 `worker.py:57` / `cli.py:524` 已有的写法对齐）。**根因**：worker 切 minimax 后 minimax API 收到本地模型名 `Qwen3.8-27B-MLX-4bit` → 400 unknown model
+- [x] ++.3 worker 鲁棒性（5 连修）：
+  - `recover_interrupted(force_all_running=)` 双模式（pipeline.py）：force=True 仅启动期跑（Phase 1 单 worker 假设），force=False 仅回收过期 lease（运行期多 worker 安全）
+  - `worker_loop` 启动期 force_recover + 运行期 60s 周期 recover，覆盖「前 worker 强杀」与「当前 worker LLM call hang」两类孤儿 lease
+  - `_lease_renewer + process_job_with_lease_renewal`（pipeline.py）：把原本是死代码的 renew_lease 真正接入——后台 asyncio task 每 60s 写 lease_until，handler 完成时 stop_event 平滑停
+  - `enqueue_jobs` 同事务触发 `articles.status: pending → processing`：之前整个 codebase 无迁移触发点，tc list 永远 pending、check_and_set_done 不触发
+  - worker._TASK_CAPABILITY + handlers 加 `topics=generate` / `wiki=generate` 及对应薄壳（worker.py）；之前 topics/wiki job 被 claim 后只打 warning 跳过、永久卡 running
+  - `tc retry` 接受 topics / wiki（cli.py）
+  - handler 成功返回后**统一**写 `status='succeeded'`（process_job_with_lease_renewal 内）：summarize/topics/wiki 这类"轻 handler"不再卡 running
+- [x] ++.4 测试：6+13+1 = 14 新单测（test_unit.py +2 generate.model fallback；test_crosscutting.py +6 worker routing/state machine/topics wiki handlers/end-to-end + 6 recover/lease/process_job_with_lease_renewal + 1 替换）。**148 → 162 passed**
 
 ---
 
