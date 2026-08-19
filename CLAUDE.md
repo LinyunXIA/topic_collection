@@ -2,9 +2,9 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 项目状态：切片一+切片二完成，60/60 tests passing
+## 项目状态：Phase 1 MVP + Phase 1+ 完成，116/116 tests passing
 
-`topic_collection` 是一个**主题信息聚合 + 个人知识库**系统（采集 RSS/API → 本地 LLM 摘要/嵌入 → 可搜索 Wiki + 知识图谱）。**切片一（端到端闭环）、切片二（混合检索）、切片三（主题+Wiki）+ 横切（scheduler + 测试 + 验收）已全部完成**，86/86 tests passing，真实环境 20 篇 HN 文章端到端跑通。**Phase 1 MVP 全部实现**，PRD §15 验收 1/3/5/7/8/9/16 全部通过。
+`topic_collection` 是一个**主题信息聚合 + 个人知识库**系统（采集 RSS/API → 本地 LLM 摘要/嵌入 → 可搜索 Wiki + 知识图谱）。**切片一（端到端闭环）、切片二（混合检索）、切片三（主题+Wiki）+ 横切（scheduler + 测试 + 验收）+ Phase 1+（外部 LLM API + fetch --count）已全部完成**，116/116 tests passing，真实环境 20 篇 HN 文章端到端跑通。**Phase 1 MVP + Phase 1+ 全部实现**，PRD §15 验收 1/3/5/7/8/9/16/17/18 全部通过。
 
 **先读这两份文档再动手**（文档用中文撰写，新增文档/注释沿用中文）：
 - `docs/PRD.md` —— 产品需求（做什么、阶段划分、验收标准）
@@ -43,8 +43,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **切片二** | 混合检索（RRF 融合 + CLI --mode） | ✅ 完成 | +12 passed |
 | **切片三** | 主题 CRUD + classify_topics + Wiki 词条 | ✅ 完成 | +15 passed |
 | **横切** | scheduler + A1 重试分类 + B4 近似去重 + 验收 | ✅ 完成 | +11 passed |
+| **Phase 1+** | 外部 LLM API 切换 + fetch --count + 重试分类修复 | ✅ 完成 | +30 passed |
 | Day 1 | 备份脚本 + tc backup | ✅ 完成 | — |
-| | | **合计** | **86 passed** |
+| | | **合计** | **116 passed** |
 
 ## 项目结构
 
@@ -90,6 +91,7 @@ python -m scripts.init_db             # CREATE EXTENSION vector + alembic upgrad
 tc feeds import                       # feeds.yaml → DB（幂等 upsert）
 tc feeds fetch                        # 抓取所有 enabled feed
 tc feeds fetch --name "Hacker News"   # 抓取指定 feed
+tc feeds fetch -c 3 --name "HN"       # 只抓前 3 条（--count 限制条数）
 
 # 文章处理
 tc summarize <article_id>             # 重新生成摘要（走 complete_summarize 钩子）
