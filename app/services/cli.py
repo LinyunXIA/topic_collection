@@ -518,16 +518,28 @@ async def _status():
 
     # LLM 健康（探测 generate 端点）
     from app.llm.factory import build_provider
+    gen = settings.llm.generate
+    gen_backend = gen.backend if gen else settings.llm.backend
+    gen_endpoint = gen.endpoint if gen else settings.llm.endpoint
+    gen_model = gen.model if gen else settings.llm.model
     provider = build_provider("generate", settings)
     health = await provider.healthcheck()
+
+    # embed 状态
+    emb_backend = settings.llm.embed.backend
+    emb_model = settings.llm.embed.model
 
     # 展示
     llm_color = "green" if health.healthy else "red"
     console.print(Panel(
-        f"[{llm_color}]LLM: {'✅ 健康' if health.healthy else '❌ 不可用'}[/{llm_color}]\n"
-        f"端点: {settings.llm.endpoint}\n"
-        f"延迟: {health.latency_ms}ms\n"
-        f"模型: {', '.join(health.models[:3]) if health.models else '?'}",
+        f"[{llm_color}]Generate: {'✅ 健康' if health.healthy else '❌ 不可用'}[/{llm_color}]\n"
+        f"  Backend: {gen_backend}\n"
+        f"  端点:   {gen_endpoint}\n"
+        f"  模型:   {gen_model}\n"
+        f"  延迟:   {health.latency_ms}ms\n"
+        f"  可用:   {', '.join(health.models[:3]) if health.models else '?'}\n"
+        f"\n"
+        f"[cyan]Embed: {emb_backend}[/cyan]  模型: {emb_model}",
         title="系统状态",
     ))
 

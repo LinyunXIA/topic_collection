@@ -52,10 +52,17 @@ async def main() -> None:
     embed_llm = LLMClient(provider=emb_provider, max_concurrency=1)
 
     # 健康探测（探测 generate 端点即可）
+    gen = settings.llm.generate
+    gen_backend = gen.backend if gen else settings.llm.backend
+    gen_model = gen.model if gen else settings.llm.model
+    emb_backend = settings.llm.embed.backend
     status = await generate_llm.healthcheck()
-    endpoint = settings.llm.generate.endpoint if settings.llm.generate else settings.llm.endpoint
+    endpoint = gen.endpoint if gen else settings.llm.endpoint
     if status.healthy:
-        logger.info("✅ LLM 健康: %s (%dms)", endpoint, status.latency_ms)
+        logger.info(
+            "✅ LLM 健康: generate=%s(%s) embed=%s @ %s (%dms)",
+            gen_backend, gen_model, emb_backend, endpoint, status.latency_ms,
+        )
     else:
         logger.warning("⚠️  LLM 不可用: %s — 将在运行时重试", status.error)
 
