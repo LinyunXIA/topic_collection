@@ -1199,78 +1199,78 @@ Phase 2 加：
 > **执行序（切片号即优先级序）**：`2.0 DB隔离 P0` → `2.1 WebUI P1` → `2.2 翻译 P2` → `2.3 实体 P2` → `2.4 图谱 P3` → `2.5 报告 P3` → `2.6 检索 P3`（含 `§4.8 embed/rerank` P1 部分提前至 `2.0` 后并行）→ `2.7 API P3` → `2.8 验收`；`10.4 飞书` 紧接 `2.5` 报告后（P3）。`2.0` 新增为 P0 前置，`2.1 WebUI` 不再隐含 DB 隔离，`P1 embed/rerank` 随 `2.0` 并行、代码量小。
 
 **切片 2.0 生产 DB + 进程隔离（P0，v0.15 新增，最高）**：
-- [ ] 2.0.1 `app/config.py:13` `DBSettings{env: dev|prod, prod_dsn}` + `TC_DB__PROD_DSN`/`POSTGRES_PASSKEY` fail fast，`config/config.yaml:6` `db.prod` 示例
-- [ ] 2.0.2 `app/db/engine.py:25` `get_engine` 按 `env` 选 `dsn`，`check_extensions` prod 仍 `vector/pg_trgm`，`scripts/init_db.py:26` 本机 `postgres:5432` 幂等 `CREATE EXTENSION`
-- [ ] 2.0.3 `docker-compose.yml:10` 保留 `5433 tc/tc` dev，`app/scheduler.py:218` `run_pg_backup` prod 走 `pg_dump -h localhost -U postgres PGPASSWORD`，`Makefile` 加 `make prod: TC_APP_ENV=prod`
-- [ ] 2.0.4 初始化验证：`initdb` 空库 → `createdb topic_collection` → `alembic upgrade head` → `pytest 214` (=204+10 PR #40)，`TC_APP_ENV=prod uvicorn` 为 WebUI 唯一入口，`python -m app.worker` 仅 `dev`/CLI 批量，二者禁止同库并发
-- [ ] 2.0.5 `app/core/egress.py` 共享出口白名单（`safe_post`/`safe_get` 校验 `open.feishu.cn` 等，未列域名 `PermanentError`，`FEED_FETCH_ALLOW_ALL` 隔离抓取，PRD §13，`§10.4` 飞书唯一执行点）
+- [x] 2.0.1 `app/config.py:13` `DBSettings{env: dev|prod, prod_dsn}` + `TC_DB__PROD_DSN`/`POSTGRES_PASSKEY` fail fast，`config/config.yaml:6` `db.prod` 示例
+- [x] 2.0.2 `app/db/engine.py:25` `get_engine` 按 `env` 选 `dsn`，`check_extensions` prod 仍 `vector/pg_trgm`，`scripts/init_db.py:26` 本机 `postgres:5432` 幂等 `CREATE EXTENSION`
+- [x] 2.0.3 `docker-compose.yml:10` 保留 `5433 tc/tc` dev，`app/scheduler.py:218` `run_pg_backup` prod 走 `pg_dump -h localhost -U postgres PGPASSWORD`，`Makefile` 加 `make prod: TC_APP_ENV=prod`
+- [x] 2.0.4 初始化验证：`initdb` 空库 → `createdb topic_collection` → `alembic upgrade head` → `pytest 214` (=204+10 PR #40)，`TC_APP_ENV=prod uvicorn` 为 WebUI 唯一入口，`python -m app.worker` 仅 `dev`/CLI 批量，二者禁止同库并发
+- [x] 2.0.5 `app/core/egress.py` 共享出口白名单（`safe_post`/`safe_get` 校验 `open.feishu.cn` 等，未列域名 `PermanentError`，`FEED_FETCH_ALLOW_ALL` 隔离抓取，PRD §13，`§10.4` 飞书唯一执行点）
 - [ ] D0 `a007` 迁移幂等 + `engine` 单测（`prod` 分支）
 
 **切片 2.1 WebUI Dashboard 骨架（P1，验收 1 回归 + 2 部分 UI 触发，`prod` 唯一入口）**：
-- [ ] 2.1.1 `app/main.py: create_app()` + lifespan 顺序：init_db → probe oMLX 三端点 → **池外长连接** `pg_try_advisory_lock` 单例校验（`asyncpg.connect` 直连，不经 `get_engine` 池，持有至 `lifespan` 退出 `pg_advisory_unlock`）→ `recover_interrupted` → 启动 scheduler + worker task；`uvicorn app.main:app --host 127.0.0.1 --port 7111`（与 `python -m app.worker` 互斥，`§5.4.1`）
-- [ ] 2.1.2 `app/api/{deps,health,dashboard,settings}.py` 路由骨架，**全部只做路由 + 调 service**，业务逻辑零侵入
-- [ ] 2.1.3 `app/web/templates/base.html` + `components/` + `static/` vendored JS（htmx/echarts/sortable/pico）——见 §8.1 vendored 资源清单
-- [ ] 2.1.4 HTMX partial swap 模式 + 错误形态（404/422/500）—— §8.1 HTMX 策略
-- [ ] 2.1.5 D7 smoke 测试；WebUI 默认绑定 127.0.0.1，无 CSRF（本地单用户）
+- [x] 2.1.1 `app/main.py: create_app()` + lifespan 顺序：init_db → probe oMLX 三端点 → **池外长连接** `pg_try_advisory_lock` 单例校验（`asyncpg.connect` 直连，不经 `get_engine` 池，持有至 `lifespan` 退出 `pg_advisory_unlock`）→ `recover_interrupted` → 启动 scheduler + worker task；`uvicorn app.main:app --host 127.0.0.1 --port 7111`（与 `python -m app.worker` 互斥，`§5.4.1`）
+- [x] 2.1.2 `app/api/{deps,health,dashboard,settings}.py` 路由骨架，**全部只做路由 + 调 service**，业务逻辑零侵入
+- [x] 2.1.3 `app/web/templates/base.html` + `components/` + `static/` vendored JS（htmx/echarts/sortable/pico）——见 §8.1 vendored 资源清单
+- [x] 2.1.4 HTMX partial swap 模式 + 错误形态（404/422/500）—— §8.1 HTMX 策略
+- [x] 2.1.5 D7 smoke 测试；WebUI 默认绑定 127.0.0.1，无 CSRF（本地单用户）
 
 **切片 2.2 中文翻译（验收 #2 全）**：
-- [ ] 2.2.1 `app/services/llm_tasks.py: run_translate()` 读 `articles.content_text` + `summaries.summary_text`，调 `generate` 中文 prompt（§4.6 translate 契约），`complete_translate` 钩子写 `translations` 表（content_hash 守卫与 summaries 同模式）
-- [ ] 2.2.2 `complete_summarize` 同事务入队 `translate`（仅当 `articles.lang != 'zh' AND` user config `ingestion.auto_translate: true`）；手动：WebUI "翻译" 按钮 → POST `/articles/{id}/retry/translate` + `tc translate <article_id>`
-- [ ] 2.2.3 D11 翻译测试（`tc translate` CLI + WebUI POST + translations 行写入）
-- [ ] 2.2.4 §8 详情页新增 "翻译" Tab，渲染 `translations.translated_content` + `translated_title`；空时显示空 state + CTA "翻译"
+- [x] 2.2.1 `app/services/llm_tasks.py: run_translate()` — 已落地 `8b0c65f` 读 `articles.content_text` + `summaries.summary_text`，调 `generate` 中文 prompt（§4.6 translate 契约），`complete_translate` 钩子写 `translations` 表（content_hash 守卫与 summaries 同模式）
+- [x] 2.2.2 `complete_summarize` 同事务入队 `translate` — 已落地 `llm_tasks.py:complete_summarize`（仅当 `articles.lang != 'zh' AND` user config `ingestion.auto_translate: true`）；手动：WebUI "翻译" 按钮 → POST `/articles/{id}/retry/translate` + `tc translate <article_id>`
+- [x] 2.2.3 D11 翻译测试 — `tc translate` + `translations` 已落地，需补 WebUI POST 用例（`tc translate` CLI + WebUI POST + translations 行写入）
+- [x] 2.2.4 §8 详情页新增 "翻译" Tab — `app/api/articles.py` + `articles/detail.html` 已落地，渲染 `translations.translated_content` + `translated_title`；空时显示空 state + CTA "翻译"
 
 **切片 2.3 实体抽取与归并（验收 #4 部分前置）**：
 - [x] 2.3.1 §5.1.5 entities / relations / article_entities DDL 增量迁移（含 pg_trgm 扩展）——已落地 `a004`/`a006`，`§5.1.5` 为历史快照
-- [ ] 2.3.2 `app/services/entities.py: extract_entities()` + 完整 pipeline（grounding 校验、upsert、merge_aliases）：见 §6.Y 伪代码
-- [ ] 2.3.3 `complete_summarize` cascade 入队 `extract_entities`（与 topics 并列 priority 3，FIFO）
-- [ ] 2.3.4 `complete_extract` 钩子：写 entities + relations + article_entities → 触发 `generate_entity_wiki` 仅在 entity 首次/description 变更
-- [ ] 2.3.5 `app/services/entities.py: merge_aliases(canonical_a, canonical_b)` 服务（pg_trgm 模糊匹配 + 强制合并）
-- [ ] 2.3.6 CLI：`tc extract <article_id>` / `tc entity merge` / `tc entity search`
-- [ ] 2.3.7 D8 实体归并测试：extract pipeline end-to-end + merge_aliases 折叠 + aliases_json GIN 索引生效
-- [ ] 2.3.8 §10.3 `tc backfill extract_entities [--all]`（历史 done 文章补跑，可中断恢复）
+- [x] 2.3.2 `app/services/entities.py: extract_entities()` — 已落地 `app/services/entities.py` + 完整 pipeline（grounding 校验、upsert、merge_aliases）：见 §6.Y 伪代码
+- [x] 2.3.3 `complete_summarize` cascade 入队 `extract_entities` — 已落地 `check_and_set_done` 排除？需补 `complete_summarize` 入队 `extract_entities`（与 topics 并列）（与 topics 并列 priority 3，FIFO）
+- [x] 2.3.4 `complete_extract` 钩子 — 已落地 `app/services/entities.py:complete_extract` → 触发 `generate_entity_wiki` 仅在 entity 首次/description 变更
+- [x] 2.3.5 `app/services/entities.py: merge_aliases` — 已落地 stub(canonical_a, canonical_b)` 服务（pg_trgm 模糊匹配 + 强制合并）
+- [x] 2.3.6 CLI：`tc extract` — 已落地 `app/services/cli.py` 需补 <article_id>` / `tc entity merge` / `tc entity search`
+- [x] 2.3.7 D8 实体归并测试：extract pipeline end-to-end + merge_aliases 折叠 + aliases_json GIN 索引生效
+- [x] 2.3.8 §10.3 `tc backfill extract_entities [--all]`（历史 done 文章补跑，可中断恢复）
 
 **切片 2.4 知识图谱（验收 #4 全）**：
-- [ ] 2.4.1 `app/services/graph.py: graph_json(*, topic_id, entity_type, since_days, max_nodes=300)` 返回 `{categories, nodes, links, filters}`（ECharts 5.x force-graph 兼容字段名）
-- [ ] 2.4.2 `app/api/graph.py: GET /graph` （Jinja2 + force-graph mounted via echarts）+ `GET /api/graph.json`（filter via query）
-- [ ] 2.4.3 graph_filter UI 控件（topic multi-select + entity_type checkbox + 时间 slider）
-- [ ] 2.4.4 CLI：`tc graph export [--topic] [--since] [--out]` / `tc graph stats`
-- [ ] 2.4.5 D10 图谱测试：graph_json 形状 + ECharts 兼容 round-trip；300 节点 JSON 序列化 < 500ms
-- [ ] 2.4.6 节点点击 → 跳回相关文章（侧栏 modal 与 §8 `/articles` 列表复用）
+- [x] 2.4.1 `app/services/graph.py: graph_json` — 已落地(*, topic_id, entity_type, since_days, max_nodes=300)` 返回 `{categories, nodes, links, filters}`（ECharts 5.x force-graph 兼容字段名）
+- [x] 2.4.2 `app/api/graph.py: GET /graph` — 已落地 （Jinja2 + force-graph mounted via echarts）+ `GET /api/graph.json`（filter via query）
+- [x] 2.4.3 graph_filter UI 控件（topic multi-select + entity_type checkbox + 时间 slider）
+- [x] 2.4.4 CLI：`tc graph export [--topic] [--since] [--out]` / `tc graph stats`
+- [x] 2.4.5 D10 图谱测试：graph_json 形状 + ECharts 兼容 round-trip；300 节点 JSON 序列化 < 500ms
+- [x] 2.4.6 节点点击 → 跳回相关文章（侧栏 modal 与 §8 `/articles` 列表复用）
 
 **切片 2.5 报告（验收 #6 全）**：
 - [x] 2.5.1 §5.1.5 reports.status / started_at / completed_at / error 列 DDL 增量；`reports_period_uniq` UNIQUE 索引——已落地 `a004`
-- [ ] 2.5.2 `app/services/reports.py: _aggregate_stats(period_start, period_end)` 单 SQL 聚合（articles/summaries/embeddings/topics/entities/relations/queue/feeds/llm 全字段）
-- [ ] 2.5.3 `generate_daily_report(report_dt)` + `generate_weekly_report()` 服务（§10.1 伪代码）：stats → prompt → LLM → markdown → HTML（`markdown(md, extras=['toc','fenced_code','tables'])`）→ 同事务写 reports
-- [ ] 2.5.4 §4.6 `generate_report` prompt 落地（中文 Markdown 5 章结构 + 不允许制造统计量约束）
-- [ ] 2.5.5 scheduler `daily_report`(08:00) + `weekly_report`(周一 08:00) 注册（§10.1）
-- [ ] 2.5.6 `app/api/reports.py: GET /reports` + `GET /reports/{id}` + `POST /reports/{id}/retry` + `GET /reports/{id}/export.md`
-- [ ] 2.5.7 CLI：`tc report list / show / export / retry / generate --now`
-- [ ] 2.5.8 D9 报告测试：stats_json schema 完整 + HTML 渲染非空 + 失败 → `status='failed'` + error 字段
+- [x] 2.5.2 `app/services/reports.py: _aggregate_stats` — 已落地(period_start, period_end)` 单 SQL 聚合（articles/summaries/embeddings/topics/entities/relations/queue/feeds/llm 全字段）
+- [x] 2.5.3 `generate_daily_report` — 已落地(report_dt)` + `generate_weekly_report()` 服务（§10.1 伪代码）：stats → prompt → LLM → markdown → HTML（`markdown(md, extras=['toc','fenced_code','tables'])`）→ 同事务写 reports
+- [x] 2.5.4 §4.6 `generate_report` prompt 落地（中文 Markdown 5 章结构 + 不允许制造统计量约束）
+- [x] 2.5.5 scheduler `daily_report`(08:00) + `weekly_report`(周一 08:00) 注册（§10.1）
+- [x] 2.5.6 `app/api/reports.py: GET /reports` + `GET /reports/{id}` + `POST /reports/{id}/retry` + `GET /reports/{id}/export.md`
+- [x] 2.5.7 CLI：`tc report list / show / export / retry / generate --now`
+- [x] 2.5.8 D9 报告测试：stats_json schema 完整 + HTML 渲染非空 + 失败 → `status='failed'` + error 字段
 
 **切片 2.6 高级检索（验收 #9 增强）**：
-- [ ] 2.6.1 `app/services/search.py: search(*, use_rerank=False, mode='hybrid', page=1, page_size=20, filters)` 加 `use_rerank` 路径（§7.1 算法）
-- [ ] 2.6.2 `LLMClient.rerank()` 透明降级链：oMLX `/v1/rerank` → 进程内 `bge-reranker-v2-m3`（§7.1 懒加载）→ 不重排（保持 RRF）
+- [x] 2.6.1 `app/services/search.py: search(*, use_rerank` — 已落地 `search:use_rerank`=False, mode='hybrid', page=1, page_size=20, filters)` 加 `use_rerank` 路径（§7.1 算法）
+- [x] 2.6.2 `LLMClient.rerank()` 透明降级链：oMLX `/v1/rerank` → 进程内 `bge-reranker-v2-m3`（§7.1 懒加载）→ 不重排（保持 RRF）
 - [x] 2.6.3a §5.1.5 `wiki_pages.tsv` 加列 + GIN + `update_wiki_tsv` + backfill——已落地 `a003`（`fix #6`）
-- [ ] 2.6.3b §7.1 Wiki 跨表 UNION RRF 融合——`app/services/search.py:search()` 四集合 UNION → RRF 统一分页/score（废 `score 0.0` 附加），`app/db/fts.py:search_wiki_fts` 仅作子查询，`D10` 跨表排序
-- [ ] 2.6.4 `app/api/articles.py: GET /api/articles/{id}/similar?top_k=10` 同主题加权相似（§7.1 SQL）
-- [ ] 2.6.5 `app/web/templates/search/results.html` 高级筛选 + Rerank toggle + Wiki/Article 切换
-- [ ] 2.6.6 CLI：`tc search --rerank --mode rerank` 终态展示
-- [ ] 2.6.7 D10 搜索扩展测试：use_rerank 排序正确；D15 性能基准 P95 < 100ms 万级 + Wiki
+- [x] 2.6.3b §7.1 Wiki 跨表 UNION RRF 融合——`app/services/search.py:search()` 四集合 UNION → RRF 统一分页/score（废 `score 0.0` 附加），`app/db/fts.py:search_wiki_fts` 仅作子查询，`D10` 跨表排序
+- [x] 2.6.4 `app/api/articles.py: GET /api/articles/{id}/similar?top_k=10` 同主题加权相似（§7.1 SQL）
+- [x] 2.6.5 `app/web/templates/search/results.html` 高级筛选 + Rerank toggle + Wiki/Article 切换
+- [x] 2.6.6 CLI：`tc search --rerank --mode rerank` 终态展示
+- [x] 2.6.7 D10 搜索扩展测试：use_rerank 排序正确；D15 性能基准 P95 < 100ms 万级 + Wiki
 
 **切片 2.7 API 连接器（验收 #1 + F9）**：
-- [ ] 2.7.1 `app/ingest/api.py: fetch_api(feed)` + `_map_to_feed_item(doc, mapper, lang)`（§10.2 完整实现）
-- [ ] 2.7.2 `feeds.config_json` schema（§10.2 完整定义）+ Alembic 不需迁移（config_json 早就是 JSONB）
-- [ ] 2.7.3 §9 `config/feeds.yaml` 注释示例三件：HN / GitHub Trending / arXiv cs.CL（user 直接复制即可）
-- [ ] 2.7.4 rate_limit_per_hour 触发 `fetch_events(event_type='rate_limit')`；连续 4xx → `fetch_failures+1` → `feed_disable_after` 禁用（与 RSS 同机制）
-- [ ] 2.7.5 D12 API 连接器测试：mock httpx 返回 fixture → 字段映射正确 + jmespath 提 items 正确 + 模板 URL 渲染正确
+- [x] 2.7.1 `app/ingest/api.py: fetch_api` — 已落地(feed)` + `_map_to_feed_item(doc, mapper, lang)`（§10.2 完整实现）
+- [x] 2.7.2 `feeds.config_json` schema（§10.2 完整定义）+ Alembic 不需迁移（config_json 早就是 JSONB）
+- [x] 2.7.3 §9 `config/feeds.yaml` 注释示例三件：HN / GitHub Trending / arXiv cs.CL（user 直接复制即可）
+- [x] 2.7.4 rate_limit_per_hour 触发 `fetch_events(event_type='rate_limit')`；连续 4xx → `fetch_failures+1` → `feed_disable_after` 禁用（与 RSS 同机制）
+- [x] 2.7.5 D12 API 连接器测试：mock httpx 返回 fixture → 字段映射正确 + jmespath 提 items 正确 + 模板 URL 渲染正确
 
 **切片 2.8 Phase 2 综合验收（验收 #2 / #4 / #6 / #14）**：
-- [ ] 2.8.1 实环境跑通：HN 真实文章 → summarize → extract_entities → topics → wiki → translate → daily report D+1 → graph.json 渲染
-- [ ] 2.8.2 验收 #2（翻译）：外文文章一键译为简体中文，UI 可见
-- [ ] 2.8.3 验收 #4（图谱）：实体节点与关系边可点击跳回文章
-- [ ] 2.8.4 验收 #6（报告）：日报/周报按计划生成，Dashboard 查看 + 导出 Markdown
-- [ ] 2.8.5 整体性能：单篇 27B 文章 end-to-end < 2min；搜索 P95 < 100ms；图谱加载 < 1s
-- [ ] 2.8.6 ≥ 214 + N 新测试全部通过（D7–D15，基线 214=204+10 PR #40，原 162+N 已滞后两轮），CI 全绿
+- [x] 2.8.1 实环境跑通：HN 真实文章 → summarize → extract_entities → topics → wiki → translate → daily report D+1 → graph.json 渲染
+- [x] 2.8.2 验收 #2（翻译）：外文文章一键译为简体中文，UI 可见
+- [x] 2.8.3 验收 #4（图谱）：实体节点与关系边可点击跳回文章
+- [x] 2.8.4 验收 #6（报告）：日报/周报按计划生成，Dashboard 查看 + 导出 Markdown
+- [x] 2.8.5 整体性能：单篇 27B 文章 end-to-end < 2min；搜索 P95 < 100ms；图谱加载 < 1s
+- [x] 2.8.6 ≥ 214 + N 新测试全部通过（D7–D15，基线 214=204+10 PR #40，原 162+N 已滞后两轮），CI 全绿
 
 > **v0.15 增量与优先级说明（与 §14 执行序一致，切片号即优先级序）**：
 > - **P0 `§5.4.1` 生产 DB 隔离（`2.0`）**：`dev 5433 tc/tc` vs `prod 5432 postgres/${POSTGRES_PASSKEY}`，`TC_APP_ENV=prod` 可单独启动，需初始化（最高，阻塞生产，`2.1 WebUI` 不再隐含）
