@@ -197,7 +197,13 @@ class TestSemanticSearch:
 
     @pytest.mark.asyncio
     async def test_hnsw_index_used(self, settings, llm_client):
-        """验证 DISTINCT ON 查询语义正确：多粒度 embedding 去重取最优距离（fix #10）。"""
+        """验证多粒度 embedding 去重取最优距离（fix #10 → #31 改为应用层去重）。
+
+        实现已从 DISTINCT ON 换成 ORDER BY distance + 应用层按 article_id 去重
+        （#31：DISTINCT ON 强制按分组键排序，导致按 article_id 而非相似度选取）。
+        本用例只覆盖"同一文章多粒度只返回一条"；排序正确性见
+        tests/test_regression_31_34.py::TestSemanticSelectsBySimilarity。
+        """
         await clean_all(settings)
         factory = get_session_factory(settings)
         async with factory() as session:
@@ -224,9 +230,9 @@ class TestSemanticSearch:
 
         async with factory() as session:
             results = await _semantic_search(session, "HNSW index test", settings, llm_client, 10)
-            # DISTINCT ON 应只返回一条（article_id 去重），而非两条
+            # 应只返回一条（article_id 去重），而非两条
             ids = [r[0] for r in results]
-            assert ids.count(aid) == 1, f"DISTINCT ON 未去重：article {aid} 出现 {ids.count(aid)} 次"
+            assert ids.count(aid) == 1, f"多粒度未去重：article {aid} 出现 {ids.count(aid)} 次"
             # 距离应在合理范围内（cosine distance ∈ [0, 2]）
             dist = 1.0 - results[0][1]  # results 存的是 score=1-distance
             assert 0.0 <= dist <= 2.0
