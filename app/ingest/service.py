@@ -81,7 +81,8 @@ async def fetch_and_store(
         ch = content_hash(item.content_text)
 
         # 精确去重双闸：url_hash 同 / content_hash 同 → winner mention_count+1 + 审计，跳过
-        if await apply_exact_dedup(session, feed["id"], uh, ch):
+        # fix #32：传入原始 content_text 供空/过短短路判断
+        if await apply_exact_dedup(session, feed["id"], uh, ch, content_text=item.content_text):
             continue
 
         cleaned = await clean_article(item.content_html or item.content_text, item.title)
