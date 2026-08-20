@@ -27,13 +27,17 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# task → capability 映射
+# task → capability 映射（fix #7 同步扩展 Phase 2 任务）
 _TASK_CAPABILITY: dict[str, str] = {
     "embed_core": "embed",
     "embed_summary": "embed",
     "summarize": "generate",
     "topics": "generate",
     "wiki": "generate",
+    "extract_entities": "generate",
+    "generate_entity_wiki": "generate",
+    "generate_topic_wiki": "generate",
+    "translate": "generate",
 }
 
 
