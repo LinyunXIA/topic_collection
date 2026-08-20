@@ -14,6 +14,10 @@ class DBSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TC_DB_")
 
     dsn: str = "postgresql+asyncpg://tc:tc@localhost:5433/topic_collection"
+    prod_dsn: str | None = Field(
+        default=None,
+        description="生产 DSN，可含 ${POSTGRES_PASSKEY} 占位，需 TC_APP_ENV=prod 时生效",
+    )
     pool_size: int = 5
     vector_dim: int = 1536
 
@@ -115,6 +119,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
+    app_env: str = Field(default="dev", description="运行环境 dev|prod，TC_APP_ENV 覆盖")
     data_dir: str = "./data"
     db: DBSettings = Field(default_factory=DBSettings)
     web: WebSettings = Field(default_factory=WebSettings)
@@ -135,6 +140,45 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
+def _resolve_prod_dsn(settings: Settings) -> None:
+    """解析生产 DSN：处理 prod_dsn 占位与 POSTGRES_PASSKEY 注入（DESIGN §5.4.1）。
+
+    - 仅当 app_env == "prod" 时生效
+    - prod_dsn 可含 ${POSTGRES_PASSKEY} 或 $POSTGRES_PASSKEY 占位，运行时替换
+    - 若 prod_dsn 未配置但 POSTGRES_PASSKEY 已设，构造默认 prod DSN
+    - 缺密码时 fail fast
+    """
+    import os
+
+    if settings.app_env != "prod":
+        return
+    # 已有 prod_dsn（可能来自 TC_DB__PROD_DSN 或 config.yaml db.prod_dsn）
+    prod_dsn = settings.db.prod_dsn
+    if prod_dsn:
+        # 替换占位
+        if "${POSTGRES_PASSKEY}" in prod_dsn or "$POSTGRES_PASSKEY" in prod_dsn:
+            pwd = os.environ.get("POSTGRES_PASSKEY")
+            if not pwd:
+                raise RuntimeError(
+                    "TC_APP_ENV=prod 且 prod_dsn 含 ${POSTGRES_PASSKEY} 占位，但环境变量 POSTGRES_PASSKEY 未设置"
+                )
+            prod_dsn = prod_dsn.replace("${POSTGRES_PASSKEY}", pwd).replace("$POSTGRES_PASSKEY", pwd)
+            settings.db.prod_dsn = prod_dsn
+        # 生效：覆盖 dsn
+        settings.db.dsn = prod_dsn
+        return
+    # 未配 prod_dsn，尝试用 POSTGRES_PASSKEY 构造默认
+    pwd = os.environ.get("POSTGRES_PASSKEY")
+    if pwd:
+        settings.db.dsn = f"postgresql+asyncpg://postgres:{pwd}@localhost:5432/topic_collection"
+        settings.db.prod_dsn = settings.db.dsn
+        return
+    raise RuntimeError(
+        "TC_APP_ENV=prod 但未配置 db.prod_dsn 且 POSTGRES_PASSKEY 未设置；"
+        "请设 TC_DB__PROD_DSN 或 POSTGRES_PASSKEY"
+    )
+
+
 def load_settings(config_path: str | Path | None = None) -> Settings:
     """加载配置：config.yaml → 环境变量覆盖。"""
     import os
@@ -146,4 +190,14 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     if p.exists():
         with open(p) as f:
             file_data = yaml.safe_load(f) or {}
-    return Settings.model_validate(file_data)
+    settings = Settings.model_validate(file_data)
+    # TC_APP_ENV 需显式覆盖 file_data（model_validate 的 file_data 优先于 env，需手动处理）
+    if "TC_APP_ENV" in os.environ:
+        settings.app_env = os.environ["TC_APP_ENV"]
+    # TC_DB__PROD_DSN 同理（嵌套 env，需手动覆盖 file_data 的 prod_dsn 占位）
+    if "TC_DB__PROD_DSN" in os.environ:
+        settings.db.prod_dsn = os.environ["TC_DB__PROD_DSN"]
+    elif "TC_DB_PROD_DSN" in os.environ:
+        settings.db.prod_dsn = os.environ["TC_DB_PROD_DSN"]
+    _resolve_prod_dsn(settings)
+    return settings

@@ -1,10 +1,12 @@
 # Topic Collection 主配置 — DESIGN §9
 # 凭据走环境变量覆盖，不在此文件中
 
+# app_env: dev  # dev|prod，TC_APP_ENV 覆盖；prod 走本机 5432 postgres/${POSTGRES_PASSKEY}（DESIGN §5.4.1），默认 dev
 data_dir: ./data
 
 db:
-  dsn: postgresql+asyncpg://tc:tc@localhost:5433/topic_collection
+  dsn: postgresql+asyncpg://tc:tc@localhost:5433/topic_collection  # dev: 5433 tc/tc；prod: TC_DB__PROD_DSN 或 POSTGRES_PASSKEY 构造
+  # prod_dsn: postgresql+asyncpg://postgres:${POSTGRES_PASSKEY}@localhost:5432/topic_collection  # prod 示例，TC_DB__PROD_DSN 覆盖
   pool_size: 5
   vector_dim: 1536            # Qwen3-Embedding 输出经 dimensions=1536 截断
 
