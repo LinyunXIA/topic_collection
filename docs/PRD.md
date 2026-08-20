@@ -1,7 +1,8 @@
 # PRD：Topic Collection —— 主题信息采集 + 摘要 / 翻译 / 知识图谱 / LLM Wiki
 
-版本：v0.11（2026-08-19）· 状态：Phase 1+ 完成，148/148 tests passed
+版本：v0.12（2026-08-20）· 状态：Phase 1 / 1+ / 1++ 代码对齐完成，200/200 tests passing
 > 工程细节（目录结构 / DDL / LLM 接口 / 流水线）以 [DESIGN.md](DESIGN.md) 为权威
+> v0.12：**代码与设计对齐**——与 DESIGN v0.13 同步；`200/200 tests passing`（`pytest --collect-only` 200）；P0 3 项（scheduler 装配/INTERVAL 修复/pg_backup 去阻塞）+ P1 3 项（Phase 2 四表+wiki tsv+task CHECK）+ P2 2 项（fetch_and_store 收敛+精确去重第二闸+配置统一）共 8 个 GitHub Issue 闭环；PRD §15 验收 1/3/5/7/8/9/16/17/18 保持通过
 > v0.11：Phase 1+ 适配器层完成（LLMAdapter + ProviderPatch + 三家差异分析 + MiniMax 通讯验证）；与 DESIGN v0.11 同步；148/148 tests
 > v0.9：切片一实现完成（PRD §15 验收 1/7/8 通过 + 真实环境 20 篇 HN 跑通）；与 DESIGN v0.10 同步；Docker 端口 5433（§11）
 > v0.8：§11 配置砍成示意 + 指向 DESIGN §9（结构性内容只在一处维护，连续三轮同步漂移后彻底消灭副本）；与 DESIGN v0.9 同步

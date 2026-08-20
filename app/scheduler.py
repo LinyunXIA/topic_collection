@@ -79,15 +79,18 @@ async def fetch_all(settings) -> None:
 
 
 async def drain_queue(settings) -> None:
-    """维护队列：清理 superseded + 死信（DESIGN §6/§10）。
+    """维护队列：清理 superseded/死信 + 回灌 pending 文章（DESIGN §6/§10）。
 
     不参与领取（worker 常驻自驱）。
+    回灌逻辑：找到 status='pending' 且无任何 processing_jobs 行的文章，
+    补入 embed_core + summarize jobs，防高量 feed 截断后文章永滞留。
     """
     from app.db.engine import get_session_factory
+    from app.pipeline import TASK_PRIORITY
 
     factory = get_session_factory(settings)
     async with factory() as session:
-        # 清理 superseded（超过 1 小时的）
+        # ── 清理 superseded（超过 1 小时的） ──
         result = await session.execute(
             text(
                 "DELETE FROM processing_jobs "
@@ -96,7 +99,7 @@ async def drain_queue(settings) -> None:
         )
         superseded_cleaned = result.rowcount
 
-        # 清理已成功的（超过 24 小时的）
+        # ── 清理已成功的（超过 24 小时的） ──
         result = await session.execute(
             text(
                 "DELETE FROM processing_jobs "
@@ -105,6 +108,43 @@ async def drain_queue(settings) -> None:
         )
         succeeded_cleaned = result.rowcount
 
+        # ── 回灌 pending 文章（DESIGN §6 backpressure） ──
+        # 谓词三条件互锁：status='pending'（处理过的不在）
+        # + dedupe_of IS NULL（loser 不复活）+ 零 job 记录（截断未入队特征）
+        result = await session.execute(
+            text(
+                "UPDATE articles SET status='processing' "
+                "WHERE status = 'pending' AND dedupe_of IS NULL "
+                "AND NOT EXISTS ("
+                "  SELECT 1 FROM processing_jobs j WHERE j.article_id = articles.id"
+                ")"
+            )
+        )
+        backfilled = result.rowcount
+
+        if backfilled:
+            # 为回灌文章补入 jobs（embed_core priority=1, summarize priority=2）
+            # ON CONFLICT DO NOTHING 保证幂等
+            # 注意：:task_val 和 :task_match 分开命名，避免 asyncpg 对同一参数
+            # 在 SELECT 列表（text）和 WHERE 子句（varchar 列比较）推断类型冲突
+            for task, priority in TASK_PRIORITY.items():
+                if task not in ("embed_core", "summarize"):
+                    continue
+                await session.execute(
+                    text(
+                        "INSERT INTO processing_jobs "
+                        "(article_id, task, status, content_hash, priority) "
+                        "SELECT a.id, :task_val, 'queued', a.content_hash, :pri "
+                        "FROM articles a "
+                        "WHERE a.status = 'processing' AND a.dedupe_of IS NULL "
+                        "AND NOT EXISTS ("
+                        "  SELECT 1 FROM processing_jobs j "
+                        "  WHERE j.article_id = a.id AND j.task = :task_match"
+                        ")"
+                    ),
+                    {"task_val": task, "task_match": task, "pri": priority},
+                )
+
         await session.commit()
 
     if superseded_cleaned or succeeded_cleaned:
@@ -112,6 +152,8 @@ async def drain_queue(settings) -> None:
             "drain_queue: 清理 %d superseded + %d succeeded",
             superseded_cleaned, succeeded_cleaned,
         )
+    if backfilled:
+        logger.info("drain_queue: 回灌 %d 篇 pending 文章", backfilled)
 
 
 async def cleanup_fetch_events(settings, session=None) -> None:
