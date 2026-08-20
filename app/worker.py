@@ -14,6 +14,7 @@ from app.db.engine import check_extensions, dispose_engine
 from app.llm.client import LLMClient, PermanentError
 from app.llm.factory import build_provider
 from app.pipeline import worker_loop
+from app.scheduler import setup_scheduler
 from app.services.llm_tasks import run_embed_core, run_embed_summary, run_summarize
 from app.services.topics import classify_topics
 from app.services.wiki import generate_article_wiki
@@ -146,8 +147,17 @@ async def main() -> None:
         worker_loop(settings, llm_client=generate_llm, task_handler=task_dispatcher)
     )
 
+    # 启动 APScheduler：fetch_all / drain_queue / healthcheck / pg_backup / cleanup（DESIGN §6/§10）
+    scheduler = setup_scheduler(settings, llm_client=generate_llm)
+    scheduler.start()
+    logger.info(
+        "✅ APScheduler 已启动: fetch_all(%dh) / drain_queue(30s) / healthcheck(5m) / pg_backup(03:00) / cleanup(04:00)",
+        settings.ingestion.fetch_interval_hours,
+    )
+
     # 等待退出信号
     await stop_event.wait()
+    scheduler.shutdown(wait=False)
     worker_task.cancel()
     try:
         await worker_task
