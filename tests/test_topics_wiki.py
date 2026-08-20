@@ -22,6 +22,7 @@ from app.services.topics import (
     match_keywords, aggregate_topic, reclassify_recent, TopicExistsError,
 )
 from app.services.wiki import generate_article_wiki, search_wiki, get_wiki_page, _slugify
+from app.db.fts import update_wiki_tsv, search_wiki_fts
 
 
 async def clean_all(settings):
@@ -348,6 +349,148 @@ class TestWiki:
         assert _slugify("Hello World") == "hello-world"
         assert _slugify("测试文章") == "测试文章"
         assert _slugify("A!@#B") == "ab"
+
+
+# ── Wiki FTS（fix #6） ─────────────────────────────────────────────
+
+class TestWikiFTS:
+    """wiki_pages.tsv 全文搜索：jieba 多词查询 + ts_rank 排序。"""
+
+    @pytest.mark.asyncio
+    async def test_generate_wiki_writes_tsv(self, settings):
+        """generate_article_wiki upsert 后应自动调 update_wiki_tsv 写 tsv。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+        async with factory() as session:
+            aid = await _insert_article(
+                session, "https://t.com/fts1",
+                "深度学习综述", "深度学习是机器学习的一个分支。",
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO summaries (article_id, lang, model, content_hash, "
+                    "summary_text, key_points_json, confidence) "
+                    "VALUES (:aid, 'zh', 'fake', 'test', '深度学习综述要点。', '[]', 0.9)"
+                ),
+                {"aid": aid},
+            )
+            await session.commit()
+            wiki_id = await generate_article_wiki(session, aid, settings)
+            await session.commit()
+            assert wiki_id is not None
+
+            # tsv 列已写入（generate_article_wiki 内部调用 update_wiki_tsv）
+            tsv_row = (await session.execute(
+                text("SELECT tsv IS NOT NULL FROM wiki_pages WHERE id = :wid"),
+                {"wid": wiki_id},
+            )).scalar()
+            assert tsv_row is True
+
+    @pytest.mark.asyncio
+    async def test_search_wiki_multi_token(self, settings):
+        """多词 jieba 查询：'量子 计算' 应命中 '量子计算研究'（fix #6）。
+
+        原 ILIKE 实现 '量子' 能命中（子串），但 '量子 计算'（带空格）不能，
+        也无法多词 AND。FTS 走 jieba 预切词后两个词都在 tsvector 里。
+        """
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+        async with factory() as session:
+            aid = await _insert_article(
+                session, "https://t.com/fts2",
+                "量子计算研究", "量子计算是前沿技术。",
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO summaries (article_id, lang, model, content_hash, "
+                    "summary_text, key_points_json, confidence) "
+                    "VALUES (:aid, 'zh', 'fake', 'test', '量子比特与算法。', '[]', 0.9)"
+                ),
+                {"aid": aid},
+            )
+            await session.commit()
+            await generate_article_wiki(session, aid, settings)
+            await session.commit()
+
+            # 多词查询（jieba 切分后两个 token 都在 tsv）
+            results = await search_wiki(session, "量子 计算")
+            assert len(results) >= 1
+            assert results[0]["title"] == "量子计算研究"
+
+    @pytest.mark.asyncio
+    async def test_search_wiki_no_match(self, settings):
+        """不存在的关键词 → 空结果，不报错。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+        async with factory() as session:
+            aid = await _insert_article(
+                session, "https://t.com/fts3",
+                "AI 趋势", "人工智能技术发展。",
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO summaries (article_id, lang, model, content_hash, "
+                    "summary_text, key_points_json, confidence) "
+                    "VALUES (:aid, 'zh', 'fake', 'test', 'LLM 综述。', '[]', 0.9)"
+                ),
+                {"aid": aid},
+            )
+            await session.commit()
+            await generate_article_wiki(session, aid, settings)
+            await session.commit()
+
+            results = await search_wiki(session, "区块链共识")
+            assert results == []
+
+    @pytest.mark.asyncio
+    async def test_search_wiki_fts_ranked(self, settings):
+        """ts_rank 降序：标题命中词更多者排前（fix #6）。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+        async with factory() as session:
+            # Wiki A: 标题含"机器学习"1 次
+            aid_a = await _insert_article(
+                session, "https://t.com/rankA",
+                "机器学习入门", "AI 综述。",
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO summaries (article_id, lang, model, content_hash, "
+                    "summary_text, key_points_json, confidence) "
+                    "VALUES (:aid, 'zh', 'fake', 'h-a', 'AI 综述。', '[]', 0.9)"
+                ),
+                {"aid": aid_a},
+            )
+            # Wiki B: 标题 + 摘要都含"机器学习"（更多命中 → 更高 rank）
+            aid_b = await _insert_article(
+                session, "https://t.com/rankB",
+                "机器学习算法", "本文讨论机器学习的算法与机器学习应用。",
+            )
+            await session.execute(
+                text(
+                    "INSERT INTO summaries (article_id, lang, model, content_hash, "
+                    "summary_text, key_points_json, confidence) "
+                    "VALUES (:aid, 'zh', 'fake', 'h-b', "
+                    "'机器学习的核心要点：机器学习是 AI 的子领域。', '[]', 0.9)"
+                ),
+                {"aid": aid_b},
+            )
+            await session.commit()
+            await generate_article_wiki(session, aid_a, settings)
+            await generate_article_wiki(session, aid_b, settings)
+            await session.commit()
+
+            # search_wiki_fts 直接拿 id 列表按 ts_rank 降序
+            ids = await search_wiki_fts(session, "机器学习")
+            assert len(ids) >= 2
+            # Wiki B 命中更多次 → 应排前
+            assert ids[0] != ids[1]
+            wiki_b_id = (
+                await session.execute(
+                    text("SELECT id FROM wiki_pages WHERE title='机器学习算法'")
+                )
+            ).scalar()
+            assert ids[0] == wiki_b_id
 
 
 # ── classify_topics（FakeLLM） ─────────────────────────────────────

@@ -13,6 +13,8 @@ import re
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.fts import search_wiki_fts, update_wiki_tsv
+
 logger = logging.getLogger(__name__)
 
 
@@ -126,6 +128,9 @@ async def generate_article_wiki(
     )
     row = result.first()
     wiki_id = row[0] if row else None
+    # 写 tsv 供全文搜索使用（fix #6）—— 必须在 commit 前，与 upsert 同一事务
+    if wiki_id is not None:
+        await update_wiki_tsv(session, wiki_id)
     logger.info("generate_article_wiki: article=%d → wiki=%s", article_id, wiki_id)
     return wiki_id
 
@@ -135,17 +140,24 @@ async def search_wiki(
     query: str,
     limit: int = 20,
 ) -> list[dict]:
-    """搜索 wiki 词条（关键词全文搜索，PRD §15 验收 5）。"""
+    """搜索 wiki 词条（关键词全文搜索，PRD §15 验收 5，fix #6）。
+
+    走 tsv @@ websearch_to_tsquery('simple', ...) + ts_rank 排序，
+    与 search_articles_fts 同一模式——jieba 预切词保证中文多词召回。
+    """
+    wiki_ids = await search_wiki_fts(session, query, limit)
+    if not wiki_ids:
+        return []
+    # 按 ts_rank 顺序批量回填 title/content_md
     result = await session.execute(
         text(
             "SELECT id, kind, ref_id, title, slug, content_md "
-            "FROM wiki_pages "
-            "WHERE title ILIKE :q OR content_md ILIKE :q "
-            "LIMIT :limit"
+            "FROM wiki_pages WHERE id = ANY(:ids)"
         ),
-        {"q": f"%{query}%", "limit": limit},
+        {"ids": wiki_ids},
     )
-    return [dict(row) for row in result.mappings().all()]
+    by_id = {r["id"]: dict(r) for r in result.mappings().all()}
+    return [by_id[i] for i in wiki_ids if i in by_id]
 
 
 async def get_wiki_page(session: AsyncSession, slug: str) -> dict | None:
