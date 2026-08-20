@@ -167,28 +167,35 @@ async def _semantic_search(
     vec_str = "[" + ",".join(str(v) for v in query_vec) + "]"
     active_model = settings.llm.embed.model
 
-    # 语义搜索：DISTINCT ON (article_id) + ORDER BY article_id, distance
-    # 替代 GROUP BY——让 pgvector planner 识别 HNSW 索引扫描路径（fix #10）。
-    # TODO(partial HNSW, fix #25): 当前为兼容 DISTINCT ON 必须 ORDER BY article_id，
-    #   导致非全局按 distance 最相似排序，召回质量受损。
-    #   Phase 2 partial HNSW 就绪后切 ORDER BY distance + 字面量拼 active_model
-    #   并 EXPLAIN 验证 HNSW 命中（DESIGN §5.2）。
+    # 语义搜索：ORDER BY distance 全局按相似度排序，应用层按 article_id 去重
+    # 替代 DISTINCT ON / GROUP BY——二者均强制 ORDER BY 分组键，导致按 article_id
+    # 而非相似度选取结果（fix #31），且前者 HNSW 失效。当前 ORDER BY distance 可命中
+    # HNSW 索引（emb_hnsw_idx USING hnsw vector_cosine_ops），去重在应用层做
+    # （首条即该文章最小 distance，因结果已按 distance 升序）。
+    # 取 limit*3 行缓冲：每文章最多 3 粒度，去重后仍能凑齐 limit 篇。
+    # Phase 2 partial HNSW 时将 :model 改字面量拼并 EXPLAIN 验证（DESIGN §5.2）。
     result = await session.execute(
         text(
-            "SELECT DISTINCT ON (ae.article_id) "
-            "ae.article_id, ae.vector <=> CAST(:vec AS vector) AS distance "
+            "SELECT ae.article_id, ae.vector <=> CAST(:vec AS vector) AS distance "
             "FROM article_embeddings ae "
             "WHERE ae.model = :model "
             "AND ae.article_id IN ("
             "  SELECT id FROM articles WHERE dedupe_of IS NULL"
             ") "
-            "ORDER BY ae.article_id, distance "
-            "LIMIT :limit"
+            "ORDER BY distance ASC "
+            "LIMIT :fetch_limit"
         ),
-        {"vec": vec_str, "model": active_model, "limit": limit},
+        {"vec": vec_str, "model": active_model, "fetch_limit": limit * 3},
     )
-    # cosine distance 转 score：score = 1 - distance
-    return [(row[0], 1.0 - float(row[1])) for row in result.fetchall()]
+    seen: set[int] = set()
+    deduped: list[tuple[int, float]] = []
+    for article_id, distance in result.fetchall():
+        if article_id not in seen:
+            seen.add(article_id)
+            deduped.append((article_id, 1.0 - float(distance)))
+            if len(deduped) >= limit:
+                break
+    return deduped
 
 
 def _rrf_merge(
