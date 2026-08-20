@@ -21,9 +21,23 @@ templates = Jinja2Templates(directory="app/web/templates")
 
 
 @router.get("/feeds", response_class=HTMLResponse)
-async def feeds_list(request: Request, session: AsyncSession = Depends(get_session)):
-    result = await session.execute(text("SELECT id, name, url, type, enabled, fetch_status FROM feeds ORDER BY id"))
-    feeds = [dict(r) for r in result.mappings().all()]
+async def feeds_list(request: Request, env: str | None = None, session: AsyncSession = Depends(get_session)):
+    # 支持 ?env=dev|prod 过滤，未传则显示全部（方案 C 双文件隔离，但 DB 行级仍需 env 区分）
+    import os
+
+    cur_env = env or os.environ.get("TC_APP_ENV", "dev")
+    try:
+        if env:
+            result = await session.execute(text("SELECT id, name, url, type, enabled, env, fetch_status FROM feeds WHERE env=:env ORDER BY id"), {"env": env})
+        else:
+            result = await session.execute(text("SELECT id, name, url, type, enabled, env, fetch_status FROM feeds ORDER BY id"))
+        feeds = [dict(r) for r in result.mappings().all()]
+    except Exception:
+        # 旧库无 env 列回退
+        result = await session.execute(text("SELECT id, name, url, type, enabled, fetch_status FROM feeds ORDER BY id"))
+        feeds = [dict(r) for r in result.mappings().all()]
+        for f in feeds:
+            f["env"] = cur_env
     # HTMX partial
     if request.headers.get("HX-Request") == "true":
         return templates.TemplateResponse(request, "partials/feeds_table.html", {"feeds": feeds})
@@ -42,9 +56,20 @@ async def feeds_create(
     url: str = Form(...),
     type: str = Form("rss"),
     enabled: bool = Form(True),
+    env: str = Form("dev"),
     session: AsyncSession = Depends(get_session),
 ):
-    await session.execute(text("INSERT INTO feeds (type, name, url, enabled) VALUES (:type, :name, :url, :enabled)"), {"type": type, "name": name, "url": url, "enabled": enabled})
+    import os
+
+    # 优先取表单 env，否则按当前 TC_APP_ENV
+    env = env or os.environ.get("TC_APP_ENV", "dev")
+    try:
+        await session.execute(
+            text("INSERT INTO feeds (type, name, url, enabled, env) VALUES (:type, :name, :url, :enabled, :env) ON CONFLICT (url, env) DO UPDATE SET enabled=EXCLUDED.enabled"),
+            {"type": type, "name": name, "url": url, "enabled": enabled, "env": env},
+        )
+    except Exception:
+        await session.execute(text("INSERT INTO feeds (type, name, url, enabled) VALUES (:type, :name, :url, :enabled) ON CONFLICT DO NOTHING"), {"type": type, "name": name, "url": url, "enabled": enabled})
     await session.commit()
     return RedirectResponse(url="/feeds", status_code=303)
 

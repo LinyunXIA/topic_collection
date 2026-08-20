@@ -1,5 +1,5 @@
-# Topic Collection 订阅源清单 — DESIGN §9
-# 新增订阅：在此加一项 → tc feeds import → tc fetch
+# Topic Collection 订阅源清单 — dev 环境 — DESIGN §9 方案 C
+# 新增订阅：在此加一项 → TC_APP_ENV=dev tc feeds import → tc fetch
 
 feeds:
   - name: "Hacker News"
@@ -18,3 +18,4 @@ feeds:
   #   type: rss
   #   url: "https://example.com/feed.xml"
   #   enabled: false
+  #   env: dev

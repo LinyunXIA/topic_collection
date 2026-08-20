@@ -61,22 +61,42 @@ def feeds(
         raise typer.Exit(1)
 
 
+def _resolve_feeds_path() -> "Path":
+    """解析订阅源文件路径（方案 C，DESIGN §9）"""
+    import os
+    from pathlib import Path
+
+    # TC_FEEDS_CONFIG 显式覆盖
+    if "TC_FEEDS_CONFIG" in os.environ:
+        return Path(os.environ["TC_FEEDS_CONFIG"])
+    app_env = os.environ.get("TC_APP_ENV", "dev")
+    # 优先 env 专属文件
+    p_env = Path(f"config/feeds.{app_env}.yaml")
+    if p_env.exists():
+        return p_env
+    return Path("config/feeds.yaml")
+
+
 async def _feeds_import():
-    """同步 feeds.yaml → DB（幂等 upsert）。"""
+    """同步 feeds.yaml → DB（幂等 upsert，方案 C env 隔离）。"""
+    import os
     import yaml
     from pathlib import Path
 
     settings = load_settings()
-    feeds_path = Path("config/feeds.yaml")
+    feeds_path = _resolve_feeds_path()
     if not feeds_path.exists():
-        console.print("[red]config/feeds.yaml 不存在[/red]")
+        console.print(f"[red]{feeds_path} 不存在[/red]")
         return
 
     with open(feeds_path) as f:
         data = yaml.safe_load(f) or {}
 
     feeds = data.get("feeds", [])
-    console.print(f"📋 发现 {len(feeds)} 个订阅源")
+    console.print(f"📋 发现 {len(feeds)} 个订阅源（{feeds_path}）")
+
+    # 当前 env（用于 DB 行级隔离）
+    cur_env = os.environ.get("TC_APP_ENV", "dev")
 
     async with get_session(settings) as session:
         for feed in feeds:
@@ -84,31 +104,52 @@ async def _feeds_import():
             name = feed.get("name", "")
             url = feed.get("url", "")
             enabled = feed.get("enabled", True)
+            env = feed.get("env", cur_env)
 
             if not url:
                 console.print(f"  ⚠️  跳过无 URL 的条目: {name}")
                 continue
 
-            # 幂等 upsert（按 url）
-            result = await session.execute(
-                text(
-                    "INSERT INTO feeds (type, name, url, enabled) "
-                    "VALUES (:type, :name, :url, :enabled) "
-                    "ON CONFLICT DO NOTHING "
-                    "RETURNING id"
-                ),
-                {"type": feed_type, "name": name, "url": url, "enabled": enabled},
-            )
-            row = result.first()
-            if row:
-                console.print(f"  ✅ 新增: {name} ({url})")
-            else:
-                # 已存在，更新 enabled 状态
-                await session.execute(
-                    text("UPDATE feeds SET enabled=:enabled WHERE url=:url"),
-                    {"enabled": enabled, "url": url},
+            # 幂等 upsert（按 url, env），兼容旧库无 env 约束时回退 url 单列
+            try:
+                result = await session.execute(
+                    text(
+                        "INSERT INTO feeds (type, name, url, enabled, env) "
+                        "VALUES (:type, :name, :url, :enabled, :env) "
+                        "ON CONFLICT (url, env) DO UPDATE SET enabled=EXCLUDED.enabled, type=EXCLUDED.type, name=EXCLUDED.name "
+                        "RETURNING id"
+                    ),
+                    {"type": feed_type, "name": name, "url": url, "enabled": enabled, "env": env},
                 )
-                console.print(f"  ↻ 已存在: {name}")
+                row = result.first()
+                if row:
+                    # 区分是 insert 还是 update（RETURNING id 在 DO UPDATE 时也返回）
+                    # 简化：统一视为已存在/更新
+                    console.print(f"  ✅ 同步: {name} ({url}) [{env}]")
+                else:
+                    console.print(f"  ↻ 已存在: {name} [{env}]")
+            except Exception as e:
+                # 回退：旧库无 (url, env) 唯一约束时按 url 单列
+                if "feeds_url_env_uniq" in str(e) or "env" in str(e).lower():
+                    raise
+                # 尝试旧 upsert
+                result = await session.execute(
+                    text(
+                        "INSERT INTO feeds (type, name, url, enabled) "
+                        "VALUES (:type, :name, :url, :enabled) "
+                        "ON CONFLICT DO NOTHING RETURNING id"
+                    ),
+                    {"type": feed_type, "name": name, "url": url, "enabled": enabled},
+                )
+                row = result.first()
+                if row:
+                    console.print(f"  ✅ 新增: {name} ({url})")
+                else:
+                    await session.execute(
+                        text("UPDATE feeds SET enabled=:enabled WHERE url=:url"),
+                        {"enabled": enabled, "url": url},
+                    )
+                    console.print(f"  ↻ 已存在: {name}")
 
     console.print("[green]✅ feeds import 完成[/green]")
 
@@ -118,24 +159,42 @@ async def _feeds_fetch(feed_name: str | None = None, count: int | None = None):
 
     抓取 → dedup → clean → insert → tsv → enqueue → match_keywords 全流程
     在 app.ingest.service.fetch_and_store；本函数只负责选 feed + 用户可见输出。
+    方案 C：按 TC_APP_ENV 过滤 env 列，实现 dev/prod 隔离。
     """
+    import os
+
     from app.ingest.feeds import FeedFetcher
 
     settings = load_settings()
     fetcher = FeedFetcher(settings)
+    cur_env = os.environ.get("TC_APP_ENV", "dev")
 
     async with get_session(settings) as session:
-        # 获取 enabled feeds
-        if feed_name:
-            result = await session.execute(
-                text("SELECT * FROM feeds WHERE enabled=true AND name=:name"),
-                {"name": feed_name},
-            )
-        else:
-            result = await session.execute(
-                text("SELECT * FROM feeds WHERE enabled=true")
-            )
-        feeds = result.mappings().all()
+        # 获取 enabled feeds（按 env 隔离，兼容旧库无 env 列时回退）
+        try:
+            if feed_name:
+                result = await session.execute(
+                    text("SELECT * FROM feeds WHERE enabled=true AND env=:env AND name=:name"),
+                    {"env": cur_env, "name": feed_name},
+                )
+            else:
+                result = await session.execute(
+                    text("SELECT * FROM feeds WHERE enabled=true AND env=:env"),
+                    {"env": cur_env},
+                )
+            feeds = result.mappings().all()
+        except Exception:
+            # 旧库无 env 列，回退
+            if feed_name:
+                result = await session.execute(
+                    text("SELECT * FROM feeds WHERE enabled=true AND name=:name"),
+                    {"name": feed_name},
+                )
+            else:
+                result = await session.execute(
+                    text("SELECT * FROM feeds WHERE enabled=true")
+                )
+            feeds = result.mappings().all()
 
         if not feeds:
             console.print("[yellow]没有启用的订阅源[/yellow]")

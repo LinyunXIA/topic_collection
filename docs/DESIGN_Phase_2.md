@@ -20,7 +20,7 @@
 |---|---|
 | `deps.py` | `Depends` 工厂：`get_session`、`get_settings`、`get_llm_client`、`get_current_user`（本地单用户 = 占位返回固定 user；不做鉴权） |
 | `dashboard.py` | `GET /` 概览：流水线统计、队列深度、LLM 健康横幅、最近 20 篇、源健康；`GET/POST /settings` 模型与并发配置 |
-| `feeds.py` | `GET /feeds` 列表 + 筛选；`POST /feeds` 新增/编辑（form）；`POST /feeds/{id}/fetch` 立即抓取；`POST /feeds/{id}/disable` 禁用 |
+| `feeds.py` | `GET /feeds?env=` 列表 + 筛选；`POST /feeds` 新增/编辑（form, 含 `env`）；`POST /feeds/{id}/fetch` 立即抓取；`POST /feeds/{id}/disable` 禁用 |
 | `articles.py` | `GET /articles` 列表 + 筛选 + 分页；`GET /articles/{id}` 详情（Tab：原文/摘要/翻译/实体/相关话题/Wiki）；`POST /articles/{id}/retry/{task}` 手动重试；`POST /articles/{id}/undedupe` 撤销去重；`GET /api/articles/{id}/similar` 同主题相似文章 |
 | `wiki.py` | `GET /wiki` 词条索引（按 kind 分组）；`GET /wiki/{slug}` 词条页；`GET /wiki/{slug}/raw` 纯 Markdown（导出用） |
 | `search.py` | `GET /search?q=` 混合检索（关键词+语义+Reranker），结果含文章+Wiki 高亮片段 |
@@ -863,7 +863,7 @@ Phase 1 仅 CLI 入口，Phase 2 起 WebUI。**核心约定**：API 路由**只�
 |---|---|---|---|---|
 | `GET /` | `overview.html` | — | 500 | 渲染统计卡片、queue 表、最近 20 articles、LLM 健康横幅 |
 | `GET /api/health` | JSON | — | 200 / 503 | `{llm_healthy, queue_depth, last_healthcheck_at}`，HTMX `hx-get` 每 30s |
-| `GET /feeds` | `feeds/list.html` | `?type=rss\|api\|scrape&enabled=` | 200 | 表格 + 状态徽标（healthy/degraded/disabled） |
+| `GET /feeds` | `feeds/list.html` | `?type=rss\|api\|scrape&enabled=&env=dev\|prod` | 200 | 表格 + 状态徽标（healthy/degraded/disabled） + `env` 过滤（方案 C） |
 | `GET /feeds/new` | `feeds/edit.html` | — | 200 | 新增表单 |
 | `POST /feeds` | redirect → `/feeds/{id}` | form: `name,url,type,enabled,config_json` | 422 | type=rss/api/scrape；config_json 按 type schema 校验 |
 | `GET /feeds/{id}/edit` | `feeds/edit.html` | path: feed_id | 404 | 编辑表单 |
@@ -1261,6 +1261,7 @@ Phase 2 加：
 - [x] 2.7.1 `app/ingest/api.py: fetch_api` — 已落地(feed)` + `_map_to_feed_item(doc, mapper, lang)`（§10.2 完整实现）
 - [x] 2.7.2 `feeds.config_json` schema（§10.2 完整定义）+ Alembic 不需迁移（config_json 早就是 JSONB）
 - [x] 2.7.3 §9 `config/feeds.yaml` 注释示例三件：HN / GitHub Trending / arXiv cs.CL（user 直接复制即可）
+- [x] 2.7.6 `feeds` env 隔离（方案 C）：`config/feeds.dev.yaml` / `feeds.prod.yaml` 双文件 + `TC_FEEDS_CONFIG` 覆盖，`feeds` 表 `(url, env)` 唯一 + `WHERE env=:env` 隔离，`GET /feeds?env=` 过滤
 - [x] 2.7.4 rate_limit_per_hour 触发 `fetch_events(event_type='rate_limit')`；连续 4xx → `fetch_failures+1` → `feed_disable_after` 禁用（与 RSS 同机制）
 - [x] 2.7.5 D12 API 连接器测试：mock httpx 返回 fixture → 字段映射正确 + jmespath 提 items 正确 + 模板 URL 渲染正确
 

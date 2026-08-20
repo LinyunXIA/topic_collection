@@ -39,12 +39,14 @@ class Base(DeclarativeBase):
 # ── feeds ──────────────────────────────────────────────────────────
 class Feed(Base):
     __tablename__ = "feeds"
+    __table_args__ = (UniqueConstraint("url", "env", name="feeds_url_env_uniq"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     type: Mapped[str] = mapped_column(String, nullable=False)  # rss | api | scrape
     name: Mapped[str] = mapped_column(String, nullable=False)
     url: Mapped[str] = mapped_column(Text, nullable=False)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    env: Mapped[str] = mapped_column(String, server_default="dev", default="dev")  # dev|prod，方案 C 双文件隔离
     config_json: Mapped[dict | None] = mapped_column(JSONB)
     etag: Mapped[str | None] = mapped_column(String)
     last_modified: Mapped[str | None] = mapped_column(String)

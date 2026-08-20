@@ -1,0 +1,23 @@
+# Topic Collection 订阅源清单 — prod 环境 — DESIGN §9 方案 C
+# 新增订阅：在此加一项 → TC_APP_ENV=prod tc feeds import → tc fetch
+# 生产源与开发源通过 env 字段 + 独立文件隔离，TC_FEEDS_CONFIG 可覆盖路径
+
+feeds:
+  - name: "Hacker News"
+    type: rss
+    url: "https://hnrss.org/frontpage"
+    enabled: true
+    env: prod
+
+  - name: "TechCrunch AI"
+    type: rss
+    url: "https://techcrunch.com/category/artificial-intelligence/feed/"
+    enabled: true
+    env: prod
+
+  # 生产可按需添加 prod 专属源（与 dev 完全隔离）：
+  # - name: "Prod Only Feed"
+  #   type: rss
+  #   url: "https://example.com/prod-feed.xml"
+  #   enabled: true
+  #   env: prod

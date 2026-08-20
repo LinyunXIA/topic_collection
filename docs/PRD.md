@@ -288,7 +288,7 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 # 订阅源不写在主配置 → 独立文件 config/feeds.yaml（加订阅只改那一个文件）
 ```
 
-**订阅源配置独立**：`config/feeds.yaml` 为订阅源清单（type/url/enabled/可选 config），新增源只需在文件里加一项 → `tc feeds import`（或启动自动同步，幂等 upsert 进 DB `feeds` 表）→ `tc fetch` 抓取。schema 与同步机制见 DESIGN §9。
+**订阅源配置独立**：`config/feeds.yaml` 为订阅源清单（type/url/enabled/可选 config），新增源只需在文件里加一项 → `tc feeds import`（按 `TC_APP_ENV` 选 `config/feeds.{dev,prod}.yaml`，`TC_FEEDS_CONFIG` 可覆盖路径，`feeds` 表 `(url, env)` 隔离）→ `tc fetch` 抓取（`WHERE env=:env`）。schema 与同步机制见 DESIGN §9 / DESIGN_Phase_2 §5.4.1。
 - 开发环境（Docker，已确认）：`docker compose up -d` 一键起 pgvector（`pgvector/pgvector:pg17` 镜像，配置见 DESIGN §5.4）；首次运行 `scripts/init_db` 建库建扩展
 - 环境变量覆盖：`TC_LLM_BACKEND=omlx`、`TC_DB_DSN=postgresql+asyncpg://...` 等（pydantic-settings；**凭据一律走环境变量，不入库不入 repo**）
 - DX：`uv run` / `make dev` 启动（lifespan 拉起 DB init + scheduler + worker）；`scripts/` 放 init_db / import_feeds / backfill（嵌入模型切换后全量重嵌，DESIGN §5.2） / **backup**（`tc backup` 调用，§4 F11/DESIGN §10）；`--check-llm` 验证后端与模型（含 per-task 覆盖模型，DESIGN §4.4）

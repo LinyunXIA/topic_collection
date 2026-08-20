@@ -40,14 +40,26 @@ async def fetch_all(settings) -> None:
     fetcher = FeedFetcher(settings)
     factory = get_session_factory(settings)
 
-    async with factory() as session:
-        result = await session.execute(
-            text("SELECT id, name, url, etag, last_modified FROM feeds WHERE enabled=true")
-        )
-        feeds = result.mappings().all()
+    # 按 env 隔离（方案 C），兼容旧库无 env 列
+    import os
+
+    cur_env = os.environ.get("TC_APP_ENV", getattr(settings, "app_env", "dev"))
+    try:
+        async with factory() as session:
+            result = await session.execute(
+                text("SELECT id, name, url, etag, last_modified FROM feeds WHERE enabled=true AND env=:env"),
+                {"env": cur_env},
+            )
+            feeds = result.mappings().all()
+    except Exception:
+        async with factory() as session:
+            result = await session.execute(
+                text("SELECT id, name, url, etag, last_modified FROM feeds WHERE enabled=true")
+            )
+            feeds = result.mappings().all()
 
     if not feeds:
-        logger.debug("fetch_all: 无 enabled feeds")
+        logger.debug("fetch_all: 无 enabled feeds (env=%s)", cur_env)
         return
 
     total_new = 0
