@@ -1,7 +1,8 @@
 # PRD：Topic Collection —— 主题信息采集 + 摘要 / 翻译 / 知识图谱 / LLM Wiki
 
-版本：v0.12（2026-08-20）· 状态：Phase 1 / 1+ / 1++ 代码对齐完成，200/200 tests passing
+版本：v0.13（2026-08-20）· 状态：Phase 1 / 1+ / 1++ 代码对齐完成，204/204 tests passing
 > 工程细节（目录结构 / DDL / LLM 接口 / 流水线）以 [DESIGN.md](DESIGN.md) 为权威
+> v0.13：**代码与设计对齐 + 新增 5 项回归**——与 DESIGN v0.14 同步；`204/204 tests passing`（`pytest --collect-only` 204，`gh issue --state open` 0）；新增 `fix #30 scheduler 直注协程` + `fix #31 语义按相似度排序` + `fix #32 空碰撞 30d 窗口` + `fix #33 回灌 RETURNING ids` + `fix #34 tc reindex 回填`；PRD §15 验收 1/3/5/7/8/9/16/17/18 保持通过，`tc reindex` 补存量可检索性
 > v0.12：**代码与设计对齐**——与 DESIGN v0.13 同步；`200/200 tests passing`（`pytest --collect-only` 200）；P0 3 项（scheduler 装配/INTERVAL 修复/pg_backup 去阻塞）+ P1 3 项（Phase 2 四表+wiki tsv+task CHECK）+ P2 2 项（fetch_and_store 收敛+精确去重第二闸+配置统一）共 8 个 GitHub Issue 闭环；PRD §15 验收 1/3/5/7/8/9/16/17/18 保持通过
 > v0.11：Phase 1+ 适配器层完成（LLMAdapter + ProviderPatch + 三家差异分析 + MiniMax 通讯验证）；与 DESIGN v0.11 同步；148/148 tests
 > v0.9：切片一实现完成（PRD §15 验收 1/7/8 通过 + 真实环境 20 篇 HN 跑通）；与 DESIGN v0.10 同步；Docker 端口 5433（§11）

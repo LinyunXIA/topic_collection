@@ -2,8 +2,12 @@
 
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述（目录结构 / DDL / 接口）只在一处维护、另一处引用，避免漂移
-> 版本：v0.13 · 2026-08-20 · 代码与设计对齐修复（8 项 Issue 闭环，200/200 tests）
-> v0.13：**代码与设计对齐 + GitHub Issue 8 项闭环**——与当前代码（200/200 tests passing, `pytest --collect-only` 200）对齐：
+> 版本：v0.14 · 2026-08-20 · 代码与设计对齐修复（13 项 Issue 闭环，204/204 tests）
+> v0.14：**代码与设计对齐 + 新增 5 项回归修复**——与当前代码（204/204 tests passing, `pytest --collect-only` 204）对齐，`gh issue --state open` 0：
+>   **P0 阻断 2 项**——① `app/scheduler.py:251` 直注协程函数（`fix #30` 去 `lambda: ensure_future`，APScheduler 线程池 `RuntimeError: no current event loop` 导致 5 任务永不执行）；② `app/services/search.py:170` `DISTINCT ON + ORDER BY article_id` 改 `ORDER BY distance` 全局相似度 + 应用层去重（`fix #31`，`PRD 9` 按 id 选结果，HNSW 失效，RRF 污染）；
+>   **P1/P2 3 项**——③ `app/ingest/dedup.py:44` 空/过短短路（`_EMPTY_CONTENT_HASH` + `<32`）+ 30d 窗口（`fix #32`，空正文 feed 全吞为首篇）；④ `app/scheduler.py:114` `drain_queue` `UPDATE ... RETURNING id` 限定本轮 `ANY(:ids)`（`fix #33`，全表 `processing` 越界每 24h 重入队）；⑤ `app/services/cli.py:618` `tc reindex [--all]` 纯本地 `update_article_tsv` 回填存量 `NULL`（`fix #34`，`a003` 仅 wiki 回填）；
+>   同步更新：`DESIGN.md:5` 版本 200→204；`§5.1.5` `a005/a006` 已合入 `task CHECK`/`pg_trgm`；`§7` 检索 `ORDER BY distance` 替代 `DISTINCT ON`。
+> v0.13：**代码与设计对齐 + GitHub Issue 8 项闭环**——与当时代码（200/200 tests passing, `pytest --collect-only` 200）对齐：
 >   **P0 阻断 3 项**——① `app/worker.py:150` 装配 `setup_scheduler`（`app/scheduler.py:209` 新增 `AsyncIOScheduler` 工厂，`fetch_all/drain_queue/healthcheck/pg_backup/cleanup_fetch_events` 同 loop 常驻，`DESIGN.md:1292` §6 运维模式兑现）；② `app/scheduler.py:131` `cleanup_fetch_events` 修复 `INTERVAL ':days days'` 字面量绑定为 `f"INTERVAL '{int(days)} days'"`（与 `reclassify_recent` 同类修复）；③ `app/scheduler.py:173` `run_pg_backup` 改 `await asyncio.to_thread(subprocess.run, ...)` 防阻塞事件循环；
 >   **P1 Schema 3 项**——④ `app/db/models.py:282` + `a004_phase2_tables.py` 预创建 `translations/entities/article_entities/relations/reports` + `pg_trgm`（`§5.1` 承诺兑现）；⑤ `a003_wiki_tsv.py` + `app/db/models.py:259` `wiki_pages.tsv + GIN` + `app/db/fts.py:121` `update_wiki_tsv` + `app/services/search.py:232` `ILIKE→tsv @@ websearch_to_tsquery`；⑥ `a004` 扩展 `processing_jobs.task CHECK` 至 9 值（`extract_entities/generate_entity_wiki/generate_topic_wiki`，`§5.1.5`）；
 >   **P2 健壮 2 项**——⑦ `app/ingest/service.py:33` 收敛 `fetch_all`/`_feeds_fetch` 至 `fetch_and_store` 单一实现 + `app/ingest/dedup.py:apply_exact_dedup` 补 `content_hash` 第二闸（`§6` 精确去重闭环）；⑧ `app/config.py:34` `GenerateSettings.models` 删除（`fix #9.3` 单一真源 `LLMSettings.models`）+ `api_key`→`api_key_env` 统一 + `app/db/models.py:148` vector/tsv 占位注释；
