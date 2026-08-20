@@ -13,7 +13,7 @@ import httpx
 import pytest
 
 from app.llm.base import GenerateRequest, HealthStatus
-from app.llm.client import LLMClient, PermanentError, TransientError
+from app.llm.client import LLMClient, PermanentError
 from app.llm.factory import build_provider, _resolve_api_key
 from app.config import load_settings
 
@@ -140,43 +140,6 @@ class TestOpenAIProvider:
         assert "connection refused" in status.error
 
 
-# ── _classify_http_error (Phase 0) ─────────────────────────────────
-
-class TestClassifyHttpError:
-    """验证 _classify_http_error 正确分类 HTTP 状态码。"""
-
-    def test_401_is_permanent(self):
-        client = LLMClient(MagicMock(), max_concurrency=1)
-        with pytest.raises(PermanentError, match="401"):
-            client._classify_http_error(401, "Unauthorized")
-
-    def test_403_is_permanent(self):
-        client = LLMClient(MagicMock(), max_concurrency=1)
-        with pytest.raises(PermanentError, match="403"):
-            client._classify_http_error(403, "Forbidden")
-
-    def test_400_is_permanent(self):
-        client = LLMClient(MagicMock(), max_concurrency=1)
-        with pytest.raises(PermanentError, match="400"):
-            client._classify_http_error(400, "Bad Request")
-
-    def test_500_is_transient(self):
-        client = LLMClient(MagicMock(), max_concurrency=1)
-        with pytest.raises(TransientError, match="500"):
-            client._classify_http_error(500, "Server Error")
-
-    def test_429_is_transient(self):
-        client = LLMClient(MagicMock(), max_concurrency=1)
-        with pytest.raises(TransientError, match="429"):
-            client._classify_http_error(429, "Rate Limited")
-
-    def test_200_raises_generic_exception(self):
-        """非 4xx/5xx 的意外状态码 → 普通 Exception。"""
-        client = LLMClient(MagicMock(), max_concurrency=1)
-        with pytest.raises(Exception, match="HTTP 200"):
-            client._classify_http_error(200, "unexpected")
-
-
 # ── LLMClient 401 → PermanentError（Phase 0 集成验证） ─────────────
 
 class TestLLMClientHttpClassification:
@@ -209,7 +172,7 @@ class TestLLMClientHttpClassification:
 
     @pytest.mark.asyncio
     async def test_500_retries_before_failing(self):
-        """500 → TransientError → 重试 max_retries 次后抛出。"""
+        """500 → 瞬时错误 → _retry_transient 退避重试 max_retries 次后抛出原异常。"""
         mock_provider = MagicMock()
         mock_resp = MagicMock()
         mock_resp.status_code = 500
