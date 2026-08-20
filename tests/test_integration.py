@@ -712,3 +712,188 @@ class TestRunPgBackup:
         backups = list((tmp_path / "backups").glob("tc-*.sql.gz"))
         assert len(backups) == 1
         assert backups[0].stat().st_size > 0
+
+
+# ── drain_queue pending 回灌（fix #23） ─────────────────────────────
+
+class TestDrainQueueBackfill:
+    """验证 drain_queue 回灌 pending 文章入队（DESIGN §6 backpressure）。"""
+
+    @pytest.mark.asyncio
+    async def test_backfill_pending_articles(self, settings):
+        """插入 60 篇 pending 文章无 jobs → drain_queue 后全部入队。"""
+        await clean_all(settings)
+        from app.scheduler import drain_queue
+
+        article_count = 60
+        factory = get_session_factory(settings)
+
+        # 插入 60 篇 pending 文章（无 feed_id、无 jobs）
+        async with factory() as session:
+            for i in range(article_count):
+                uh = url_hash(f"https://test-backfill.example.com/{i}")
+                ch = content_hash(f"content {i}")
+                await session.execute(
+                    text(
+                        "INSERT INTO articles "
+                        "(source_url, url_hash, content_hash, title, content_text, lang, status) "
+                        "VALUES (:url, :uh, :ch, :title, :ct, 'en', 'pending')"
+                    ),
+                    {
+                        "url": f"https://test-backfill.example.com/{i}",
+                        "uh": uh,
+                        "ch": ch,
+                        "title": f"Backfill Test {i}",
+                        "ct": f"content {i}",
+                    },
+                )
+            await session.commit()
+
+        # 验证：60 篇 pending 文章，0 个 jobs
+        async with factory() as session:
+            result = await session.execute(
+                text("SELECT COUNT(*) FROM articles WHERE status='pending'")
+            )
+            assert result.scalar() == article_count
+            result = await session.execute(
+                text("SELECT COUNT(*) FROM processing_jobs")
+            )
+            assert result.scalar() == 0
+
+        # 执行 drain_queue
+        await drain_queue(settings)
+
+        # 验证：全部 60 篇 → processing
+        async with factory() as session:
+            result = await session.execute(
+                text("SELECT COUNT(*) FROM articles WHERE status='processing'")
+            )
+            assert result.scalar() == article_count
+
+            # 验证：60 篇 × 2 个 task（embed_core + summarize）= 120 个 jobs
+            result = await session.execute(
+                text("SELECT COUNT(*) FROM processing_jobs")
+            )
+            assert result.scalar() == article_count * 2
+
+            # 验证：每个 task 各 60 个
+            result = await session.execute(
+                text(
+                    "SELECT task, COUNT(*) FROM processing_jobs "
+                    "GROUP BY task ORDER BY task"
+                )
+            )
+            task_counts = {r[0]: r[1] for r in result.fetchall()}
+            assert task_counts["embed_core"] == article_count
+            assert task_counts["summarize"] == article_count
+
+    @pytest.mark.asyncio
+    async def test_dedupe_of_excluded(self, settings):
+        """dedupe_of IS NULL 以外的文章不被回灌。"""
+        await clean_all(settings)
+        from app.scheduler import drain_queue
+
+        factory = get_session_factory(settings)
+
+        # 插入 2 篇 pending 文章，第 2 篇 dedupe_of 指向第 1 篇（FK 需要已存在的 id）
+        async with factory() as session:
+            uh0 = url_hash("https://test-dedupe.example.com/0")
+            ch0 = content_hash("dedupe content 0")
+            await session.execute(
+                text(
+                    "INSERT INTO articles "
+                    "(source_url, url_hash, content_hash, title, content_text, lang, status) "
+                    "VALUES (:url, :uh, :ch, :title, :ct, 'en', 'pending')"
+                ),
+                {
+                    "url": "https://test-dedupe.example.com/0",
+                    "uh": uh0,
+                    "ch": ch0,
+                    "title": "Dedupe Test 0",
+                    "ct": "dedupe content 0",
+                },
+            )
+            result = await session.execute(
+                text("SELECT id FROM articles WHERE url_hash=:uh"), {"uh": uh0}
+            )
+            winner_id = result.scalar_one()
+
+            uh1 = url_hash("https://test-dedupe.example.com/1")
+            ch1 = content_hash("dedupe content 1")
+            await session.execute(
+                text(
+                    "INSERT INTO articles "
+                    "(source_url, url_hash, content_hash, title, content_text, lang, status, dedupe_of) "
+                    "VALUES (:url, :uh, :ch, :title, :ct, 'en', 'pending', :dedupe_of)"
+                ),
+                {
+                    "url": "https://test-dedupe.example.com/1",
+                    "uh": uh1,
+                    "ch": ch1,
+                    "title": "Dedupe Test 1",
+                    "ct": "dedupe content 1",
+                    "dedupe_of": winner_id,
+                },
+            )
+            await session.commit()
+
+        await drain_queue(settings)
+
+        # 只有 dedupe_of=NULL 的文章被回灌（1 篇 × 2 tasks）
+        async with factory() as session:
+            result = await session.execute(
+                text("SELECT COUNT(*) FROM processing_jobs")
+            )
+            assert result.scalar() == 2
+
+    @pytest.mark.asyncio
+    async def test_existing_jobs_not_duplicated(self, settings):
+        """已有 jobs 的文章不被重复入队（幂等）。"""
+        await clean_all(settings)
+        from app.scheduler import drain_queue
+        from app.pipeline import enqueue_jobs
+        from app.ingest.dedup import content_hash as ch_fn
+
+        factory = get_session_factory(settings)
+
+        # 插入 1 篇 pending 文章
+        async with factory() as session:
+            uh = url_hash("https://test-idempotent.example.com/1")
+            ch = ch_fn("idempotent content")
+            await session.execute(
+                text(
+                    "INSERT INTO articles "
+                    "(source_url, url_hash, content_hash, title, content_text, lang, status) "
+                    "VALUES (:url, :uh, :ch, :title, :ct, 'en', 'pending')"
+                ),
+                {
+                    "url": "https://test-idempotent.example.com/1",
+                    "uh": uh,
+                    "ch": ch,
+                    "title": "Idempotent Test",
+                    "ct": "idempotent content",
+                },
+            )
+            result = await session.execute(
+                text("SELECT id FROM articles WHERE url_hash=:uh"), {"uh": uh}
+            )
+            article_id = result.scalar_one()
+
+            # 手动 enqueue 1 个 job
+            await enqueue_jobs(session, article_id, ["embed_core"], ch)
+            await session.commit()
+
+            # 验证：1 个 job
+            result = await session.execute(
+                text("SELECT COUNT(*) FROM processing_jobs")
+            )
+            assert result.scalar() == 1
+
+        # 执行 drain_queue — 文章已是 processing，不会被回灌
+        await drain_queue(settings)
+
+        async with factory() as session:
+            result = await session.execute(
+                text("SELECT COUNT(*) FROM processing_jobs")
+            )
+            assert result.scalar() == 1  # 不增加

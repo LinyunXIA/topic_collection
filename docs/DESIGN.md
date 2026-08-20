@@ -2,7 +2,12 @@
 
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述（目录结构 / DDL / 接口）只在一处维护、另一处引用，避免漂移
-> 版本：v0.12 · 2026-08-20 · Phase 2 蓝图修订（11 项问题修复）
+> 版本：v0.13 · 2026-08-20 · 代码与设计对齐修复（8 项 Issue 闭环，200/200 tests）
+> v0.13：**代码与设计对齐 + GitHub Issue 8 项闭环**——与当前代码（200/200 tests passing, `pytest --collect-only` 200）对齐：
+>   **P0 阻断 3 项**——① `app/worker.py:150` 装配 `setup_scheduler`（`app/scheduler.py:209` 新增 `AsyncIOScheduler` 工厂，`fetch_all/drain_queue/healthcheck/pg_backup/cleanup_fetch_events` 同 loop 常驻，`DESIGN.md:1292` §6 运维模式兑现）；② `app/scheduler.py:131` `cleanup_fetch_events` 修复 `INTERVAL ':days days'` 字面量绑定为 `f"INTERVAL '{int(days)} days'"`（与 `reclassify_recent` 同类修复）；③ `app/scheduler.py:173` `run_pg_backup` 改 `await asyncio.to_thread(subprocess.run, ...)` 防阻塞事件循环；
+>   **P1 Schema 3 项**——④ `app/db/models.py:282` + `a004_phase2_tables.py` 预创建 `translations/entities/article_entities/relations/reports` + `pg_trgm`（`§5.1` 承诺兑现）；⑤ `a003_wiki_tsv.py` + `app/db/models.py:259` `wiki_pages.tsv + GIN` + `app/db/fts.py:121` `update_wiki_tsv` + `app/services/search.py:232` `ILIKE→tsv @@ websearch_to_tsquery`；⑥ `a004` 扩展 `processing_jobs.task CHECK` 至 9 值（`extract_entities/generate_entity_wiki/generate_topic_wiki`，`§5.1.5`）；
+>   **P2 健壮 2 项**——⑦ `app/ingest/service.py:33` 收敛 `fetch_all`/`_feeds_fetch` 至 `fetch_and_store` 单一实现 + `app/ingest/dedup.py:apply_exact_dedup` 补 `content_hash` 第二闸（`§6` 精确去重闭环）；⑧ `app/config.py:34` `GenerateSettings.models` 删除（`fix #9.3` 单一真源 `LLMSettings.models`）+ `api_key`→`api_key_env` 统一 + `app/db/models.py:148` vector/tsv 占位注释；
+>   同步更新：`DESIGN.md:9` 配置 schema 与 `config.yaml` 一致；`§10` 调度表与 `setup_scheduler` 触发器一致；测试计数 148→200。
 > v0.12：**Phase 2 蓝图架构审查修订**——切片 2.3 实体落库伪代码全面修正：
 >   **严重 1（relations 命名空间）**——§4.6.1 relations schema 示例 `subject/object` 改为 `canonical_name_zh`（原用英文 `name` 与 `_build_entity_id_map` 映射对不上，所有关系静默跳过）；§6.Y 加 `name_to_eid` 反向映射 + prompt 约束注释；
 >   **严重 2（_build_entity_id_map 缺 entity_type 过滤）**——映射键改为 `(entity_type, canonical_name_zh)` 二元组，查询 `WHERE (entity_type, canonical_name_zh) = ANY(:keys)`，防止同名不同类型（「苹果」org vs product）混淆；
