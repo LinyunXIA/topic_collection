@@ -606,5 +606,49 @@ def backup():
         raise typer.Exit(1)
 
 
+# ── reindex（fix #34） ────────────────────────────────────────────
+
+@app.command()
+def reindex(
+    all_articles: bool = typer.Option(False, "--all", help="重建全部文章的 tsv（含已有 tsv 的），默认仅 tsv IS NULL 的存量"),
+    batch_size: int = typer.Option(500, "--batch-size", "-b", help="每批处理条数"),
+):
+    """重建 articles.tsv（纯本地 jieba + UPDATE，无 LLM 调用，fix #34）。"""
+    _run_async(_reindex(all_articles, batch_size))
+
+
+async def _reindex(all_articles: bool, batch_size: int):
+    """遍历文章调用 update_article_tsv（自动补齐 title/content/summary 段）。"""
+    from app.db.fts import update_article_tsv
+
+    settings = load_settings()
+    factory = get_session_factory(settings)
+
+    async with factory() as session:
+        # 选 id 列表：默认仅 tsv IS NULL（存量未建索引的），--all 则全量
+        where_clause = "" if all_articles else "WHERE tsv IS NULL"
+        result = await session.execute(
+            text(f"SELECT id FROM articles {where_clause} ORDER BY id")
+        )
+        ids = [r[0] for r in result.fetchall()]
+
+    if not ids:
+        console.print("[green]无需重建：没有匹配的文章[/green]")
+        return
+
+    console.print(f"🔄 重建 tsv：共 {len(ids)} 篇 (batch={batch_size})")
+
+    # 分批重建，避免单事务过大
+    for i in range(0, len(ids), batch_size):
+        batch = ids[i : i + batch_size]
+        async with factory() as session:
+            for aid in batch:
+                await update_article_tsv(session, aid, "", "")
+            await session.commit()
+        console.print(f"  ✓ {min(i+batch_size, len(ids))}/{len(ids)}")
+
+    console.print(f"[green]✅ tsv 重建完成：{len(ids)} 篇[/green]")
+
+
 if __name__ == "__main__":
     app()

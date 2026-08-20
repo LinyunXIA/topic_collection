@@ -108,25 +108,27 @@ async def drain_queue(settings) -> None:
         )
         succeeded_cleaned = result.rowcount
 
-        # ── 回灌 pending 文章（DESIGN §6 backpressure） ──
-        # 谓词三条件互锁：status='pending'（处理过的不在）
-        # + dedupe_of IS NULL（loser 不复活）+ 零 job 记录（截断未入队特征）
+        # ── 回灌 pending 文章（DESIGN §6 backpressure，fix #33 限定本轮） ──
+        # 谓词三条件互锁：status='pending' + dedupe_of IS NULL + 零 job 记录
+        # fix #33：UPDATE ... RETURNING id 收集本轮回灌 id，避免扫全表 processing
+        # 导致已完成但 succeeded 记录被清掉的文章被重复入队（每 24h 循环）。
         result = await session.execute(
             text(
                 "UPDATE articles SET status='processing' "
                 "WHERE status = 'pending' AND dedupe_of IS NULL "
                 "AND NOT EXISTS ("
                 "  SELECT 1 FROM processing_jobs j WHERE j.article_id = articles.id"
-                ")"
+                ") RETURNING id"
             )
         )
-        backfilled = result.rowcount
+        backfilled_ids = [r[0] for r in result.fetchall()]
+        backfilled = len(backfilled_ids)
 
-        if backfilled:
+        if backfilled_ids:
             # 为回灌文章补入 jobs（embed_core priority=1, summarize priority=2）
+            # 限定 a.id = ANY(:ids) 避免越界到全表 processing（fix #33）
             # ON CONFLICT DO NOTHING 保证幂等
-            # 注意：:task_val 和 :task_match 分开命名，避免 asyncpg 对同一参数
-            # 在 SELECT 列表（text）和 WHERE 子句（varchar 列比较）推断类型冲突
+            # 注意：:task_val 和 :task_match 分开命名，避免 asyncpg 类型推断冲突
             for task, priority in TASK_PRIORITY.items():
                 if task not in ("embed_core", "summarize"):
                     continue
@@ -136,13 +138,13 @@ async def drain_queue(settings) -> None:
                         "(article_id, task, status, content_hash, priority) "
                         "SELECT a.id, :task_val, 'queued', a.content_hash, :pri "
                         "FROM articles a "
-                        "WHERE a.status = 'processing' AND a.dedupe_of IS NULL "
+                        "WHERE a.id = ANY(:ids) "
                         "AND NOT EXISTS ("
                         "  SELECT 1 FROM processing_jobs j "
                         "  WHERE j.article_id = a.id AND j.task = :task_match"
                         ")"
                     ),
-                    {"task_val": task, "task_match": task, "pri": priority},
+                    {"ids": backfilled_ids, "task_val": task, "task_match": task, "pri": priority},
                 )
 
         await session.commit()
