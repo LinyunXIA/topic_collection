@@ -2,11 +2,11 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-## 项目状态：Phase 1 MVP + Phase 1+ 完成，190/190 tests passing
+## 项目状态：Phase 1 MVP + Phase 1+ 完成，200/200 tests passing
 
-`topic_collection` 是一个**主题信息聚合 + 个人知识库**系统（采集 RSS/API → 本地 LLM 摘要/嵌入 → 可搜索 Wiki + 知识图谱）。**切片一（端到端闭环）、切片二（混合检索）、切片三（主题+Wiki）+ 横切（scheduler + 测试 + 验收）+ Phase 1+（外部 LLM API + 适配器层 + fetch --count）已全部完成**，190/190 tests passing（`pytest tests/ -q`），真实环境 20 篇 HN 文章端到端跑通，MiniMax-M3 外部 API 通讯验证通过。**Phase 1 MVP + Phase 1+ 全部实现**，PRD §15 验收 1/3/5/7/8/9/16/17/18 全部通过。
+`topic_collection` 是一个**主题信息聚合 + 个人知识库**系统（采集 RSS/API → 本地 LLM 摘要/嵌入 → 可搜索 Wiki + 知识图谱）。**切片一（端到端闭环）、切片二（混合检索）、切片三（主题+Wiki）+ 横切（scheduler + 测试 + 验收）+ Phase 1+（外部 LLM API + 适配器层 + fetch --count）已全部完成**，200/200 tests passing（`pytest tests/ -q`），真实环境 20 篇 HN 文章端到端跑通，MiniMax-M3 外部 API 通讯验证通过。**Phase 1 MVP + Phase 1+ 全部实现**，PRD §15 验收 1/3/5/7/8/9/16/17/18 全部通过。
 
-测试计数核对方式：`pytest tests/ --collect-only -q | tail -1` 应输出 `190 tests collected`。
+测试计数核对方式：`pytest tests/ --collect-only -q | tail -1` 应输出 `200 tests collected`。
 
 **先读这两份文档再动手**（文档用中文撰写，新增文档/注释沿用中文）：
 - `docs/PRD.md` —— 产品需求（做什么、阶段划分、验收标准）
@@ -54,8 +54,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 | **Tech debt** | 抓取逻辑分叉抽 fetch_and_store + api_key_env 统一 + GenerateSettings.models 删除 + ORM vector 占位注释 + 文档同步（fix #9） | ✅ 完成 | +5 passed |
 | **Cleanup** | 删 _classify_http_error + TransientError 死代码（fix #12） | ✅ 完成 | -6 passed |
 | **Schema** | wiki_pages 加 tsv 列 + GIN + jieba backfill + 全文搜索替代 ILIKE（fix #6） | ✅ 完成 | +4 passed |
+| **Schema** | Phase 2 五表预创建（translations/entities/article_entities/relations/reports，fix #5） | ✅ 完成 | +10 passed |
 
-**测试合计：190 passed**（48 + 12 + 15 + 11 + 62 + 0 + 2 + 6 + 6 + 2 + 5 + 23 - 6 + 4）
+**测试合计：200 passed**（48 + 12 + 15 + 11 + 62 + 0 + 2 + 6 + 6 + 2 + 5 + 23 - 6 + 4 + 10）
 
 ## 项目结构
 

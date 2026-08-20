@@ -6,10 +6,12 @@ schema 唯一真源 = Alembic 迁移；此处为应用层查询接口。
 from __future__ import annotations
 
 from datetime import datetime
+from typing import Any
 
 from sqlalchemy import (
     BigInteger,
     Boolean,
+    Date,
     DateTime,
     ForeignKey,
     Index,
@@ -19,6 +21,7 @@ from sqlalchemy import (
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR
 from sqlalchemy.orm import (
@@ -103,6 +106,9 @@ class Article(Base):
         back_populates="article", uselist=False, cascade="all, delete-orphan"
     )
     article_topics: Mapped[list[ArticleTopic]] = relationship(
+        back_populates="article", cascade="all, delete-orphan"
+    )
+    entities: Mapped[list["ArticleEntity"]] = relationship(
         back_populates="article", cascade="all, delete-orphan"
     )
 
@@ -268,6 +274,145 @@ class FetchEvent(Base):
     ok: Mapped[bool | None] = mapped_column(Boolean)
     error: Mapped[str | None] = mapped_column(Text)
     item_count: Mapped[int | None] = mapped_column(Integer)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# ── translations（DESIGN §5.1，Phase 2 切片 2.7） ──────────────────
+class Translation(Base):
+    __tablename__ = "translations"
+    __table_args__ = (
+        UniqueConstraint("article_id", "src_lang", "tgt_lang", "model",
+                         name="uq_translations_article_lang_model"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    article_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("articles.id", ondelete="CASCADE"), nullable=False
+    )
+    src_lang: Mapped[str | None] = mapped_column(String)
+    tgt_lang: Mapped[str | None] = mapped_column(String, default="zh")
+    model: Mapped[str | None] = mapped_column(String)
+    content_hash: Mapped[str | None] = mapped_column(String)
+    translated_title: Mapped[str | None] = mapped_column(Text)
+    translated_content: Mapped[str | None] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# ── entities（DESIGN §5.1/§5.1.5，Phase 2 切片 2.3） ───────────────
+class Entity(Base):
+    __tablename__ = "entities"
+    __table_args__ = (
+        UniqueConstraint("entity_type", "canonical_name_zh",
+                         name="entities_uniq_per_type_zh"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    canonical_name_zh: Mapped[str] = mapped_column(Text, nullable=False)
+    aliases_json: Mapped[dict | None] = mapped_column(JSONB)
+    entity_type: Mapped[str | None] = mapped_column(String)  # person|org|product|model|...
+    description: Mapped[str | None] = mapped_column(Text)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    mention_count: Mapped[int] = mapped_column(Integer, default=0)
+    confidence: Mapped[float | None] = mapped_column(Numeric)
+
+    articles: Mapped[list["ArticleEntity"]] = relationship(
+        back_populates="entity", cascade="all, delete-orphan"
+    )
+    relations_as_subject: Mapped[list["Relation"]] = relationship(
+        back_populates="subject",
+        foreign_keys="Relation.subject_id",
+        cascade="all, delete-orphan",
+    )
+    relations_as_object: Mapped[list["Relation"]] = relationship(
+        back_populates="object",
+        foreign_keys="Relation.object_id",
+        cascade="all, delete-orphan",
+    )
+
+
+# ── article_entities（DESIGN §6.X，Phase 2 切片 2.3） ──────────────
+class ArticleEntity(Base):
+    __tablename__ = "article_entities"
+
+    article_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("articles.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    entity_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("entities.id", ondelete="CASCADE"),
+        primary_key=True,
+    )
+    confidence: Mapped[float | None] = mapped_column(Numeric)
+    surface: Mapped[str | None] = mapped_column(Text)  # 该 entity 在本文出现的原文子串
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    article: Mapped[Article] = relationship(back_populates="entities")
+    entity: Mapped[Entity] = relationship(back_populates="articles")
+
+
+# ── relations（DESIGN §5.1/§5.1.5，Phase 2 切片 2.3/2.4） ───────────
+class Relation(Base):
+    __tablename__ = "relations"
+    __table_args__ = (
+        UniqueConstraint("subject_id", "predicate", "object_id",
+                         name="relations_uniq_spo"),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    subject_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+    predicate: Mapped[str | None] = mapped_column(String)
+    object_id: Mapped[int] = mapped_column(
+        BigInteger, ForeignKey("entities.id", ondelete="CASCADE"), nullable=False
+    )
+    # source_article_id 改为可选（兼容 Phase 2 §5.1.5：来源文章改用 JSONB 数组）
+    source_article_id: Mapped[int | None] = mapped_column(
+        BigInteger, ForeignKey("articles.id", ondelete="SET NULL")
+    )
+    source_articles_json: Mapped[dict] = mapped_column(
+        JSONB, server_default=text("'[]'::jsonb"), nullable=False,
+    )
+    confidence: Mapped[float | None] = mapped_column(Numeric)
+    first_seen_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    subject: Mapped[Entity] = relationship(
+        back_populates="relations_as_subject", foreign_keys=[subject_id],
+    )
+    object: Mapped[Entity] = relationship(
+        back_populates="relations_as_object", foreign_keys=[object_id],
+    )
+
+
+# ── reports（DESIGN §5.1/§5.1.5，Phase 2 切片 2.5） ────────────────
+class Report(Base):
+    __tablename__ = "reports"
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    report_type: Mapped[str | None] = mapped_column(String)  # daily|weekly
+    period_start: Mapped[Any | None] = mapped_column(Date)  # noqa: placeholder
+    period_end: Mapped[Any | None] = mapped_column(Date)  # noqa: placeholder
+    content_md: Mapped[str | None] = mapped_column(Text)
+    content_html: Mapped[str | None] = mapped_column(Text)
+    stats_json: Mapped[dict | None] = mapped_column(JSONB)
+    status: Mapped[str] = mapped_column(
+        String, nullable=False, default="pending",
+    )  # pending|running|succeeded|failed
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    error: Mapped[str | None] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
