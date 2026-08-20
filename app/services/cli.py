@@ -610,11 +610,17 @@ def backup():
 
 @app.command()
 def reindex(
-    all_articles: bool = typer.Option(False, "--all", help="重建全部文章的 tsv（含已有 tsv 的），默认仅 tsv IS NULL 的存量"),
+    all_articles: bool = typer.Option(True, "--all", help="重建全部文章的 tsv（默认全量，保留兼容）"),
+    only_null: bool = typer.Option(False, "--only-null", help="仅重建 tsv IS NULL 的文章（增量快速模式，fix #39 之前默认漏掉仅含摘要段的存量）"),
     batch_size: int = typer.Option(500, "--batch-size", "-b", help="每批处理条数"),
 ):
-    """重建 articles.tsv（纯本地 jieba + UPDATE，无 LLM 调用，fix #34）。"""
-    _run_async(_reindex(all_articles, batch_size))
+    """重建 articles.tsv（纯本地 jieba + UPDATE，无 LLM 调用，fix #34，fix #39 默认全量）。"""
+    # fix #39：默认全量，避免漏掉 PR #1 前已 summarize（tsv 仅含摘要段非 NULL）的存量
+    effective_all = not only_null
+    # 兼容：显式 --no-all 视为 only_null（typer 自动提供 --no-all 取反）
+    if not all_articles and not only_null:
+        effective_all = False
+    _run_async(_reindex(effective_all, batch_size))
 
 
 async def _reindex(all_articles: bool, batch_size: int):
