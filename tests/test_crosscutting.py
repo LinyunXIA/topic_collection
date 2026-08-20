@@ -13,7 +13,7 @@ from sqlalchemy import text
 from app.config import load_settings
 from app.db.engine import get_engine, get_session_factory
 from app.db.fts import update_article_tsv
-from app.ingest.dedup import url_hash, content_hash
+from app.ingest.dedup import url_hash, content_hash, apply_exact_dedup
 from app.llm.client import LLMClient
 from app.llm.fake import FakeLLMProvider
 from app.pipeline import (
@@ -307,6 +307,257 @@ class TestNearDedup:
             # FakeLLM 返回固定向量，距离应为 0（同向量）
             # 真实环境中不同内容距离会 > 0.05
             assert distance is not None  # 查询成功即通过
+
+
+# ── issue #8：精确去重 content_hash 第二道闸 ──────────────────────────
+
+class TestExactDedup:
+    """DESIGN §6：精确去重要求两道闸 — url_hash + content_hash。
+
+    fix issue #8 之前只检查 url_hash；同 content_text 不同 source_url 的转载/同 RSS
+    内容重抓仍会建新行，依赖后置向量近似去重（阈值 0.95）兜底 —— 短文 / 模板化正文
+    向量相似度未必达 0.95 会漏合并。本类验证新增 content_hash 分支。
+    """
+
+    @pytest.mark.asyncio
+    async def test_exact_dedup_content_hash(self, settings):
+        """同 content_text + 不同 source_url → 仅入库 1 行，第 2 条 mention_count+1
+        且不入队 embed_core/summarize，并写 fetch_events('dedup_exact') 审计。
+        """
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+
+        async with factory() as session:
+            # 准备一个 feed（fetch_events.feed_id 是 NOT NULL + FK）
+            res = await session.execute(
+                text(
+                    "INSERT INTO feeds (type, name, url, enabled) "
+                    "VALUES ('rss', 'Test Feed', 'https://example.com/feed', true) "
+                    "RETURNING id"
+                )
+            )
+            feed_id = res.scalar()
+            await session.commit()
+
+        # 文章 A：先入库（url_a + content_text）
+        url_a = "https://example.com/a"
+        url_b = "https://example.com/b"  # 不同 URL，模拟转载
+        content_text = "Same article body used by both sources."
+        uh_a = url_hash(url_a)
+        uh_b = url_hash(url_b)
+        ch = content_hash(content_text)
+
+        async with factory() as session:
+            res = await session.execute(
+                text(
+                    "INSERT INTO articles "
+                    "(feed_id, source_url, url_hash, content_hash, title, "
+                    " content_text, lang, status, mention_count) "
+                    "VALUES (:fid, :url, :uh, :ch, :title, :ct, 'en', 'pending', 1) "
+                    "RETURNING id"
+                ),
+                {
+                    "fid": feed_id, "url": url_a, "uh": uh_a, "ch": ch,
+                    "title": "A", "ct": content_text,
+                },
+            )
+            aid_a = res.scalar()
+            await session.commit()
+
+        # 文章 B：尝试入库（不同 url_hash 但同 content_hash）—— 应被精确去重拦下
+        async with factory() as session:
+            winner_id = await apply_exact_dedup(session, feed_id, uh_b, ch)
+            await session.commit()
+            assert winner_id == aid_a, "精确去重应命中文章 A"
+
+            # 验证：articles 表仍只 1 行
+            res = await session.execute(text("SELECT COUNT(*) FROM articles"))
+            assert res.scalar() == 1, "精确去重不应创建新行"
+
+            # 验证：winner mention_count == 2（1 + 1）
+            res = await session.execute(
+                text("SELECT mention_count FROM articles WHERE id=:aid"),
+                {"aid": aid_a},
+            )
+            assert res.scalar() == 2
+
+            # 验证：没入队 embed_core / summarize（精确去重路径不调用 enqueue）
+            res = await session.execute(
+                text("SELECT COUNT(*) FROM processing_jobs WHERE article_id=:aid"),
+                {"aid": aid_a},
+            )
+            assert res.scalar() == 0
+
+            # 验证：fetch_events('dedup_exact') 写入
+            res = await session.execute(
+                text(
+                    "SELECT event_type, ok, item_count FROM fetch_events "
+                    "WHERE feed_id=:fid AND event_type='dedup_exact'"
+                ),
+                {"fid": feed_id},
+            )
+            evt = res.first()
+            assert evt is not None, "应写 dedup_exact 审计"
+            assert evt[1] is True
+            assert evt[2] == 1
+
+    @pytest.mark.asyncio
+    async def test_exact_dedup_url_hash_still_works(self, settings):
+        """原有 url_hash 命中分支不被回归（DESIGN §6 第一道闸）。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+
+        async with factory() as session:
+            res = await session.execute(
+                text(
+                    "INSERT INTO feeds (type, name, url, enabled) "
+                    "VALUES ('rss', 'Test Feed', 'https://example.com/feed', true) "
+                    "RETURNING id"
+                )
+            )
+            feed_id = res.scalar()
+            await session.commit()
+
+            url = "https://example.com/same-url-twice"
+            content_text = "Some content."
+            uh = url_hash(url)
+            ch = content_hash(content_text)
+
+            await session.execute(
+                text(
+                    "INSERT INTO articles "
+                    "(feed_id, source_url, url_hash, content_hash, title, "
+                    " content_text, lang, status, mention_count) "
+                    "VALUES (:fid, :url, :uh, :ch, :title, :ct, 'en', 'pending', 1)"
+                ),
+                {"fid": feed_id, "url": url, "uh": uh, "ch": ch, "title": "X", "ct": content_text},
+            )
+            await session.commit()
+
+            # 同 url_hash 再调用一次 → 仍命中
+            winner_id = await apply_exact_dedup(session, feed_id, uh, ch)
+            await session.commit()
+            assert winner_id is not None
+
+            # 仅 1 行 + mention_count == 2 + dedup_exact 审计
+            res = await session.execute(text("SELECT COUNT(*) FROM articles"))
+            assert res.scalar() == 1
+            res = await session.execute(
+                text("SELECT mention_count FROM articles WHERE url_hash=:uh"),
+                {"uh": uh},
+            )
+            assert res.scalar() == 2
+            res = await session.execute(
+                text(
+                    "SELECT COUNT(*) FROM fetch_events "
+                    "WHERE feed_id=:fid AND event_type='dedup_exact'"
+                ),
+                {"fid": feed_id},
+            )
+            assert res.scalar() == 1
+
+    @pytest.mark.asyncio
+    async def test_exact_dedup_no_hit_returns_none(self, settings):
+        """无任何命中时返回 None（调用方应创建新行）。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+
+        async with factory() as session:
+            res = await session.execute(
+                text(
+                    "INSERT INTO feeds (type, name, url, enabled) "
+                    "VALUES ('rss', 'Test Feed', 'https://example.com/feed', true) "
+                    "RETURNING id"
+                )
+            )
+            feed_id = res.scalar()
+            await session.commit()
+
+            uh = url_hash("https://example.com/fresh")
+            ch = content_hash("Fresh text.")
+
+            winner_id = await apply_exact_dedup(session, feed_id, uh, ch)
+            await session.commit()
+            assert winner_id is None, "空库应返回 None，调用方创建新行"
+
+            # 不应写 fetch_events
+            res = await session.execute(
+                text("SELECT COUNT(*) FROM fetch_events WHERE feed_id=:fid"),
+                {"fid": feed_id},
+            )
+            assert res.scalar() == 0
+
+    @pytest.mark.asyncio
+    async def test_exact_dedup_skips_loser_winner(self, settings):
+        """content_hash 命中但 winner 自身是 loser（dedupe_of 非空） → 跳过，
+        避免 loser 链条上 mention_count 误增（与 §6 多跳扁平化一致）。
+
+        实际语义：loser 文章没有原始独立内容，不应作为 winner 被合并；本测试
+        期望返回 None，新文章入库后续由 embed 阶段近似去重兜底定位终极 winner。
+        """
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+
+        async with factory() as session:
+            res = await session.execute(
+                text(
+                    "INSERT INTO feeds (type, name, url, enabled) "
+                    "VALUES ('rss', 'Test Feed', 'https://example.com/feed', true) "
+                    "RETURNING id"
+                )
+            )
+            feed_id = res.scalar()
+            await session.commit()
+
+            # 终极 winner（独立）
+            res = await session.execute(
+                text(
+                    "INSERT INTO articles "
+                    "(feed_id, source_url, url_hash, content_hash, title, "
+                    " content_text, lang, status, mention_count) "
+                    "VALUES (:fid, :url, :uh, :ch, :title, :ct, 'en', 'done', 1) "
+                    "RETURNING id"
+                ),
+                {"fid": feed_id, "url": "https://example.com/winner",
+                 "uh": url_hash("https://example.com/winner"),
+                 "ch": content_hash("Unique winner content."),
+                 "title": "Winner", "ct": "Unique winner content."},
+            )
+            winner_id = res.scalar()
+
+            # Loser：dedupe_of=winner（模拟近似去重已合并）
+            await session.execute(
+                text(
+                    "INSERT INTO articles "
+                    "(feed_id, source_url, url_hash, content_hash, title, "
+                    " content_text, lang, status, mention_count, dedupe_of) "
+                    "VALUES (:fid, :url, :uh, :ch, :title, :ct, 'en', 'done', 1, :dedupe)"
+                ),
+                {"fid": feed_id, "url": "https://example.com/loser",
+                 "uh": url_hash("https://example.com/loser"),
+                 "ch": content_hash("Loser content."),
+                 "title": "Loser", "ct": "Loser content.", "dedupe": winner_id},
+            )
+            await session.commit()
+
+            # 第三条 URL 新但 content_hash 同 loser → 应跳过（不挂到 loser 上）
+            loser_ch = content_hash("Loser content.")
+            new_winner = await apply_exact_dedup(
+                session, feed_id, url_hash("https://example.com/new"), loser_ch
+            )
+            await session.commit()
+            assert new_winner is None, "content_hash 命中 loser 应跳过，避免挂错 winner"
+
+            # winner / loser mention_count 都不应被改
+            res = await session.execute(
+                text(
+                    "SELECT id, mention_count FROM articles ORDER BY id"
+                )
+            )
+            rows = res.fetchall()
+            assert len(rows) == 2
+            for r in rows:
+                assert r[1] == 1, f"article id={r[0]} mention_count 不应被改"
 
 
 # ── Pipeline 并发 ──────────────────────────────────────────────────
