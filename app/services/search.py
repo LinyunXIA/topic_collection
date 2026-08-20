@@ -169,6 +169,10 @@ async def _semantic_search(
 
     # 语义搜索：DISTINCT ON (article_id) + ORDER BY article_id, distance
     # 替代 GROUP BY——让 pgvector planner 识别 HNSW 索引扫描路径（fix #10）。
+    # TODO(partial HNSW, fix #25): 当前为兼容 DISTINCT ON 必须 ORDER BY article_id，
+    #   导致非全局按 distance 最相似排序，召回质量受损。
+    #   Phase 2 partial HNSW 就绪后切 ORDER BY distance + 字面量拼 active_model
+    #   并 EXPLAIN 验证 HNSW 命中（DESIGN §5.2）。
     result = await session.execute(
         text(
             "SELECT DISTINCT ON (ae.article_id) "

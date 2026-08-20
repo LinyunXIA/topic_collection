@@ -22,14 +22,14 @@ from app.llm.client import LLMClient, PermanentError
 
 logger = logging.getLogger(__name__)
 
-# 任务优先级（DESIGN §6，fix #7 扩展 Phase 2 任务）
+# 任务优先级（DESIGN §6，fix #7 扩展 Phase 2 任务，fix #25 对齐 translate 7）
 TASK_PRIORITY = {
     "embed_core": 1,
     "summarize": 2,
     "topics": 3,
     "extract_entities": 3,
     "wiki": 4,
-    "translate": 5,
+    "translate": 7,
     "generate_entity_wiki": 5,
     "generate_topic_wiki": 5,
     "embed_summary": 6,

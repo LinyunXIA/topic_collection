@@ -146,6 +146,17 @@ def build_provider(
         elif backend in llm.providers:
             # 任何在 providers 注册表里的后端都走 OpenAI 兼容协议
             provider_cfg = llm.providers[backend]
+            # fix #25：双真源检测——generate.endpoint 与 providers[backend].endpoint 同时存在时告警
+            if endpoint and endpoint != provider_cfg.endpoint:
+                logger.warning(
+                    "generate.endpoint (%s) 与 providers[%s].endpoint (%s) 双真源，已优先后者",
+                    endpoint, backend, provider_cfg.endpoint,
+                )
+            elif endpoint and endpoint == provider_cfg.endpoint:
+                logger.debug(
+                    "generate.endpoint 与 providers[%s].endpoint 重复配置 (%s)，已优先 providers",
+                    backend, endpoint,
+                )
             return _build_openai(
                 endpoint=provider_cfg.endpoint,
                 api_key_env=provider_cfg.api_key_env,
