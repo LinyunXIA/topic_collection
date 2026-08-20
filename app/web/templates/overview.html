@@ -1,0 +1,50 @@
+{% extends "base.html" %}
+{% block title %}概览 - Topic Collection{% endblock %}
+{% block content %}
+<h1>概览</h1>
+
+<section id="stats">
+  <div class="card">总数: {{ total_articles }}</div>
+  <div class="card">今日新增: {{ today_articles }}</div>
+  <div class="card">待处理: {{ pending }}</div>
+</section>
+
+<section id="queue">
+  <h2>队列</h2>
+  <p>队列深度: {{ queue }}</p>
+  {% for status, cnt in queue.items() %}
+    <span>{{ status }}: {{ cnt }}</span>
+  {% endfor %}
+</section>
+
+<section id="llm-health">
+  <h2>LLM 健康</h2>
+  {% if llm_healthy is not none %}
+    <p>{% if llm_healthy %}✅ LLM 健康{% else %}❌ LLM 不可用: {{ llm_error }}{% endif %}</p>
+  {% else %}
+    <p>LLM 状态未知</p>
+  {% endif %}
+</section>
+
+<section id="recent">
+  <h2>最近文章</h2>
+  <ul>
+  {% for art in recent %}
+    <li>{{ art.title }} - {{ art.status }}</li>
+  {% else %}
+    <li>暂无文章</li>
+  {% endfor %}
+  </ul>
+</section>
+
+<section id="feeds-health">
+  <h2>源健康</h2>
+  <ul>
+  {% for f in feeds %}
+    <li>{{ f.name }} - {{ f.fetch_status }} (失败 {{ f.fetch_failures }})</li>
+  {% endfor %}
+  </ul>
+</section>
+
+<p>搜索</p>
+{% endblock %}

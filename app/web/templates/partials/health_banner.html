@@ -1,0 +1,10 @@
+{% if llm_healthy is not none %}
+  {% if llm_healthy %}
+    <div class="banner ok">✅ LLM 健康</div>
+  {% else %}
+    <div class="banner error">❌ LLM 不可用: {{ llm_error }}</div>
+  {% endif %}
+{% else %}
+  <div class="banner unknown">LLM 状态未知</div>
+{% endif %}
+<div>队列: {{ queue }}</div>

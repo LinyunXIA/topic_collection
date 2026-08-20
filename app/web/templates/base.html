@@ -1,0 +1,39 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>{% block title %}Topic Collection{% endblock %}</title>
+  <link rel="stylesheet" href="/static/pico.min.css">
+  <link rel="stylesheet" href="/static/styles.css">
+  <script src="/static/htmx.min.js"></script>
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <div id="layout">
+    <aside id="sidebar">
+      <nav>
+        <h3>Topic Collection</h3>
+        <ul>
+          <li><a href="/">概览</a></li>
+          <li><a href="/feeds">订阅源</a></li>
+          <li><a href="/articles">文章</a></li>
+          <li><a href="/wiki">Wiki</a></li>
+          <li><a href="/graph">图谱</a></li>
+          <li><a href="/topics">主题</a></li>
+          <li><a href="/reports">报告</a></li>
+          <li><a href="/search">搜索</a></li>
+          <li><a href="/settings">设置</a></li>
+        </ul>
+      </nav>
+    </aside>
+    <main id="content">
+      <div id="llm-status-bar" hx-get="/api/llm-status" hx-trigger="every 30s" hx-swap="outerHTML">
+        {% include "partials/health_banner.html" %}
+      </div>
+      {% block content %}{% endblock %}
+    </main>
+  </div>
+  <div id="toast-container">{% include "components/toast.html" %}</div>
+</body>
+</html>

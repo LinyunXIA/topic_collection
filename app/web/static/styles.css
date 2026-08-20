@@ -1,0 +1,6 @@
+/* app styles */
+#sidebar{width:200px;float:left}
+#content{margin-left:210px}
+.banner{padding:8px}
+.banner.ok{background:#e6ffe6}
+.banner.error{background:#ffe6e6}

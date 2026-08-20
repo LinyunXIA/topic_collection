@@ -1,0 +1,16 @@
+{% extends "base.html" %}
+{% block title %}设置 - Topic Collection{% endblock %}
+{% block content %}
+<h1>设置</h1>
+{% if request.query_params.get("saved") %}
+  <div class="toast">已保存，需重启 worker 生效</div>
+{% endif %}
+<form method="post" action="/settings" hx-post="/settings" hx-target="#settings-result" hx-swap="innerHTML">
+  <label>LLM 后端 <input name="llm_backend" value="{{ settings.llm.backend }}"></label>
+  <label>模型 <input name="llm_model" value="{{ settings.llm.model }}"></label>
+  <label>并发 <input name="max_concurrency" type="number" value="{{ settings.llm.max_concurrency }}"></label>
+  <button type="submit">保存</button>
+</form>
+<div id="settings-result"></div>
+<p>调度时间: {{ settings.schedule.daily_report }} / {{ settings.schedule.weekly_report }}</p>
+{% endblock %}
