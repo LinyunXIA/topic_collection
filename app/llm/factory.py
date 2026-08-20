@@ -43,11 +43,20 @@ def _resolve_api_key(env_name: str | None, backend: str) -> str | None:
 
 
 def _dict_to_patch(patch_dict: dict | None) -> ProviderPatch | None:
-    """将 config dict 转为 ProviderPatch dataclass。None 或空 dict → None。"""
+    """将 config dict 转为 ProviderPatch dataclass。None 或空 dict → None。
+
+    未知 key 启动期 logger.warning（fix #9.2）—— 以前静默过滤会让拼错的
+    补丁字段（如 strip_thik_tags 笔误）悄无声息地不生效。
+    """
     if not patch_dict:
         return None
-    # 过滤掉 ProviderPatch 不认识的 key（容错）
     valid_keys = {f.name for f in ProviderPatch.__dataclass_fields__.values()}
+    unknown = [k for k in patch_dict if k not in valid_keys]
+    if unknown:
+        logger.warning(
+            "ProviderPatch 忽略未知字段: %s（可用: %s）",
+            unknown, sorted(valid_keys),
+        )
     filtered = {k: v for k, v in patch_dict.items() if k in valid_keys}
     return ProviderPatch(**filtered) if filtered else None
 
@@ -123,7 +132,7 @@ def build_provider(
         else:
             backend = llm.backend
             endpoint = llm.endpoint
-            api_key_env = llm.api_key
+            api_key_env = llm.api_key_env  # 顶层字段统一命名（fix #9.2）
             model = llm.model
 
         if backend == "omlx":

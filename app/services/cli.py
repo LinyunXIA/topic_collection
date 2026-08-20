@@ -23,9 +23,8 @@ from sqlalchemy import text
 
 from app.config import load_settings
 from app.db.engine import get_engine, get_session, get_session_factory, check_extensions, dispose_engine
-from app.db.fts import search_articles_fts, update_article_tsv
-from app.ingest.dedup import url_hash, content_hash, apply_exact_dedup
-from app.services.cleaner import clean_article
+from app.db.fts import search_articles_fts
+from app.ingest.service import fetch_and_store
 from app.services.llm_tasks import (
     complete_summarize,
     complete_embed,
@@ -115,7 +114,11 @@ async def _feeds_import():
 
 
 async def _feeds_fetch(feed_name: str | None = None, count: int | None = None):
-    """抓取文章并入队。count 限制单次抓取条数（从第一条起按顺序取 N 条）。"""
+    """抓取文章并入队。count 限制单次抓取条数（从第一条起按顺序取 N 条）。
+
+    抓取 → dedup → clean → insert → tsv → enqueue → match_keywords 全流程
+    在 app.ingest.service.fetch_and_store；本函数只负责选 feed + 用户可见输出。
+    """
     from app.ingest.feeds import FeedFetcher
 
     settings = load_settings()
@@ -138,120 +141,26 @@ async def _feeds_fetch(feed_name: str | None = None, count: int | None = None):
             console.print("[yellow]没有启用的订阅源[/yellow]")
             return
 
+        def _cli_progress(stage: str, payload: dict) -> None:
+            """CLI 进度回调：阶段式输出（截断 / 关键词 / 完成）。"""
+            if stage == "truncated":
+                console.print(
+                    f"  ⚠️  截断: 从 {payload['kept'] + payload['dropped']} 条中"
+                    f"取前 {payload['kept']} 条（--count={payload['kept']}）"
+                )
+            elif stage == "keywords":
+                console.print(f"    🏷️  关键词命中 {payload['count']} 个主题")
+            elif stage == "done":
+                console.print(f"  ✅ {payload['feed']} 新增 {payload['new']} 篇")
+
         total_new = 0
         for feed in feeds:
             console.print(f"📥 抓取: {feed['name']} ({feed['url']})")
             try:
-                items, new_etag, new_lm = await fetcher.fetch_feed(
-                    feed_id=feed["id"],
-                    url=feed["url"],
-                    etag=feed["etag"],
-                    last_modified=feed["last_modified"],
+                new_count, _ = await fetch_and_store(
+                    session, dict(feed), fetcher,
+                    count=count, progress=_cli_progress,
                 )
-
-                # --count 截断：从第一条起按顺序取 N 条（DESIGN P1+.2）
-                if count is not None and len(items) > count:
-                    truncated = len(items) - count
-                    items = items[:count]
-                    console.print(f"  ⚠️  截断: 从 {truncated + count} 条中取前 {count} 条（--count={count}）")
-                    # 记 fetch_events 审计
-                    await session.execute(
-                        text(
-                            "INSERT INTO fetch_events (feed_id, event_type, ok, item_count) "
-                            "VALUES (:fid, 'fetch_count_limited', true, :cnt)"
-                        ),
-                        {"fid": feed["id"], "cnt": truncated},
-                    )
-
-                new_count = 0
-                for item in items:
-                    u_hash = url_hash(item.source_url)
-                    c_hash = content_hash(item.content_text)
-
-                    # 精确去重双闸（DESIGN §6）：url_hash 同 / content_hash 同
-                    # → winner mention_count+1 + 审计，跳过 insert + enqueue
-                    if await apply_exact_dedup(session, feed["id"], u_hash, c_hash):
-                        continue
-
-                    # 清洗
-                    cleaned = await clean_article(
-                        item.content_html or item.content_text,
-                        item.title,
-                    )
-
-                    if not cleaned["is_parseable"]:
-                        status = "unparseable"
-                    else:
-                        status = "pending"
-
-                    # 插入文章
-                    await session.execute(
-                        text(
-                            "INSERT INTO articles "
-                            "(feed_id, source_url, url_hash, content_hash, title, "
-                            " author, published_at, content_text, content_md, "
-                            " lang, word_count, status) "
-                            "VALUES (:fid, :url, :uh, :ch, :title, "
-                            " :author, :pub, :ct, :cm, "
-                            " :lang, :wc, :status) "
-                            "ON CONFLICT (url_hash) DO NOTHING "
-                            "RETURNING id"
-                        ),
-                        {
-                            "fid": feed["id"],
-                            "url": item.source_url,
-                            "uh": u_hash,
-                            "ch": c_hash,
-                            "title": item.title,
-                            "author": item.author,
-                            "pub": item.published_at,
-                            "ct": cleaned["content_text"],
-                            "cm": cleaned["content_md"],
-                            "lang": cleaned["lang"],
-                            "wc": cleaned["word_count"],
-                            "status": status,
-                        },
-                    )
-
-                    # 获取新插入的 article_id
-                    art_result = await session.execute(
-                        text("SELECT id FROM articles WHERE url_hash=:uh"),
-                        {"uh": u_hash},
-                    )
-                    art_row = art_result.first()
-                    if art_row:
-                        # tsv 阶段一：title + content_text（DESIGN §5.3）
-                        # 不做这步的话 articles.tsv 一直是 NULL，关键词检索永远搜不到原文
-                        await update_article_tsv(
-                            session, art_row[0],
-                            title=item.title or "",
-                            content_text=cleaned["content_text"] or "",
-                        )
-                    if art_row and status == "pending":
-                        # 入队 LLM 任务
-                        await enqueue_jobs(
-                            session, art_row[0],
-                            ["embed_core", "summarize"],
-                            c_hash,
-                        )
-                        # 关键词匹配
-                        matched = await match_keywords(session, art_row[0])
-                        if matched:
-                            console.print(f"    🏷️  关键词命中 {len(matched)} 个主题")
-
-                    new_count += 1
-
-                # 更新 feed 状态
-                await session.execute(
-                    text(
-                        "UPDATE feeds SET etag=:etag, last_modified=:lm, "
-                        "last_fetched_at=now(), fetch_status='ok', "
-                        "fetch_failures=0 WHERE id=:fid"
-                    ),
-                    {"etag": new_etag, "lm": new_lm, "fid": feed["id"]},
-                )
-
-                console.print(f"  ✅ 新增 {new_count} 篇")
                 total_new += new_count
 
             except Exception as e:

@@ -26,14 +26,16 @@ logger = logging.getLogger(__name__)
 
 
 async def fetch_all(settings) -> None:
-    """遍历所有 enabled feeds 抓取（DESIGN §10）。"""
+    """遍历所有 enabled feeds 抓取（DESIGN §10）。
+
+    实际抓取逻辑收敛在 app.ingest.service.fetch_and_store；本函数只负责：
+      - 选 enabled feeds
+      - 错误聚合（写 fetch_failures/last_error）
+      - 日志汇总
+    """
     from app.db.engine import get_session_factory
-    from app.db.fts import update_article_tsv
     from app.ingest.feeds import FeedFetcher
-    from app.ingest.dedup import url_hash, content_hash, apply_exact_dedup
-    from app.services.cleaner import clean_article
-    from app.services.topics import match_keywords
-    from app.pipeline import enqueue_jobs
+    from app.ingest.service import fetch_and_store
 
     fetcher = FeedFetcher(settings)
     factory = get_session_factory(settings)
@@ -51,67 +53,9 @@ async def fetch_all(settings) -> None:
     total_new = 0
     for feed in feeds:
         try:
-            items, new_etag, new_lm = await fetcher.fetch_feed(
-                feed_id=feed["id"],
-                url=feed["url"],
-                etag=feed.get("etag"),
-                last_modified=feed.get("last_modified"),
-            )
-
             async with factory() as session:
-                new_count = 0
-                for item in items:
-                    uh = url_hash(item.source_url)
-                    ch = content_hash(item.content_text)
-
-                    # 精确去重双闸（DESIGN §6）：url_hash 同 / content_hash 同
-                    # → winner mention_count+1 + 审计，跳过 insert + enqueue
-                    if await apply_exact_dedup(session, feed["id"], uh, ch):
-                        continue
-
-                    cleaned = await clean_article(item.content_html or item.content_text, item.title)
-                    status = "unparseable" if not cleaned["is_parseable"] else "pending"
-
-                    await session.execute(
-                        text(
-                            "INSERT INTO articles (feed_id, source_url, url_hash, content_hash, "
-                            "title, content_text, content_md, lang, word_count, status) "
-                            "VALUES (:fid, :url, :uh, :ch, :title, :ct, :cm, :lang, :wc, :status) "
-                            "ON CONFLICT (url_hash) DO NOTHING RETURNING id"
-                        ),
-                        {
-                            "fid": feed["id"], "url": item.source_url, "uh": uh, "ch": ch,
-                            "title": item.title, "ct": cleaned["content_text"],
-                            "cm": cleaned["content_md"], "lang": cleaned["lang"],
-                            "wc": cleaned["word_count"], "status": status,
-                        },
-                    )
-
-                    art_result = await session.execute(
-                        text("SELECT id FROM articles WHERE url_hash=:uh"), {"uh": uh}
-                    )
-                    art_row = art_result.first()
-                    if art_row:
-                        # tsv 阶段一（DESIGN §5.3）——与 cli._feeds_fetch 保持一致
-                        await update_article_tsv(
-                            session, art_row[0],
-                            title=item.title or "",
-                            content_text=cleaned["content_text"] or "",
-                        )
-                    if art_row and status == "pending":
-                        await enqueue_jobs(session, art_row[0], ["embed_core", "summarize"], ch)
-                        # 关键词快路径：不做这步的话 complete_summarize 里 has_keyword 恒为
-                        # false，每篇文章都会白烧一次 LLM 分类（PRD 验收 3）
-                        await match_keywords(session, art_row[0])
-                    new_count += 1
-
-                await session.execute(
-                    text(
-                        "UPDATE feeds SET etag=:etag, last_modified=:lm, "
-                        "last_fetched_at=now(), fetch_status='ok', fetch_failures=0 "
-                        "WHERE id=:fid"
-                    ),
-                    {"etag": new_etag, "lm": new_lm, "fid": feed["id"]},
+                new_count, _ = await fetch_and_store(
+                    session, dict(feed), fetcher, count=None,
                 )
                 await session.commit()
                 total_new += new_count

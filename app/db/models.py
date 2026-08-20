@@ -139,7 +139,11 @@ class ArticleEmbedding(Base):
     model: Mapped[str] = mapped_column(String, nullable=False)
     content_hash: Mapped[str] = mapped_column(String, nullable=False)
     dim: Mapped[int] = mapped_column(Integer, nullable=False)
-    vector = mapped_column(String)  # placeholder; actual type set in migration
+    # vector 列真实类型 = vector(1536)，由 a001_initial_schema 迁移手工 ALTER COLUMN
+    # 设上去；SQLAlchemy 在此用 String 占位是因为项目当前没装 pgvector 包。
+    # alembic autogenerate 会误报 vector 类型变更 → 这是已知约束，迁移手工管。
+    # 装上 `pgvector>=0.3` 后可换 mapped_column(Vector(1536)) 自动对齐 schema。
+    vector = mapped_column(String)  # noqa: placeholder; see comment above
 
     article: Mapped[Article] = relationship(back_populates="embeddings")
 

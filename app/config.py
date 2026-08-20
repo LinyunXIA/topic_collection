@@ -32,7 +32,11 @@ class ProviderConfig(BaseSettings):
 
 
 class GenerateSettings(BaseSettings):
-    """生成能力配置（per-capability，DESIGN §4）。"""
+    """生成能力配置（per-capability，DESIGN §4）。
+
+    per-task 模型覆盖统一走顶层 LLMSettings.models（fix #9.3）——本类不再
+    单独声明 models 字段以避免双重真源；services 只读 settings.llm.models.get(task)。
+    """
 
     backend: str = "omlx"
     endpoint: str = "http://localhost:8000"
@@ -40,7 +44,6 @@ class GenerateSettings(BaseSettings):
     model: str = "Qwen3.8-27B-MLX-4bit"
     max_concurrency: int = 1
     max_timeout_retries: int = 3
-    models: dict[str, str] = Field(default_factory=dict)
 
 
 class EmbedSettings(BaseSettings):
@@ -63,7 +66,7 @@ class LLMSettings(BaseSettings):
 
     backend: str = "omlx"
     endpoint: str = "http://localhost:8000"
-    api_key: str | None = Field(default=None, alias="api_key_env")
+    api_key_env: str | None = None  # 统一命名：嵌套 GenerateSettings 等都叫 api_key_env
     model: str = "Qwen3.8-27B-MLX-4bit"
     max_concurrency: int = 1
     max_timeout_retries: int = 3
