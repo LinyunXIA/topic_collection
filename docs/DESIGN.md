@@ -2,7 +2,15 @@
 
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述（目录结构 / DDL / 接口）只在一处维护、另一处引用，避免漂移
-> 版本：v0.11 · 2026-08-19 · Phase 1+ 适配器层完成（与 PRD v0.11 同步）
+> 版本：v0.12 · 2026-08-20 · Phase 2 蓝图修订（11 项问题修复）
+> v0.12：**Phase 2 蓝图架构审查修订**——切片 2.3 实体落库伪代码全面修正：
+>   **严重 1（relations 命名空间）**——§4.6.1 relations schema 示例 `subject/object` 改为 `canonical_name_zh`（原用英文 `name` 与 `_build_entity_id_map` 映射对不上，所有关系静默跳过）；§6.Y 加 `name_to_eid` 反向映射 + prompt 约束注释；
+>   **严重 2（_build_entity_id_map 缺 entity_type 过滤）**——映射键改为 `(entity_type, canonical_name_zh)` 二元组，查询 `WHERE (entity_type, canonical_name_zh) = ANY(:keys)`，防止同名不同类型（「苹果」org vs product）混淆；
+>   **严重 3（entity/topic 任务队列身份错配）**——`generate_entity_wiki` 入队改为 `ON CONFLICT DO UPDATE` 合并 `payload_json.entity_ids`（原 `DO NOTHING` 静默丢弃同文章后续实体）；新增 `enqueue_entity_wiki()` 函数 + payload 合并策略说明；`generate_topic_wiki` 同理声明；
+>   **中等 4（mention_count 重跑翻倍）**——改为从 `article_entities` 聚合 `COUNT(*)`（非每次 extract +1）；
+>   **中等 5（JSONB `||` 拼接不去重）**——`aliases_json` 和 `source_articles_json` 都改用 `jsonb_array_elements` + `DISTINCT` 去重追加；
+>   **中等 6（grounding 伪代码两处不一致）**——`complete_extract` 签名补 `content_text` 参数；grounding 逻辑统一为 §4.6.1 策略（先 `normalize_surface()` 对齐，再降置信）；
+>   **小问题**——§5.1.5 `reports.status` DEFAULT `'pending'`（原 `'succeeded'` 方向反）；§10.1 报告重试说明 `ON CONFLICT DO UPDATE`；§6.X entity wiki 触发 SQL 子查询补 `AND kind='entity'`；§7.1 相似文章 SQL target 侧补 `model=<active>`；§7.1 CTE `active_model` 加字面量拼接注释（§5.2 partial HNSW）；`semantic_wikis` 注释修正（cosine distance 越小越好，×1.05 是降权非 boost）；§16.1 新增 `source_articles_json` 悬空 id 限制
 > v0.11：**Phase 1+ 适配器层完成**——`app/llm/patches.py`（ProviderPatch + 5 个预定义 patch：OMLX/OPENAI/MINIMAX/DEEPSEEK_CHAT/DEEPSEEK_REASONER）+ `app/llm/adapter.py`（LLMAdapter 统一适配层：build_payload/parse_response + strip_think_tags/strip_code_fences）；Provider（openai.py/omlx.py）简化为 HTTP 传输壳；factory 支持 config dict→ProviderPatch 转换；MiniMax-M3 通讯验证通过（healthcheck + generate）；**148/148 pytest 全部通过**（+32 adapter tests）
 > v0.10：**切片一+二+三+横切全部完成**——**语言检测 pycld3→lingua-language-detector**（§2）；**Docker 端口 5432→5433**（§5.4/§9）；§14 全部任务完成（1.1-1.9 + 2.1-2.4 + 3.1-3.3 + X.1-X.3 + Day 1）；**真实环境验收**：20 篇 HN 文章端到端跑通（20/20 summary + 40+ embedding）；**86/86 pytest 全部通过**；切片二新增混合检索 `search(q)`（RRF 融合，§7）；切片三新增 topic CRUD + classify_topics + wiki 词条；横切新增 scheduler + A1 重试分类 + B4 近似去重 + pipeline 并发测试
 > v0.9：**架构审查四轮——SQL 逻辑错误 + done 判定补洞 + 文档同步清理**——
@@ -309,9 +317,9 @@ class GenerateResult: text: str; finish_reason: str; usage: dict | None; latency
   ],
   "relations": [
     {
-      "subject": "Qwen3",
+      "subject": "通义千问 3",
       "predicate": "developed_by",
-      "object": "Alibaba",
+      "object": "阿里巴巴",
       "confidence": 0.85,
       "evidence_span": "Qwen3 由阿里巴巴达摩院开源..."
     }
@@ -319,12 +327,14 @@ class GenerateResult: text: str; finish_reason: str; usage: dict | None; latency
 }
 ```
 
+> **⚠ 关键约束：`relations.subject` 和 `relations.object` 必须引用已抽取实体的 `canonical_name_zh`**（不是 `name` / `surface`）。`complete_extract` 通过 `_build_entity_id_map` 按 `canonical_name_zh` 建立映射——若引用英文 `name`（如 `"Qwen3"`），映射永远找不到、**所有关系会被静默跳过**（§6.Y）。prompt 中必须明确此约束。
+
 **严格约束**（写入前在 `entities.upsert` 服务层校验）：
 
-1. **`grounding` 规则**：每个 entity 的 `surface` 必须在原文 `content_text` 子串内（`surface in content_text`）；若 LLM 给出的 surface 不在原文，由 `services/entities.normalize_surface()` 自动修正为原文最近邻 span，仍找不到 → `confidence *= 0.5`；找不到且无法对齐 → 丢弃
+1. **`grounding` 规则**：每个 entity 的 `surface` 必须在原文 `content_text` 子串内（`surface in content_text`）；若 LLM 给出的 surface 不在原文，由 `services/entities.normalize_surface()` 自动修正为原文最近邻 span，仍找不到 → `confidence *= 0.5`；找不到且无法对齐 → 丢弃。**统一执行**：`complete_extract` 钩子（§6.Y）必须先调 `normalize_surface()` 尝试对齐，再做 confidence 降级判断——不要跳过对齐直接砍半
 2. **跨语言归一**：所有实体都必须有 `canonical_name_zh`（即使原文是英文，也要给中文规范化名，存 `entities.aliases_json` + `entities.canonical_name`）；形成跨语言别名岛屿统一（"OpenAI"/"开放AI" → 同一 entity）
 3. **type 枚举**：`person | org | product | model | technology | concept | event | location | other`（LLM prompt 给定）；存 `entities.entity_type`
-4. **别名合并策略**：upsert `entities` 表时按 `(entity_type, canonical_name_zh)` UNIQUE 冲突，新实体的 `aliases` 数组与既有 `aliases_json` 取并集（dedupe）
+4. **别名合并策略**：upsert `entities` 表时按 `(entity_type, canonical_name_zh)` UNIQUE 冲突，新实体的 `aliases` 数组与既有 `aliases_json` 取**并集（dedupe）**——用 `jsonb_array_elements_text` 展开、去重后重聚合（§6.Y SQL 中 `||` 拼接需替换为去重逻辑）
 
 #### `generate_entity_wiki` / `generate_topic_wiki`（Phase 2 切片 2.4）
 
@@ -622,7 +632,7 @@ CREATE INDEX wiki_tsv_idx ON wiki_pages USING GIN (tsv);
 
 ```sql
 -- 失败可重试：需要 status / error / started_at / completed_at
-ALTER TABLE reports ADD COLUMN status TEXT NOT NULL DEFAULT 'succeeded'
+ALTER TABLE reports ADD COLUMN status TEXT NOT NULL DEFAULT 'pending'
   CHECK (status IN ('pending','running','succeeded','failed'));
 ALTER TABLE reports ADD COLUMN started_at TIMESTAMPTZ;
 ALTER TABLE reports ADD COLUMN completed_at TIMESTAMPTZ;
@@ -790,7 +800,9 @@ WHERE e.id = ANY(:extracted_ids)
     NOT EXISTS (SELECT 1 FROM wiki_pages WHERE ref_id = e.id AND kind = 'entity')
     OR EXISTS (
       SELECT 1 FROM entity_change_log
-      WHERE entity_id = e.id AND changed_at > (SELECT updated_at FROM wiki_pages WHERE ref_id = e.id LIMIT 1)
+      WHERE entity_id = e.id AND changed_at > (
+        SELECT updated_at FROM wiki_pages WHERE ref_id = e.id AND kind = 'entity' LIMIT 1
+      )
     )
   );
 -- 命中 → enqueue_jobs 多个 generate_entity_wiki（同任务 type 共用 priority 5，FIFO）
@@ -954,35 +966,51 @@ async def run_extract_entities(session, job, settings, llm_client):
     if not parsed:
         raise PermanentError(f"JSON 解析失败: {resp.text[:200]}")
     
-    await complete_extract(session, article_id, content_hash, parsed, settings)
+    await complete_extract(session, article_id, content_hash, parsed, content_text=row["content_text"], settings=settings)
 
 
-async def complete_extract(session, article_id, content_hash, parsed, settings):
+async def complete_extract(session, article_id, content_hash, parsed, *, content_text, settings):
     """公共钩子（同事务）：
     1. entities upsert（按 (entity_type, canonical_name_zh) UNIQUE 冲突；aliases/description/mention_count 合并）
-    2. grounding 校验：surface 必须在原文；不通过 confidence *= 0.5 / 丢弃
+    2. grounding 校验：surface 必须在原文（§4.6.1 统一策略：先 normalize_surface 对齐最近邻 span，
+       对不上再 confidence *= 0.5；找不到且无法对齐 → 丢弃）
     3. article_entities upsert（confidence, surface）
-    4. relations upsert（按 (subject_id, predicate, object_id) UNIQUE 冲突；source_articles_json 追加）
+    4. relations upsert（按 (subject_id, predicate, object_id) UNIQUE 冲突；source_articles_json 去重追加）
     5. 决定 generate_entity_wiki 入队（仅 entity 是新的 / description 变更）
     6. check_and_set_done
     """
+    from app.services.entities import normalize_surface  # 延迟导入
+
     # 1. entities upsert
     for ent in parsed.get("entities", []):
-        # grounding 校验
-        if ent.get("surface") and ent["surface"] not in content_text:
-            ent["confidence"] = (ent.get("confidence") or 0.5) * 0.5
-            if ent["confidence"] < 0.1:
-                continue  # 丢弃
+        # grounding 校验（§4.6.1 统一策略：先尝试对齐，再降级）
+        surface = ent.get("surface")
+        if surface and content_text and surface not in content_text:
+            # 先尝试 normalize_surface 对齐最近邻 span
+            aligned = await normalize_surface(content_text, surface)
+            if aligned:
+                ent["surface"] = aligned  # 修正为对齐后的 span
+            else:
+                ent["confidence"] = (ent.get("confidence") or 0.5) * 0.5
+                if ent["confidence"] < 0.1:
+                    continue  # 丢弃
         # aliases_json 合并：现有 + 新
         await session.execute(
             text("""
                 INSERT INTO entities (canonical_name_zh, aliases_json, entity_type, description, mention_count, confidence)
-                VALUES (:zh, :aliases_json, :type, :desc, 1, :conf)
+                VALUES (:zh, :aliases_json, :type, :desc, 0, :conf)
                 ON CONFLICT (entity_type, canonical_name_zh) DO UPDATE SET
-                  aliases_json = entities.aliases_json || EXCLUDED.aliases_json,
+                  aliases_json = (
+                    SELECT jsonb_agg(DISTINCT v)
+                    FROM jsonb_array_elements(
+                      COALESCE(entities.aliases_json, '[]'::jsonb) ||
+                      COALESCE(EXCLUDED.aliases_json, '[]'::jsonb)
+                    ) v
+                  ),
                   description = CASE WHEN EXCLUDED.confidence > entities.confidence
                                      THEN EXCLUDED.description ELSE entities.description END,
-                  mention_count = entities.mention_count + 1,
+                  -- mention_count = 涉及该实体的文章数（从 article_entities 聚合，而非每次 extract +1）
+                  mention_count = (SELECT COUNT(*) FROM article_entities ae WHERE ae.entity_id = entities.id),
                   confidence = GREATEST(entities.confidence, EXCLUDED.confidence),
                   last_seen_at = now()
             """),
@@ -995,12 +1023,12 @@ async def complete_extract(session, article_id, content_hash, parsed, settings):
             }
         )
     
-    # 取回 entity_id 映射
+    # 取回 entity_id 映射（composite key = (entity_type, canonical_name_zh) 防同名不同类型混淆）
     eid_map = await _build_entity_id_map(session, parsed)
     
     # 3. article_entities upsert
     for ent in parsed.get("entities", []):
-        eid = eid_map.get(ent["canonical_name_zh"])
+        eid = eid_map.get((ent.get("type", "other"), ent["canonical_name_zh"]))
         if not eid:
             continue
         await session.execute(
@@ -1015,42 +1043,89 @@ async def complete_extract(session, article_id, content_hash, parsed, settings):
         )
     
     # 4. relations upsert
+    # relations.subject/object 引用 canonical_name_zh（§4.6.1 约束）
+    # 需要一个反向映射 canonical_name_zh → (type, id) 来查找 entity_id
+    name_to_eid = {zh: eid for (typ, zh), eid in eid_map.items()}
     for rel in parsed.get("relations", []):
-        sid = eid_map.get(rel["subject"])
-        oid = eid_map.get(rel["object"])
+        sid = name_to_eid.get(rel["subject"])
+        oid = name_to_eid.get(rel["object"])
         if not sid or not oid:
             continue
         await session.execute(
             text("""
                 INSERT INTO relations (subject_id, predicate, object_id, source_articles_json, confidence, last_seen_at)
-                VALUES (:s, :p, :o, jsonb_build_array(:aid::text), :c, now())
+                VALUES (:s, :p, :o, jsonb_build_array(:aid::bigint), :c, now())
                 ON CONFLICT (subject_id, predicate, object_id) DO UPDATE SET
-                  source_articles_json = relations.source_articles_json || EXCLUDED.source_articles_json,
+                  -- 去重追加：先过滤已存在的 article_id 再拼接（防 retry 重复记同一篇文章）
+                  source_articles_json = (
+                    SELECT jsonb_agg(DISTINCT v)
+                    FROM jsonb_array_elements(
+                      COALESCE(relations.source_articles_json, '[]'::jsonb) ||
+                      COALESCE(EXCLUDED.source_articles_json, '[]'::jsonb)
+                    ) v
+                  ),
                   confidence = GREATEST(relations.confidence, EXCLUDED.confidence),
                   last_seen_at = now()
             """),
             {"s": sid, "p": rel["predicate"], "o": oid, "aid": article_id, "c": rel.get("confidence", 0.5)}
         )
     
-    # 5. 决定 generate_entity_wiki 入队
-    new_entity_ids = await _detect_new_or_changed_entities(session, article_id, eid_map.values())
+    # 5. 决定 generate_entity_wiki 入队（仅 entity 是新的 / description 变更）
+    new_entity_ids = await _detect_new_or_changed_entities(session, article_id, list(eid_map.values()))
     if new_entity_ids:
-        await enqueue_jobs(session, article_id, ["generate_entity_wiki"], content_hash)
-    
+        await enqueue_entity_wiki(session, article_id, new_entity_ids, content_hash)
+
     # 6. done 检查
     await check_and_set_done(session, article_id)
 
 
-async def _build_entity_id_map(session, parsed):
-    """把 parsed.entities[].canonical_name_zh 映射回 entities.id（先 INSERT 再 SELECT）"""
-    zh_names = [e["canonical_name_zh"] for e in parsed.get("entities", [])]
-    if not zh_names:
-        return {}
-    r = await session.execute(
-        text("SELECT id, canonical_name_zh FROM entities WHERE canonical_name_zh = ANY(:names)"),
-        {"names": zh_names}
+async def enqueue_entity_wiki(session, article_id, entity_ids, content_hash):
+    """入队 generate_entity_wiki（payload 合并策略）。
+
+    ⚠ 身份模型说明（Issue #3 修正）：
+    - generate_entity_wiki 是 entity 作用域，但活跃唯一键是 (article_id, task)——
+      同一篇文章可能先后抽取到不同批次的新 entity
+    - 策略：ON CONFLICT DO UPDATE 合并 entity_ids 到 payload_json（去重），
+      不用 DO NOTHING（否则第二批 entity 静默丢弃，永远不生 wiki）
+    - 同一 entity 出现在多篇文章：各文章各自入队、wiki_pages upsert 按 ref_id 幂等，
+      先完成者写入，后者覆盖（同一版本 LLM 产物相同，无实质竞态）
+    - generate_topic_wiki 同理：topic 作用域，(article_id, task) 键控时 payload 带 topic_ids
+    """
+    import json as _json
+    payload = _json.dumps({"entity_ids": entity_ids}, ensure_ascii=False)
+    await session.execute(
+        text("""
+            -- 先 supersede 同 (article_id, task) 的活跃 job（含 payload 合并语义）
+            UPDATE processing_jobs SET status='superseded', updated_at=now()
+            WHERE article_id=:aid AND task='generate_entity_wiki' AND status IN ('queued','running');
+            -- 入队：冲突时合并 entity_ids（ON CONFLICT 只在 supersede 后无活跃行时触发）
+            INSERT INTO processing_jobs (article_id, task, status, content_hash, priority, payload_json)
+            VALUES (:aid, 'generate_entity_wiki', 'queued', :ch, 5, :payload::jsonb)
+            ON CONFLICT (article_id, task) WHERE status IN ('queued','running') DO UPDATE SET
+              payload_json = processing_jobs.payload_json || EXCLUDED.payload_json,
+              content_hash = EXCLUDED.content_hash,
+              updated_at = now()
+        """),
+        {"aid": article_id, "ch": content_hash, "payload": payload}
     )
-    return {row["canonical_name_zh"]: row["id"] for row in r.mappings()}
+
+
+async def _build_entity_id_map(session, parsed):
+    """把 parsed.entities 映射回 entities.id，返回 {(entity_type, canonical_name_zh): entity_id}
+    
+    ⚠ 必须同时索引 entity_type + canonical_name_zh：UNIQUE 是 (entity_type, canonical_name_zh)，
+    同名不同类型（如「苹果」org vs「苹果」product）是不同 entity。
+    """
+    keys = [(e.get("type", "other"), e["canonical_name_zh"]) for e in parsed.get("entities", [])]
+    if not keys:
+        return {}
+    # 用 row_to_tuple 避免 dict 覆盖同名不同类型
+    r = await session.execute(
+        text("SELECT id, entity_type, canonical_name_zh FROM entities "
+             "WHERE (entity_type, canonical_name_zh) = ANY(:keys)"),
+        {"keys": keys}
+    )
+    return {(row["entity_type"], row["canonical_name_zh"]): row["id"] for row in r.mappings()}
 
 
 async def _detect_new_or_changed_entities(session, article_id, entity_ids):
@@ -1372,13 +1447,18 @@ def get_local_reranker() -> CrossEncoder:
 
 ```sql
 -- articles UNION wiki_pages 后 RRF 融合
+-- ⚠ :active_model 必须以字面量拼入查询字符串（§5.2 partial HNSW 索引要求常量谓词），
+--   不能用 prepared statement 参数化（PG planner 不匹配 partial index 谓词）。
+--   active model 名来自 config，非用户输入，无注入风险。
 WITH semantic_articles AS (
   SELECT article_id AS ref_id, 'article' AS kind, vector <=> :q_vec AS distance
-  FROM article_embeddings WHERE model = :active_model
+  FROM article_embeddings WHERE model = '<active_embed_model>'
   ORDER BY distance LIMIT 60
 ),
 semantic_wikis AS (
-  -- Wiki 无独立向量，靠相关 article 的相关性传递（rank boost）
+  -- Wiki 无独立向量，靠相关 article 的相关性传递。
+  -- distance * 1.05 让 wiki 结果略后于原文（cosine distance 越小越好，乘 >1 即降权）；
+  -- 效果：同一相关度下 wiki 排在 article 后面，符合用户预期（先看原文再看词条）
   SELECT wp.id AS ref_id, 'wiki' AS kind, sa.distance * 1.05 AS distance
   FROM semantic_articles sa
   JOIN wiki_pages wp ON wp.kind IN ('article','topic','entity')
@@ -1405,6 +1485,7 @@ keyword_wikis AS (
 `GET /api/articles/{id}/similar?top_k=10`
 
 ```sql
+-- ⚠ target 与 candidate 都必须锁定 active embed model（§5.2 partial HNSW）
 SELECT a.id, a.title, ae.vector <=> target.vector AS distance, at.score AS topic_score
 FROM article_embeddings target
 JOIN article_embeddings ae ON ae.model = target.model
@@ -1412,6 +1493,7 @@ JOIN article_embeddings ae ON ae.model = target.model
                            AND ae.article_id != target.article_id
 JOIN articles a ON a.id = ae.article_id
 WHERE target.article_id = :aid AND target.kind = 'summary'
+  AND target.model = '<active_embed_model>'   -- 锁定 active model，多模型 A/B 时不跨模型混算
   AND a.dedupe_of IS NULL
   AND a.lang = (SELECT lang FROM articles WHERE id = :aid)
 ORDER BY distance
@@ -1733,6 +1815,8 @@ feeds:
 
 ```python
 async def generate_daily_report(session, report_dt: datetime):
+    # 使用 ON CONFLICT DO UPDATE：同一 (report_type, period_start, period_end) 唯一（§5.1.5），
+    # 重试/重新生成覆盖旧记录，不触发 UNIQUE 冲突
     report_id = await _create_pending_report(session, "daily", period_start, period_end)
     try:
         # 1. SQL 聚合 → stats dict
@@ -2208,6 +2292,7 @@ Phase 2 加：
 | 10 | **图谱性能 vs 节点数线性增长** | 1000+ 节点的 relations UNION 不走索引，遍历 O(N) | 本地个人库典型 <500 节点，可接受；超过加 redis 缓存 + 增量构建 |
 | 11 | **API 连接器速率限制为本机配置** | 用户错配 `rate_limit_per_hour=10000` 会打爆被对端 ban | `feeds.config_json` 校验提供合理上限；UI 显示"上次请求被 429 警告" |
 | 12 | **Phase 2 增量 DDL 不可拆分为更小 patch** | §5.1.5 所有 `ALTER TABLE` 在同一 Alembic revision；多列加约束需同步 | Phase 2 单一 revision 即可，上线后无关键依赖 |
+| 13 | **`relations.source_articles_json` 删除文章后留悬空 id** | 文章被删（ON DELETE CASCADE 从 articles 表移除）后，JSONB 列表里仍保留其 id；`ON DELETE SET NULL` 只覆盖 scalar `source_article_id`，不影响 JSONB | 应用层查询时用 `JOIN` 过滤或定期清理；P3 加 `source_articles_json` 清理任务 |
 
 ---
 
