@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 
 import pytest
@@ -535,6 +536,93 @@ class TestSetupScheduler:
         hc_job = scheduler.get_job("healthcheck")
 
         assert hc_job.trigger.interval.total_seconds() == 300
+
+    @pytest.mark.asyncio
+    async def test_coroutine_jobs_actually_execute(self, settings):
+        """回归 fix #30：异步任务必须以协程函数本身注册。
+
+        AsyncIOScheduler 看到原生 coroutine function 才会直接在 event loop
+        中调度；若注册的是同步 lambda（如 `lambda s: asyncio.ensure_future(coro(s))`），
+        APScheduler 会把 lambda 丢进默认 ThreadPoolExecutor 执行，而
+        `asyncio.ensure_future` 在没有 running event loop 的线程里直接抛
+        `RuntimeError: There is no current event loop`，任务体永远不执行。
+
+        本测试断言两件事：
+          (1) `setup_scheduler()` 注册出来的 job.func 调用后**返回协程对象**
+              ——旧代码 lambda 同步返回 None 且 raise RuntimeError；
+              新代码直接返回 coroutine，可被 await。
+          (2) 真的 await 一次后，DB 副作用（pending → processing + 入队 jobs）
+              真的发生——证明回灌链路没被同步包装层挡住。
+        """
+        await clean_all(settings)
+
+        # 插入 3 篇 pending 文章（drain_queue 应回灌）
+        factory = get_session_factory(settings)
+        async with factory() as session:
+            for i in range(3):
+                uh = url_hash(f"https://realtime-trigger.example.com/{i}")
+                ch = content_hash(f"content {i}")
+                await session.execute(
+                    text(
+                        "INSERT INTO articles "
+                        "(source_url, url_hash, content_hash, title, content_text, lang, status) "
+                        "VALUES (:url, :uh, :ch, :title, :ct, 'en', 'pending')"
+                    ),
+                    {
+                        "url": f"https://realtime-trigger.example.com/{i}",
+                        "uh": uh,
+                        "ch": ch,
+                        "title": f"Realtime Trigger {i}",
+                        "ct": f"content {i}",
+                    },
+                )
+            await session.commit()
+
+        # 通过 setup_scheduler() 走真实注册路径
+        from app.scheduler import setup_scheduler
+
+        scheduler = setup_scheduler(settings, llm_client=None)
+
+        # 断言 1：注册的 drain_queue job.func 本身是协程函数
+        # 旧代码：lambda 同步函数 → 调用后 RuntimeError（线程里无 event loop）
+        # 新代码：原生 coroutine function → 调用后返回 coroutine 对象
+        job = scheduler.get_job("drain_queue")
+        coro_or_exc = job.func(settings)
+        assert asyncio.iscoroutine(coro_or_exc), (
+            f"drain_queue 任务返回 {type(coro_or_exc).__name__} 而非协程——"
+            "setup_scheduler 注册了同步 lambda 包装，会被 AsyncIOScheduler "
+            "丢进线程池执行并抛 RuntimeError (fix #30)"
+        )
+
+        # 断言 2：真的 await 一次，验证回灌副作用发生
+        await coro_or_exc
+
+        async with factory() as session:
+            result = await session.execute(
+                text("SELECT COUNT(*) FROM articles WHERE status='processing'")
+            )
+            assert result.scalar() == 3
+
+            result = await session.execute(
+                text("SELECT COUNT(*) FROM processing_jobs")
+            )
+            assert result.scalar() == 6
+
+        # 同样验证 healthcheck（带 kwargs 的那条）
+        hc_job = scheduler.get_job("healthcheck")
+        hc_coro = hc_job.func(settings)  # args=(settings,)
+        assert asyncio.iscoroutine(hc_coro), (
+            "healthcheck 任务返回非协程——同上 (fix #30)"
+        )
+        await hc_coro  # llm_client=None 时内部直接 return，不会报错
+
+        # 验证其余 3 个也是协程
+        for jid in ("fetch_all", "pg_backup", "cleanup_fetch_events"):
+            coro = scheduler.get_job(jid).func(settings)
+            assert asyncio.iscoroutine(coro), (
+                f"{jid} 任务返回 {type(coro).__name__} 而非协程——同上 (fix #30)"
+            )
+            await coro  # 跑完不会抛（pg_backup/cleanup/fetch_all 内部已有 try/except）
 
 
 class TestCleanupFetchEvents:
