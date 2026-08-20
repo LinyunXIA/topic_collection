@@ -19,7 +19,7 @@ from app.llm.fake import FakeLLMProvider
 from app.pipeline import enqueue_jobs
 from app.services.topics import (
     create_topic, list_topics, get_topic, update_topic, delete_topic,
-    match_keywords, aggregate_topic, reclassify_recent,
+    match_keywords, aggregate_topic, reclassify_recent, TopicExistsError,
 )
 from app.services.wiki import generate_article_wiki, search_wiki, get_wiki_page, _slugify
 
@@ -132,6 +132,48 @@ class TestTopicCRUD:
 
             t = await get_topic(session, tid)
             assert t is None
+
+    @pytest.mark.asyncio
+    async def test_create_duplicate_name_raises(self, settings):
+        """重名主题必须抛 TopicExistsError，附已有 id；DB 里只有一行（fix #11）。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+        async with factory() as session:
+            tid = await create_topic(session, "AI", ["人工智能"])
+            await session.commit()
+
+            # 二次创建：抛 TopicExistsError，existing_id 指回首个
+            with pytest.raises(TopicExistsError) as ei:
+                await create_topic(session, "AI", ["ML"])
+            assert ei.value.name == "AI"
+            assert ei.value.existing_id == tid
+            assert "已存在" in str(ei.value)
+            await session.rollback()
+
+            # DB 实际只有 1 行（不写入重复行）
+            result = await session.execute(
+                text("SELECT COUNT(*), MIN(id) FROM topics WHERE name='AI'")
+            )
+            count, min_id = result.first()
+            assert count == 1
+            assert min_id == tid
+
+    @pytest.mark.asyncio
+    async def test_topics_name_unique_constraint_in_db(self, settings):
+        """DB 层面 UNIQUE 约束存在：绕过 service 直接 INSERT 也必须失败（fix #11）。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+        async with factory() as session:
+            await create_topic(session, "X", ["k1"])
+            await session.commit()
+
+            # 绕过 create_topic 直插：UNIQUE 约束兜底
+            from sqlalchemy.exc import IntegrityError
+            with pytest.raises(IntegrityError):
+                await session.execute(
+                    text("INSERT INTO topics (name, keywords_json) VALUES ('X', '[]'::jsonb)")
+                )
+                await session.commit()
 
 
 # ── 关键词匹配 ─────────────────────────────────────────────────────

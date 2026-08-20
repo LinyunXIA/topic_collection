@@ -12,9 +12,22 @@ import logging
 
 import jieba
 from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 logger = logging.getLogger(__name__)
+
+
+class TopicExistsError(Exception):
+    """主题重名（UNIQUE 约束触发）—— CLI 转成友好提示。"""
+
+    def __init__(self, name: str, existing_id: int | None):
+        self.name = name
+        self.existing_id = existing_id
+        super().__init__(
+            f"主题「{name}」已存在"
+            + (f" (id={existing_id})" if existing_id is not None else "")
+        )
 
 
 # ── CRUD ───────────────────────────────────────────────────────────
@@ -25,15 +38,41 @@ async def create_topic(
     keywords: list[str],
     description: str = "",
 ) -> int:
-    """创建主题，返回 topic_id。"""
-    result = await session.execute(
-        text(
-            "INSERT INTO topics (name, description, keywords_json, enabled) "
-            "VALUES (:name, :desc, :kw, true) "
-            "RETURNING id"
-        ),
-        {"name": name, "desc": description, "kw": json.dumps(keywords, ensure_ascii=False)},
+    """创建主题，返回 topic_id。
+
+    重复 name 抛 TopicExistsError，附已有 topic_id 便于 CLI 提示用户。
+    双重防护：先 SELECT 查重（清晰报错路径），INSERT 再兜底捕获
+    IntegrityError（应对并发竞态——两个 tc topic add 同时跑）。
+    """
+    # 1. 应用层查重：明确报出已有 id，给用户最友好的反馈
+    existing = await session.execute(
+        text("SELECT id FROM topics WHERE name=:name"),
+        {"name": name},
     )
+    row = existing.first()
+    if row is not None:
+        raise TopicExistsError(name, row[0])
+
+    # 2. INSERT 兜底捕获 IntegrityError（UNIQUE 约束在并发下兜底）
+    try:
+        result = await session.execute(
+            text(
+                "INSERT INTO topics (name, description, keywords_json, enabled) "
+                "VALUES (:name, :desc, :kw, true) "
+                "RETURNING id"
+            ),
+            {"name": name, "desc": description, "kw": json.dumps(keywords, ensure_ascii=False)},
+        )
+    except IntegrityError as e:
+        await session.rollback()
+        # 并发场景下另一事务已先插入，重新查 id 给用户
+        existing = await session.execute(
+            text("SELECT id FROM topics WHERE name=:name"),
+            {"name": name},
+        )
+        row = existing.first()
+        existing_id = row[0] if row is not None else None
+        raise TopicExistsError(name, existing_id) from e
     return result.scalar()
 
 

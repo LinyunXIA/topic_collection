@@ -197,6 +197,7 @@ class Summary(Base):
 # ── topics ─────────────────────────────────────────────────────────
 class Topic(Base):
     __tablename__ = "topics"
+    __table_args__ = (UniqueConstraint("name", name="uq_topics_name"),)
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     name: Mapped[str] = mapped_column(String, nullable=False)
