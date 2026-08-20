@@ -631,7 +631,7 @@ def topic(
 
 
 async def _topic(action: str, name: str | None, keywords: str | None, description: str):
-    from app.services.topics import create_topic, list_topics, reclassify_recent
+    from app.services.topics import create_topic, list_topics, reclassify_recent, TopicExistsError
 
     settings = load_settings()
     factory = get_session_factory(settings)
@@ -642,8 +642,16 @@ async def _topic(action: str, name: str | None, keywords: str | None, descriptio
             return
         kw_list = [k.strip() for k in keywords.split(",") if k.strip()]
         async with factory() as session:
-            topic_id = await create_topic(session, name, kw_list, description)
-            await session.commit()
+            try:
+                topic_id = await create_topic(session, name, kw_list, description)
+                await session.commit()
+            except TopicExistsError as e:
+                # 重复主题：UNIQUE 约束触发，给出已存在 id（fix #11）
+                await session.rollback()
+                existing = f" (id={e.existing_id})" if e.existing_id is not None else ""
+                console.print(f"[red]❌ 主题「{e.name}」已存在{existing}，未创建新行[/red]")
+                console.print("   [dim]如需修改关键词/描述，请用 update 命令或先删除再重建[/dim]")
+                return
             console.print(f"✅ 主题「{name}」已创建 (id={topic_id})")
 
             # 同步触发近窗重算（DESIGN §6）
