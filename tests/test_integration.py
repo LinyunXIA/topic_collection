@@ -535,3 +535,126 @@ class TestSetupScheduler:
         hc_job = scheduler.get_job("healthcheck")
 
         assert hc_job.trigger.interval.total_seconds() == 300
+
+
+class TestCleanupFetchEvents:
+    """验证 cleanup_fetch_events SQL 逻辑正确（fix #3）。"""
+
+    @pytest.mark.asyncio
+    async def test_deletes_old_records(self, settings):
+        """插入 100 天前的 fetch_events → cleanup 后被删除。"""
+        import uuid
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+        suffix = uuid.uuid4().hex[:8]
+        feed_name = f"test_cleanup_{suffix}"
+        eng = create_async_engine(settings.db.dsn, pool_size=2)
+        factory = create_async_engine(settings.db.dsn, pool_size=2)
+        try:
+            async with AsyncSession(factory, expire_on_commit=False) as session:
+                # 创建临时 feed
+                await session.execute(
+                    text(
+                        "INSERT INTO feeds (type, name, url, enabled) "
+                        "VALUES ('rss', :name, :url, true)"
+                    ),
+                    {"name": feed_name, "url": f"https://example.com/f/{suffix}"},
+                )
+                await session.commit()
+                result = await session.execute(
+                    text("SELECT id FROM feeds WHERE name=:name"), {"name": feed_name}
+                )
+                feed_id = result.scalar_one()
+
+                # 插入一条 100 天前的 fetch_events
+                await session.execute(
+                    text(
+                        "INSERT INTO fetch_events (feed_id, event_type, ok, item_count, created_at) "
+                        "VALUES (:fid, 'test_old', true, 0, now() - INTERVAL '100 days')"
+                    ),
+                    {"fid": feed_id},
+                )
+                await session.commit()
+
+                result = await session.execute(
+                    text("SELECT count(*) FROM fetch_events WHERE event_type='test_old'")
+                )
+                assert result.scalar() == 1
+
+                # 执行 cleanup（传入 session，避免 singleton 冲突）
+                from app.scheduler import cleanup_fetch_events
+                await cleanup_fetch_events(settings, session=session)
+
+                # 验证已删除
+                result = await session.execute(
+                    text("SELECT count(*) FROM fetch_events WHERE event_type='test_old'")
+                )
+                assert result.scalar() == 0
+
+                # 清理测试 feed
+                await session.execute(
+                    text("DELETE FROM feeds WHERE name=:name"), {"name": feed_name}
+                )
+                await session.commit()
+        finally:
+            await factory.dispose()
+            await eng.dispose()
+
+    @pytest.mark.asyncio
+    async def test_keeps_recent_records(self, settings):
+        """刚插入的 fetch_events → cleanup 后仍存在。"""
+        import uuid
+        from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
+
+        suffix = uuid.uuid4().hex[:8]
+        feed_name = f"test_cleanup_recent_{suffix}"
+        event_type = f"test_recent_{suffix}"
+        eng = create_async_engine(settings.db.dsn, pool_size=2)
+        factory = create_async_engine(settings.db.dsn, pool_size=2)
+        try:
+            async with AsyncSession(factory, expire_on_commit=False) as session:
+                await session.execute(
+                    text(
+                        "INSERT INTO feeds (type, name, url, enabled) "
+                        "VALUES ('rss', :name, :url, true)"
+                    ),
+                    {"name": feed_name, "url": f"https://example.com/f2/{suffix}"},
+                )
+                await session.commit()
+                result = await session.execute(
+                    text("SELECT id FROM feeds WHERE name=:name"), {"name": feed_name}
+                )
+                feed_id = result.scalar_one()
+
+                # 插入一条刚创建的记录（不应被清理）
+                await session.execute(
+                    text(
+                        "INSERT INTO fetch_events (feed_id, event_type, ok, item_count) "
+                        "VALUES (:fid, :et, true, 0)"
+                    ),
+                    {"fid": feed_id, "et": event_type},
+                )
+                await session.commit()
+
+                from app.scheduler import cleanup_fetch_events
+                await cleanup_fetch_events(settings, session=session)
+
+                # 验证未被删除
+                result = await session.execute(
+                    text("SELECT count(*) FROM fetch_events WHERE event_type=:et"),
+                    {"et": event_type},
+                )
+                assert result.scalar() == 1
+
+                # 清理测试数据
+                await session.execute(
+                    text("DELETE FROM fetch_events WHERE event_type=:et"),
+                    {"et": event_type},
+                )
+                await session.execute(
+                    text("DELETE FROM feeds WHERE name=:name"), {"name": feed_name}
+                )
+                await session.commit()
+        finally:
+            await factory.dispose()
+            await eng.dispose()
