@@ -240,8 +240,9 @@ class TestWiki:
             wiki_id = await generate_article_wiki(session, aid, settings)
             assert wiki_id is not None
 
-            # 验证 wiki_page 内容
-            page = await get_wiki_page(session, "测试文章")
+            # 验证 wiki_page 内容（slug 现在含 article_id 后缀，§16 #7）
+            expected_slug = _slugify("测试文章", aid)
+            page = await get_wiki_page(session, expected_slug)
             assert page is not None
             assert "测试摘要" in page["content_md"]
             assert page["kind"] == "article"
@@ -274,8 +275,9 @@ class TestWiki:
             await generate_article_wiki(session, aid, settings)
             await session.commit()
 
-            # slug 唯一
-            result = await session.execute(text("SELECT COUNT(*) FROM wiki_pages WHERE slug='upsert-test'"))
+            # slug 唯一（slug 现在含 ref_id 后缀）
+            expected_slug = _slugify("Upsert Test", aid)
+            result = await session.execute(text("SELECT COUNT(*) FROM wiki_pages WHERE slug=:slug"), {"slug": expected_slug})
             assert result.scalar() == 1
 
     @pytest.mark.asyncio
