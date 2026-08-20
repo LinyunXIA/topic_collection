@@ -4,7 +4,7 @@
 > 共享的结构性描述（目录结构 / DDL / 接口）只在一处维护、另一处引用，避免漂移
 > 版本：v0.15 · 2026-08-20 · Phase 1/1+/1++ 已部署（13 项 Issue 闭环，214/214 tests，Phase 2 已拆分至 DESIGN_Phase_2.md）
 > v0.15：**测试计数同步 + 2.6.3 拆分**——`PR #40` 补 `tests/test_regression_31_34.py` 10 用例，`204→214`，`gh issue --state open` 0；`§14 2.6.3` 拆为 `2.6.3a`/`2.6.3b`
-> v0.14：**代码与设计对齐 + 新增 5 项回归修复**——与当时代码（214/214 tests passing, `pytest --collect-only` 214）对齐，`gh issue --state open` 0：
+> v0.14：**代码与设计对齐 + 新增 5 项回归修复**——与当时代码（204/204 tests passing, `pytest --collect-only` 204）对齐，`gh issue --state open` 0：
 >   **P0 阻断 2 项**——① `app/scheduler.py:251` 直注协程函数（`fix #30` 去 `lambda: ensure_future`，APScheduler 线程池 `RuntimeError: no current event loop` 导致 5 任务永不执行）；② `app/services/search.py:170` `DISTINCT ON + ORDER BY article_id` 改 `ORDER BY distance` 全局相似度 + 应用层去重（`fix #31`，`PRD 9` 按 id 选结果，HNSW 失效，RRF 污染）；
 >   **P1/P2 3 项**——③ `app/ingest/dedup.py:44` 空/过短短路（`_EMPTY_CONTENT_HASH` + `<32`）+ 30d 窗口（`fix #32`，空正文 feed 全吞为首篇）；④ `app/scheduler.py:114` `drain_queue` `UPDATE ... RETURNING id` 限定本轮 `ANY(:ids)`（`fix #33`，全表 `processing` 越界每 24h 重入队）；⑤ `app/services/cli.py:618` `tc reindex [--all]` 纯本地 `update_article_tsv` 回填存量 `NULL`（`fix #34`，`a003` 仅 wiki 回填）；
 >   同步更新：`DESIGN.md:5` 版本 200→204；`§5.1.5` `a005/a006` 已合入 `task CHECK`/`pg_trgm`；`§7` 检索 `ORDER BY distance` 替代 `DISTINCT ON`。

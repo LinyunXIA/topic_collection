@@ -1188,7 +1188,7 @@ Phase 2 加：
 
 - **选型**：先走 **WebHook 机器人**（中国版 `open.feishu.cn`），`POST https://open.feishu.cn/open-apis/bot/v2/hook/{token}` 推送 Markdown 卡片，无需鉴权续期；正式 `im.message.create + drive` 上传预留（需 `app_id/app_secret` 换 `tenant_access_token`，可 @人/建文档）
 - **配置**：`app/config.py:109` `FeishuSettings{enabled: bool=False, webhook_env: str="FEISHU_WEBHOOK", events: list[str]=["daily","weekly"]}`，全走环境变量（`FEISHU_WEBHOOK=https://open.feishu.cn/...`），`config/config.yaml: schedule.feishu {enabled, webhook_env}` 示例，`PRD §12` 外发白名单
-- **服务**：`app/services/notify.py: send_feishu_markdown(webhook, title, markdown)` → `httpx POST {msg_type: "post", content: {post: {zh_cn: {title, content: [[{tag:"text",text:...}]]}}}}` 或 `interactive` 卡片，10s 超时，失败仅 `logger.warning` + `reports.error`，不写 `fetch_events`（`feed_id NOT NULL FK`，报告无 feed 上下文，同 `dedup` 已改 `logger`），`report_events` 表 Phase 2 预留
+- **服务**：`app/services/notify.py: send_feishu_markdown(webhook, title, markdown)` → `app/core/egress.py:safe_post`（白名单校验 `open.feishu.cn` 后 `httpx POST {msg_type: "post", ...}` 或 `interactive` 卡片），10s 超时，失败仅 `logger.warning` + `reports.error`，不写 `fetch_events`（`feed_id NOT NULL FK`），`report_events` 表 Phase 2 预留
 - **触发**：`reports.status → succeeded` 后链式 `if feishu.enabled and report_type in events → send_feishu_markdown`，或 `app/scheduler.py:253` 定时 `feishu_notify` 复用日报触发；`CLI tc report retry` 同链
 - **安全**：`webhook` 含 `token` 走 `env` 不入库不入 repo，`open.feishu.cn` 中国版域名（国际 `open.larksuite.com` 可切），失败不阻塞报告生成
 
@@ -1203,6 +1203,7 @@ Phase 2 加：
 - [ ] 2.0.2 `app/db/engine.py:25` `get_engine` 按 `env` 选 `dsn`，`check_extensions` prod 仍 `vector/pg_trgm`，`scripts/init_db.py:26` 本机 `postgres:5432` 幂等 `CREATE EXTENSION`
 - [ ] 2.0.3 `docker-compose.yml:10` 保留 `5433 tc/tc` dev，`app/scheduler.py:218` `run_pg_backup` prod 走 `pg_dump -h localhost -U postgres PGPASSWORD`，`Makefile` 加 `make prod: TC_APP_ENV=prod`
 - [ ] 2.0.4 初始化验证：`initdb` 空库 → `createdb topic_collection` → `alembic upgrade head` → `pytest 214` (=204+10 PR #40)，`TC_APP_ENV=prod uvicorn` 为 WebUI 唯一入口，`python -m app.worker` 仅 `dev`/CLI 批量，二者禁止同库并发
+- [ ] 2.0.5 `app/core/egress.py` 共享出口白名单（`safe_post`/`safe_get` 校验 `open.feishu.cn` 等，未列域名 `PermanentError`，`FEED_FETCH_ALLOW_ALL` 隔离抓取，PRD §13，`§10.4` 飞书唯一执行点）
 - [ ] D0 `a007` 迁移幂等 + `engine` 单测（`prod` 分支）
 
 **切片 2.1 WebUI Dashboard 骨架（P1，验收 1 回归 + 2 部分 UI 触发，`prod` 唯一入口）**：
