@@ -1,7 +1,8 @@
 # PRD：Topic Collection —— 主题信息采集 + 摘要 / 翻译 / 知识图谱 / LLM Wiki
 
-版本：v0.13（2026-08-20）· 状态：Phase 1 / 1+ / 1++ 代码对齐完成，204/204 tests passing
-> 工程细节（目录结构 / DDL / LLM 接口 / 流水线）以 [DESIGN.md](DESIGN.md) 为权威
+版本：v0.14（2026-08-20）· 状态：Phase 1/1+/1++ 已部署，204/204；Phase 2 四项增量设计已落 DESIGN_Phase_2.md v0.15
+> 工程细节（目录结构 / DDL / LLM 接口 / 流水线）以 [DESIGN.md](DESIGN.md) 为权威，Phase 2 以 [DESIGN_Phase_2.md](DESIGN_Phase_2.md) 为权威
+> v0.14：**Phase 2 PRD 四项增量 + 合约修正**——与 DESIGN_Phase_2 v0.15 同步；`v0.13 204/204` 基础上补 `§1 LLM 能力 per-capability`、`§12 Phase 2` 四项（DB 隔离/embed外部/翻译后台/飞书）、`§13 白名单`、`§15 #8 条件式`；`fix #30-34` 5 项回归已合入
 > v0.13：**代码与设计对齐 + 新增 5 项回归**——与 DESIGN v0.14 同步；`204/204 tests passing`（`pytest --collect-only` 204，`gh issue --state open` 0）；新增 `fix #30 scheduler 直注协程` + `fix #31 语义按相似度排序` + `fix #32 空碰撞 30d 窗口` + `fix #33 回灌 RETURNING ids` + `fix #34 tc reindex 回填`；PRD §15 验收 1/3/5/7/8/9/16/17/18 保持通过，`tc reindex` 补存量可检索性
 > v0.12：**代码与设计对齐**——与 DESIGN v0.13 同步；`200/200 tests passing`（`pytest --collect-only` 200）；P0 3 项（scheduler 装配/INTERVAL 修复/pg_backup 去阻塞）+ P1 3 项（Phase 2 四表+wiki tsv+task CHECK）+ P2 2 项（fetch_and_store 收敛+精确去重第二闸+配置统一）共 8 个 GitHub Issue 闭环；PRD §15 验收 1/3/5/7/8/9/16/17/18 保持通过
 > v0.11：Phase 1+ 适配器层完成（LLMAdapter + ProviderPatch + 三家差异分析 + MiniMax 通讯验证）；与 DESIGN v0.11 同步；148/148 tests
@@ -32,7 +33,7 @@
 | 产品形态 | Phase 1 以 **CLI** 为核心可用入口（fetch/summarize/search/list）；**WebUI Dashboard 整体移入 Phase 2**；定时任务/报告 Phase 2 |
 | LLM Wiki | 可搜索的知识库站点（文章归档、自动分类、交叉链接、全文检索） |
 | 知识图谱 | 实体-关系三元组 + 图可视化（ECharts） |
-| LLM 能力 | 仅本地推理：oMLX（`http://localhost:8000`，OpenAI 兼容 RESTful，**本机不鉴权**）本地提供 3 模型——生成 `Qwen3.8-27B-MLX-4bit`（备选 9B INSTRUCT；THINKING 待修复）、嵌入 `Qwen3-Embedding-8B-4bit-DWQ`（**原生 4096 维，经 `dimensions=1536` 服务端截断**）、重排 `Qwen3-Reranker-4B`（§8） |
+| LLM 能力 | **默认本地** oMLX（`http://localhost:8000`，本机不鉴权）`Qwen3.8-27B`/`Qwen3-Embedding-8B`/`Qwen3-Reranker-4B`（§8）；**Phase 2 per-capability 可选外部**：`generate`/`embed`/`rerank` 各自 `backend: omlx|openai` + `api_key_env`，`dimensions=1536` 不变，白名单外发（`§13`） |
 | 输出语言 | 中文（摘要/Wiki 默认中文，原文保留；翻译默认译为简体中文） |
 | 数据库 | PostgreSQL + pgvector（向量语义检索 + tsvector 中文全文检索） |
 
@@ -299,7 +300,7 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 |---|---|---|
 | **Phase 1 MVP（可用即可，无 WebUI）** | 建库（Postgres + pgvector + tsvector）；RSS 抓取（ETag/去重）；清洗；本地 LLM（oMLX）+ `summarize`(中文) + `embed_core`/`embed_summary`(1536维) + `classify_topics`（关键词+LLM）；基础 Wiki 词条 + 混合检索；**CLI 入口**（feeds import / topic add / topic list / fetch / summarize / list / search / article）；定时抓取+流水线；config（config.yaml + feeds.yaml）+ `docker-compose.yml`(pgvector) | RSS(1a)、LLM Wiki 基础(3)、本地 LLM oMLX(5a)、中文输出(6)、语义检索(pgvector 基础)、定时抓取(2b 部分)、CLI 可用入口(2c 提前) |
 | **Phase 1+（CLI 增强，MVP 用后改进）** | 外部 LLM API 切换（OpenAI 兼容协议，per-capability：generate 可选本地/外部，embed/rerank 强制本地）；LLM 适配器层（统一 DTO + ProviderPatch 声明式配置：80% 通用 OpenAI 解析 + 20% 模型特定补丁）；`tc feeds fetch --count N` 限制单次抓取条数；`_classify_http_error` 重试分类修复（401/403/400 → PermanentError） | 外部 LLM API(F5a 增强)、适配器层、CLI 体验优化 |
-| **Phase 2** | **WebUI Dashboard**（概览/Feeds/文章/详情/搜索/设置/图谱/报告页）；混合检索完善（RRF + oMLX Reranker、相似文章推荐）；中文翻译；实体关系抽取→entities/relations 表+合并；图谱页（ECharts）；主题聚合 UI+跨源视图；完整 Wiki（主题/实体词条+交叉链接）；日报/周报；API 连接器骨架 | Web+Dashboard(2a)、报告(2b)、知识图谱(4)、API/爬虫骨架(1b 部分)、主题聚合(1c)、Reranker 增强(3)、混合检索高级(3) |
+| **Phase 2** | **WebUI Dashboard**（概览/Feeds/文章/详情/搜索/设置/图谱/报告页）；混合检索完善（RRF + oMLX Reranker、相似文章推荐）；**生产 DB 隔离（`§5.4.1`）**；**`embed`/`rerank` 外部化（`§4.8`）**；**中文翻译后台（`§6.Z` 本地 27B，`translating`）**；实体关系抽取→entities/relations 表+合并；图谱页（ECharts）；主题聚合 UI+跨源视图；完整 Wiki（主题/实体词条+交叉链接）；日报/周报 + **飞书 Webhook（`§10.4`）**；API 连接器骨架 | Web+Dashboard(2a)、报告(2b)、知识图谱(4)、API/爬虫骨架(1b 部分)、主题聚合(1c)、Reranker 增强(3)、混合检索高级(3)、**DB 隔离(5.4.1)、飞书(10.4)** |
 | **Phase 3** | API 连接器广度（arXiv/GitHub/通用 OpenAPI）+ 健壮爬虫（readability、反爬礼仪、增量抓取）；高级搜索（过滤/保存搜索/实体搜索）；告警（主题命中/Feed 故障/LLM 掉线）；分任务多模型 A/B；存储归档裁剪 | API/爬虫广度(1b)、高级搜索(3)、告警(12) |
 
 ---
@@ -309,7 +310,8 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 - **性能**：单机数万篇文章量级流畅；LLM 并发=1 后台处理不阻塞 UI；Dashboard 秒级响应；**CPU 密集任务（jieba 切词、HTML→Markdown、trafilatura 解析）一律走 `asyncio.to_thread`，不阻塞 async 事件循环**（DESIGN §2）；抓取设全局并发 semaphore（`ingestion.global_concurrency`）+ 每域限速（`ingestion.per_host_interval_ms`，DESIGN §6）；向量检索走 HNSW，**建索引期 `ef_construction=128`（DDL WITH）、查询期 `SET hnsw.ef_search=64`**——二者不可混（DESIGN §5.1），目标 P95 < 100ms
 - **运行时依赖**：Docker Compose 起 PostgreSQL 15+（`pgvector/pgvector:pg17` 镜像，已确认）；DB 仅本机回环访问（`127.0.0.1`），凭据由配置/环境变量管理
 - **可靠性**：源失败自动禁用+审计；LLM 掉线优雅降级（文章仍可浏览原文）；任务可重试/恢复/死信；增量处理幂等
-- **隐私/安全**：全部本地运行，无数据出机；Dashboard 默认绑定 `127.0.0.1`；不保存任何云凭据
+- **隐私/安全**：**默认全程本地**（`oMLX`），无数据出机；Dashboard 默认绑定 `127.0.0.1`；不保存任何云凭据；**开启外部 LLM/飞书时仅按 §12 白名单域名外发，明文原文/向量默认不出机，关闭即零外发**（`§15 #8` 条件式）
+  - **外发白名单（`§12`）**：`open.feishu.cn`（飞书中国）/ `open.larksuite.com`（国际）/ `api.openai.com` / `api.siliconflow.cn` / `api.minimax.chat` 等 LLM/通知域名；未列域名 `LLMClient` 拒绝 `POST`，`config.yaml` 需显式 `backend: openai` + `api_key_env` 才外发
 - **可维护性**：Services 层为应用 API，CLI/Web 均薄封装；Alembic 迁移；Rich 滚动日志；配置类型化校验
 - **可测试性**：LLM 可 mock；单元（dedup/cleaner/structured/FTS）+ 集成（fake LLM）
 
@@ -352,7 +354,7 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 5. Wiki 可按关键词全文搜索（含中文关键词），且每篇新文章都已自动生成 Wiki 词条页；按主题/实体浏览的完整 Wiki 归 Phase 2
 6. 日报/周报能按计划生成并在 Dashboard 查看/导出（Phase 2）
 7. 拔掉 LLM 服务后，系统不崩溃：文章可浏览、**瞬时类任务保持 queued 退避、无限续跑至恢复（`attempt` 不自增、不因掉线进死信，退避封顶 15m）**，恢复后自动续跑；永久类任务（401/403 鉴权配置错 / 不可解析 / JSON 失败）3 次后死信可手动重试（DESIGN §6/§11）
-8. 全程本地运行，无任何数据发送到云端
+8. 默认全程本地（`oMLX`），无数据出机；开启外部 LLM（`§4.8`）/飞书（`§10.4`）时仅按 `§12` 白名单外发，关闭即零外发（`PRD §12` 白名单）
 9. 语义检索生效：用与原文字面不同但语义相近的查询词，仍能召回相关文章（pgvector）；混合检索 **P1 即用 RRF 融合**（量纲无关），P2 叠 Reranker（§5/DESIGN §7）
 10. 配置化 API 连接器（Phase 3）：不改代码，仅通过 `feeds.yaml` 配置（endpoint + 参数 + JSONPath 映射）即可接入 arXiv / GitHub / 通用 OpenAPI 等源并进入流水线
 11. 健壮网页抓取（Phase 3）：对一个无 RSS 的网站配置 URL 即能礼貌抓取并提取主内容（readability 类）；被限流/反爬时按域退避重试、不触发封禁；增量抓取只处理变更页面

@@ -170,9 +170,9 @@ static/
 - **存储/检索**：`vector(1536)` 锁死，`app/db/engine.py:98` 维度校验不变，`app/services/search.py:168` `WHERE model=:active` + `app/services/llm_tasks.py:259` 校验 `dim==1536`，切换模型需 `TRUNCATE article_embeddings` 或 `scripts/backfill` 重建 `HNSW`
 - **Worker**：`app/worker.py:80` 增 `rerank_llm = LLMClient(build_provider("rerank"))` 供 `§7.1` 复用，`TC_LLM__EMBED__BACKEND=openai` 环境覆盖
 
-### 5.1.5 Phase 2 增量 DDL（与 §14 切片同步迁移）
+### 5.1.5 Phase 2 增量 DDL（与 §14 切片同步迁移，已落地 `a003-a006`，历史快照）
 
-Phase 2 表已经在 Phase 1 DDL 预创建（`entities`、`relations`、`translations`、`reports`、`wiki_pages`），但 Phase 2 任务对字段/索引有微调，落到 Alembic 增量迁移：
+> **已落地**：原设计承诺 Phase 1 预创建，实为 `a004`（`fix #5`）按最终形态一次建表，Phase 1 仅 10 表。`a003 wiki tsv`/`a005 task CHECK`/`a006 pg_trgm` 已合入，`RENAME/DROP` 语句仅适用于 2026-08-19 前旧库，需 `IF EXISTS` 包裹；现库 `alembic upgrade head` 即得最终形态，下述增量为历史快照。
 
 #### `entities` 表 Phase 2 增量（切片 2.3）
 
@@ -247,9 +247,9 @@ ALTER TABLE processing_jobs ADD CONSTRAINT processing_jobs_task_check
                   'embed_core','embed_summary'));
 ```
 
-#### DDL 迁移顺序与兼容性
+#### DDL 迁移顺序与兼容性（历史）
 
-1. 所有 ALTER TABLE 均 `IF EXISTS/IF NOT EXISTS` 幂等（多次跑脚本不报错）
+1. 设计要求 `IF EXISTS/IF NOT EXISTS` 幂等，但实码 `a003:34` `ADD COLUMN/CREATE INDEX` 无 `IF NOT EXISTS`，`a004` 全为 `create_table`，靠 Alembic 版本表阻断重复 `upgrade`，非 SQL 幂等；`a005` 用 `DO $$ IF EXISTS` 包 `DROP` 已示范
 2. 新增 CHECK 约束前先 `UPDATE processing_jobs SET task=...` 把已存在的未知 task 映射到合法值（不能因为加约束让 worker 任务跑挂）
 3. 索引加 `CONCURRENTLY`（生产无锁），dev 阶段无所谓
 
@@ -258,12 +258,13 @@ ALTER TABLE processing_jobs ADD CONSTRAINT processing_jobs_task_check
 | 环境 | DSN | 宿主机端口 | 用户 | 密码来源 | 启动方式 |
 |---|---|---|---|---|---|
 | `dev`（默认） | `postgresql+asyncpg://tc:tc@localhost:5433/topic_collection` | `5433 → 5432` | `tc` | 硬编码 `tc`（仅本地 dev） | `docker compose up -d` + `TC_APP_ENV=dev`（默认） |
-| `prod` | `postgresql+asyncpg://postgres:${POSTGRES_PASSKEY}@localhost:5432/topic_collection` | `5432`（本机 postgres 默认端口） | `postgres` | 环境变量 `POSTGRES_PASSKEY`（必填，`TC_DB__PROD_DSN` 可整串覆盖） | `TC_APP_ENV=prod POSTGRES_PASSKEY=*** python -m app.worker` 可单独启动 |
+| `prod` | `postgresql+asyncpg://postgres:${POSTGRES_PASSKEY}@localhost:5432/topic_collection` | `5432`（本机 postgres 默认端口） | `postgres` | 环境变量 `POSTGRES_PASSKEY`（必填，`TC_DB__PROD_DSN` 可整串覆盖） | `prod WebUI: TC_APP_ENV=prod uvicorn app.main:app`（`lifespan` 拉起 worker+scheduler，唯一入口）；`prod CLI/backfill: TC_APP_ENV=prod python -m app.worker` 仅无 WebUI 时，二者禁止同库并发（`pg_try_advisory_lock` 互斥，`§14 2.1.1`） |
 
 - **配置**：`app/config.py:13` `DBSettings{dsn, pool_size, vector_dim, prod_dsn?, env: Literal[dev,prod]=dev}`，`TC_DB__PROD_DSN` / `POSTGRES_PASSKEY` fail fast；`config/config.yaml:6` 加 `db.prod` 示例与 `TC_DB__PROD_DSN` 覆盖说明
 - **引擎**：`app/db/engine.py:25` `get_engine` 按 `env` 选 `dsn`，`check_extensions` prod 仍校验 `vector/pg_trgm/vector_dim`，`init_db` 需本机 `postgres` 库已建 `CREATE EXTENSION IF NOT EXISTS vector`（`a001` 不写，由 `scripts/init_db.py:26` 负责）
 - **备份**：`app/scheduler.py:218` `run_pg_backup` dev 走 `docker compose exec -T postgres pg_dump -U tc`，prod 走 `pg_dump -h localhost -U postgres`（`PGPASSWORD=${POSTGRES_PASSKEY}`），`TC_DB__PROD_DSN` 已覆盖则解析 host/user/db
 - **初始化**：生产库当前为空，需 `initdb` + `createdb topic_collection` + `psql -c "CREATE USER postgres WITH PASSWORD '\$POSTGRES_PASSKEY'"`（若未设）+ `python -m scripts.init_db` 幂等（`CREATE EXTENSION + alembic upgrade head`）
+- **互斥**：`worker_loop` 启动前 `SELECT pg_try_advisory_lock(hashtext('topic_collection_worker'))`，未获锁则 `exit 1`，`uvicorn` 与 `python -m app.worker` 二选一，防 `force_all_running=True` 互抢租约（`§14 2.1.1`，`app/pipeline.py:253` 单 worker 假设）
 
 ### 6.X Phase 2 wiki 完整版（切片 2.4 + 2.5 / 2.6 完整 Wiki）
 
@@ -729,7 +730,7 @@ RETURNING *;
   - **P1 保守的误合并防护**：
     - **阈值 0.95 起步**：0.92 是经验下界，但「Weekly Digest #N」「Issue #N」类模板化标题易超阈值被静默合并——0.95 显著降低误合并概率；P1 跑一段真实数据后再考虑放松（body↔body 比纯 title 更不易被模板化标题误判，但正文模板化段落同样有此风险）
     - **限同语言**：仅当候选与本文章 `lang` 相同时合并。跨语言（同事件的英文原文 + 中文报道）只做候选标记入 `fetch_events`，不合并——避免读者关心的「同一事件的中英文版本各自保留」
-    - **可逆**：`dedupe_of` 置 NULL 即恢复独立；CLI `tc article <id> undedupe`（P2 WebUI 按钮）
+    - **可逆（`undedupe` 单事务，`§8.1`）**：`dedupe_of→NULL` + `status='pending'`（非 `processing`，`drain_queue` 仅捞 `pending`）+ 同事务 `DELETE article_topics` 重建 `match_keywords` + `winner mention_count -= loser_mention`（`GREATEST(1, ...)`）+ `enqueue(embed_core,summarize)`（`pending→processing` 由 `enqueue_jobs` 驱动）；CLI `tc article <id> undedupe`（P2 WebUI 按钮）
   - **配置**（§9）：
     - `ingestion.dedup.threshold`（默认 0.95）
     - `ingestion.dedup.window_days`（默认 30）
@@ -755,7 +756,7 @@ RETURNING *;
 
 - **模型**：本地 `Qwen3.8-27B-MLX-4bit`（与 `summarize` 复用 27B，不单设轻量；`llm.translate.backend: omlx|openai` 可单设，但默认本地，不阻塞阅读）
 - **触发**：`complete_summarize` 同事务 `if lang != 'zh' → enqueue_jobs([translate], priority=7)`（最低，`§6` 表）；`auto_translate` 可配，`lang==zh` 跳过
-- **执行**：`run_translate(session,job,llm)` 读 `articles.content_text|content_md + title` → `get_prompt("translate")` → `generate (27B, 180s)` → `translations` upsert `UNIQUE(article_id,src_lang,tgt_lang,model) WHERE content_hash` + `check_and_set_done`；`processing_jobs` 长期 `queued` 亦不阻塞 `articles.status → done`（`done` 由 `queued/running` 是否为空判定，`translate` 缺席即满足）
+- **执行**：`run_translate(session,job,llm)` 读 `articles.content_text|content_md + title` → `get_prompt("translate")` → `generate (27B, 180s)` → `translations` upsert `UNIQUE(article_id,src_lang,tgt_lang,model) WHERE content_hash` + `check_and_set_done(task != 'translate')`；`processing_jobs` 长期 `queued` 亦不阻塞 `articles.status → done`（`check_and_set_done` 谓词 `WHERE task != 'translate'`，`§6` 状态机 `processing→done` 排除 `translate`，`§14 2.2` 清单已补）
 - **展示**：`GET /articles/{id}` 查 `translations` 无行 → 返回 `translating: true`，前端徽标 `翻译中，请稍后` + `HTMX every 5s hx-get /api/articles/{id}/translate_status` 轮询；有行则 `translated_title/translated_content` 与原文双栏，`CLI tc article <id>` 同理
 - **Worker**：`_TASK_CAPABILITY translate→generate`（`app/worker.py:31`），`handlers translate→run_translate`，`drain_queue` 不回灌 `translate`（仅 `embed_core/summarize`），`recover` 租约保护
 - **配置**：`config/config.yaml: llm.translate {backend: omlx, model: Qwen3.8-27B-MLX-4bit}`，`TC_LLM__TRANSLATE__BACKEND` 可覆盖
@@ -870,7 +871,7 @@ Phase 1 仅 CLI 入口，Phase 2 起 WebUI。**核心约定**：API 路由**只�
 | `GET /articles` | `articles/list.html` | `?feed=&topic=&status=&q=&page=` (size=20) | 200 | 筛选表格 + FTS 搜索框 + 分页 + 多选批量重试 |
 | `GET /articles/{id}` | `articles/detail.html` | path | 404 | 7 个 Tab：原文/摘要/翻译/实体/相关话题/Wiki；状态栏 |
 | `POST /articles/{id}/retry/{task}` | partial swap | path: id, task | 404 / 422 | task ∈ summarize\|extract_entities\|topics\|wiki\|translate\|embed_core\|embed_summary |
-| `POST /articles/{id}/undedupe` | redirect → `/articles/{id}` | path | 404 | 清 dedupe_of + status='processing'（让重跑全任务） |
+| `POST /articles/{id}/undedupe` | redirect → `/articles/{id}` | path | 404 | `dedupe_of→NULL + status='pending'` + 重建 `article_topics` + 回退 `winner mention_count` + `enqueue(embed_core,summarize)`（`§6` 单事务，`drain_queue` 接手） |
 | `GET /api/articles/{id}/similar` | JSON | `?top_k=10` | 404 | 相似文章（§7.1） |
 | `GET /wiki` | `wiki/index.html` | `?kind=article\|topic\|entity\|manual&q=` | 200 | 按 kind 分组的卡片索引 |
 | `GET /wiki/{slug}` | `wiki/page.html` | path | 404 | 渲染 Markdown + 元数据 + related_json 三栏 |
@@ -1185,7 +1186,7 @@ Phase 2 加：
 
 - **选型**：先走 **WebHook 机器人**（中国版 `open.feishu.cn`），`POST https://open.feishu.cn/open-apis/bot/v2/hook/{token}` 推送 Markdown 卡片，无需鉴权续期；正式 `im.message.create + drive` 上传预留（需 `app_id/app_secret` 换 `tenant_access_token`，可 @人/建文档）
 - **配置**：`app/config.py:109` `FeishuSettings{enabled: bool=False, webhook_env: str="FEISHU_WEBHOOK", events: list[str]=["daily","weekly"]}`，全走环境变量（`FEISHU_WEBHOOK=https://open.feishu.cn/...`），`config/config.yaml: schedule.feishu {enabled, webhook_env}` 示例，`PRD §12` 外发白名单
-- **服务**：`app/services/notify.py: send_feishu_markdown(webhook, title, markdown)` → `httpx POST {msg_type: "post", content: {post: {zh_cn: {title, content: [[{tag:"text",text:...}]]}}}}` 或 `interactive` 卡片，10s 超时，失败写 `fetch_events(event_type="report_push_failed")` 不回滚 `reports` 落库
+- **服务**：`app/services/notify.py: send_feishu_markdown(webhook, title, markdown)` → `httpx POST {msg_type: "post", content: {post: {zh_cn: {title, content: [[{tag:"text",text:...}]]}}}}` 或 `interactive` 卡片，10s 超时，失败仅 `logger.warning` + `reports.error`，不写 `fetch_events`（`feed_id NOT NULL FK`，报告无 feed 上下文，同 `dedup` 已改 `logger`），`report_events` 表 Phase 2 预留
 - **触发**：`reports.status → succeeded` 后链式 `if feishu.enabled and report_type in events → send_feishu_markdown`，或 `app/scheduler.py:253` 定时 `feishu_notify` 复用日报触发；`CLI tc report retry` 同链
 - **安全**：`webhook` 含 `token` 走 `env` 不入库不入 repo，`open.feishu.cn` 中国版域名（国际 `open.larksuite.com` 可切），失败不阻塞报告生成
 
@@ -1199,11 +1200,11 @@ Phase 2 加：
 - [ ] 2.0.1 `app/config.py:13` `DBSettings{env: dev|prod, prod_dsn}` + `TC_DB__PROD_DSN`/`POSTGRES_PASSKEY` fail fast，`config/config.yaml:6` `db.prod` 示例
 - [ ] 2.0.2 `app/db/engine.py:25` `get_engine` 按 `env` 选 `dsn`，`check_extensions` prod 仍 `vector/pg_trgm`，`scripts/init_db.py:26` 本机 `postgres:5432` 幂等 `CREATE EXTENSION`
 - [ ] 2.0.3 `docker-compose.yml:10` 保留 `5433 tc/tc` dev，`app/scheduler.py:218` `run_pg_backup` prod 走 `pg_dump -h localhost -U postgres PGPASSWORD`，`Makefile` 加 `make prod: TC_APP_ENV=prod`
-- [ ] 2.0.4 初始化验证：`initdb` 空库 → `createdb topic_collection` → `alembic upgrade head` → `pytest 204`，`TC_APP_ENV=prod` 可单独启动 `python -m app.worker`
+- [ ] 2.0.4 初始化验证：`initdb` 空库 → `createdb topic_collection` → `alembic upgrade head` → `pytest 204`，`TC_APP_ENV=prod uvicorn` 为 WebUI 唯一入口，`python -m app.worker` 仅 `dev`/CLI 批量，二者禁止同库并发
 - [ ] D0 `a007` 迁移幂等 + `engine` 单测（`prod` 分支）
 
-**切片 2.1 WebUI Dashboard 骨架（P1，验收 1 回归 + 2 部分 UI 触发）**：
-- [ ] 2.1.1 `app/main.py: create_app()` + lifespan 顺序：init_db → probe oMLX 三端点 → recover_interrupted → 启动 scheduler + worker task；`uvicorn app.main:app --host 127.0.0.1 --port 7111`
+**切片 2.1 WebUI Dashboard 骨架（P1，验收 1 回归 + 2 部分 UI 触发，`prod` 唯一入口）**：
+- [ ] 2.1.1 `app/main.py: create_app()` + lifespan 顺序：init_db → probe oMLX 三端点 → `pg_try_advisory_lock` 单例校验 → `recover_interrupted` → 启动 scheduler + worker task；`uvicorn app.main:app --host 127.0.0.1 --port 7111`（与 `python -m app.worker` 互斥，`§5.4.1`，`app/pipeline.py:253` 单 worker 假设）
 - [ ] 2.1.2 `app/api/{deps,health,dashboard,settings}.py` 路由骨架，**全部只做路由 + 调 service**，业务逻辑零侵入
 - [ ] 2.1.3 `app/web/templates/base.html` + `components/` + `static/` vendored JS（htmx/echarts/sortable/pico）——见 §8.1 vendored 资源清单
 - [ ] 2.1.4 HTMX partial swap 模式 + 错误形态（404/422/500）—— §8.1 HTMX 策略
@@ -1216,7 +1217,7 @@ Phase 2 加：
 - [ ] 2.2.4 §8 详情页新增 "翻译" Tab，渲染 `translations.translated_content` + `translated_title`；空时显示空 state + CTA "翻译"
 
 **切片 2.3 实体抽取与归并（验收 #4 部分前置）**：
-- [ ] 2.3.1 §5.1.5 entities / relations / article_entities DDL 增量迁移（含 pg_trgm 扩展）
+- [x] 2.3.1 §5.1.5 entities / relations / article_entities DDL 增量迁移（含 pg_trgm 扩展）——已落地 `a004`/`a006`，`§5.1.5` 为历史快照
 - [ ] 2.3.2 `app/services/entities.py: extract_entities()` + 完整 pipeline（grounding 校验、upsert、merge_aliases）：见 §6.Y 伪代码
 - [ ] 2.3.3 `complete_summarize` cascade 入队 `extract_entities`（与 topics 并列 priority 3，FIFO）
 - [ ] 2.3.4 `complete_extract` 钩子：写 entities + relations + article_entities → 触发 `generate_entity_wiki` 仅在 entity 首次/description 变更
@@ -1234,7 +1235,7 @@ Phase 2 加：
 - [ ] 2.4.6 节点点击 → 跳回相关文章（侧栏 modal 与 §8 `/articles` 列表复用）
 
 **切片 2.5 报告（验收 #6 全）**：
-- [ ] 2.5.1 §5.1.5 reports.status / started_at / completed_at / error 列 DDL 增量；`reports_period_uniq` UNIQUE 索引
+- [x] 2.5.1 §5.1.5 reports.status / started_at / completed_at / error 列 DDL 增量；`reports_period_uniq` UNIQUE 索引——已落地 `a004`
 - [ ] 2.5.2 `app/services/reports.py: _aggregate_stats(period_start, period_end)` 单 SQL 聚合（articles/summaries/embeddings/topics/entities/relations/queue/feeds/llm 全字段）
 - [ ] 2.5.3 `generate_daily_report(report_dt)` + `generate_weekly_report()` 服务（§10.1 伪代码）：stats → prompt → LLM → markdown → HTML（`markdown(md, extras=['toc','fenced_code','tables'])`）→ 同事务写 reports
 - [ ] 2.5.4 §4.6 `generate_report` prompt 落地（中文 Markdown 5 章结构 + 不允许制造统计量约束）
@@ -1246,7 +1247,7 @@ Phase 2 加：
 **切片 2.6 高级检索（验收 #9 增强）**：
 - [ ] 2.6.1 `app/services/search.py: search(*, use_rerank=False, mode='hybrid', page=1, page_size=20, filters)` 加 `use_rerank` 路径（§7.1 算法）
 - [ ] 2.6.2 `LLMClient.rerank()` 透明降级链：oMLX `/v1/rerank` → 进程内 `bge-reranker-v2-m3`（§7.1 懒加载）→ 不重排（保持 RRF）
-- [ ] 2.6.3 §5.1.5 `wiki_pages.tsv` 加列 + 跨表 UNION RRF（§7.1 Wiki 跨表检索 SQL）
+- [x] 2.6.3 §5.1.5 `wiki_pages.tsv` 加列 + 跨表 UNION RRF（§7.1 Wiki 跨表检索 SQL）——已落地 `a003`
 - [ ] 2.6.4 `app/api/articles.py: GET /api/articles/{id}/similar?top_k=10` 同主题加权相似（§7.1 SQL）
 - [ ] 2.6.5 `app/web/templates/search/results.html` 高级筛选 + Rerank toggle + Wiki/Article 切换
 - [ ] 2.6.6 CLI：`tc search --rerank --mode rerank` 终态展示
