@@ -60,7 +60,11 @@ async def get_session(settings: Settings) -> AsyncGenerator[AsyncSession, None]:
 
 
 async def check_extensions(settings: Settings) -> None:
-    """校验 pgvector 扩展已安装 + 向量维度一致（DESIGN §4.2/§5.2）。"""
+    """校验 pgvector 扩展已安装 + 向量维度一致（DESIGN §4.2/§5.2）。
+
+    pg_trgm 仅警告（fix #24）：DESIGN §6.Y merge_aliases 依赖 similarity()，
+    无则 Phase 2 首调 PG::UndefinedObject，提示运行 a006 迁移。
+    """
     engine = get_engine(settings)
     async with engine.connect() as conn:
         # 检查 vector 扩展
@@ -72,6 +76,15 @@ async def check_extensions(settings: Settings) -> None:
                 "pgvector 扩展未安装，请运行: CREATE EXTENSION IF NOT EXISTS vector"
             )
         logger.info("✅ pgvector 扩展已就绪")
+
+        # 检查 pg_trgm 扩展（fix #24，警告不阻断）
+        result = await conn.execute(
+            text("SELECT 1 FROM pg_extension WHERE extname = 'pg_trgm'")
+        )
+        if not result.scalar():
+            logger.warning("⚠️ pg_trgm 扩展未安装，merge_aliases 模糊匹配不可用，请运行: CREATE EXTENSION IF NOT EXISTS pg_trgm (a006)")
+        else:
+            logger.info("✅ pg_trgm 扩展已就绪")
 
         # 检查向量维度（通过 article_embeddings 表的列类型）
         result = await conn.execute(
