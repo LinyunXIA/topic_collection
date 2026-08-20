@@ -15,7 +15,7 @@ from app.llm.client import LLMClient, PermanentError
 from app.llm.factory import build_provider
 from app.pipeline import worker_loop
 from app.scheduler import setup_scheduler
-from app.services.llm_tasks import run_embed_core, run_embed_summary, run_summarize
+from app.services.llm_tasks import run_embed_core, run_embed_summary, run_summarize, run_translate
 from app.services.topics import classify_topics
 from app.services.wiki import generate_article_wiki
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -61,6 +61,43 @@ async def run_generate_wiki(
     llm_client: LLMClient | None,
 ) -> None:
     """wiki 任务 handler: 调用 services.wiki.generate_article_wiki（无 LLM 调用，llm_client 可为 None）。"""
+    await generate_article_wiki(session, job["article_id"], settings)
+
+
+async def run_translate_wrapper(
+    session: AsyncSession,
+    job: dict,
+    settings,
+    llm_client: LLMClient | None,
+) -> None:
+    """translate 任务 handler（DESIGN §6.Z，本地 27B 后台慢任务）"""
+    from app.services.llm_tasks import run_translate
+
+    if not llm_client:
+        raise RuntimeError("translate 需要 llm_client（generate capability）")
+    await run_translate(session, job, settings, llm_client)
+
+
+async def run_extract_entities(
+    session: AsyncSession, job: dict, settings, llm_client: LLMClient | None
+) -> None:
+    """extract_entities handler（DESIGN §6.Y）"""
+    from app.services.entities import extract_entities
+
+    if not llm_client:
+        raise RuntimeError("extract_entities 需要 llm_client")
+    await extract_entities(session, job["article_id"], settings, llm_client)
+
+
+async def _run_generate_entity_wiki(session: AsyncSession, job: dict, settings, llm_client=None):
+    from app.services.wiki import generate_article_wiki
+
+    await generate_article_wiki(session, job["article_id"], settings)
+
+
+async def _run_generate_topic_wiki(session: AsyncSession, job: dict, settings, llm_client=None):
+    from app.services.wiki import generate_article_wiki
+
     await generate_article_wiki(session, job["article_id"], settings)
 
 
@@ -138,6 +175,10 @@ async def main() -> None:
             "summarize": run_summarize,
             "topics": run_classify_topics,
             "wiki": run_generate_wiki,
+            "translate": run_translate_wrapper,
+            "extract_entities": run_extract_entities,
+            "generate_entity_wiki": _run_generate_entity_wiki,
+            "generate_topic_wiki": _run_generate_topic_wiki,
         }
         handler = handlers.get(task)
         if not handler:

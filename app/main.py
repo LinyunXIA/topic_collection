@@ -73,11 +73,23 @@ async def lifespan(app: FastAPI):
         logger.warning("recover 失败: %s", e)
 
     # 6. 启动 worker + scheduler
-    from app.worker import _TASK_CAPABILITY, run_classify_topics, run_generate_wiki
+    from app.worker import _TASK_CAPABILITY, run_classify_topics, run_generate_wiki, run_translate_wrapper
+    from app.services.entities import extract_entities as run_extract_entities
     from app.services.llm_tasks import run_embed_core, run_embed_summary, run_summarize
     from sqlalchemy.ext.asyncio import AsyncSession
 
     _clients = {"generate": generate_llm, "embed": embed_llm}
+
+    async def _run_generate_entity_wiki(session, job, settings, llm_client=None):
+        # Phase 2 占位：按 entity_ids 生成 wiki（简化为复用 article wiki）
+        from app.services.wiki import generate_article_wiki
+
+        await generate_article_wiki(session, job["article_id"], settings)
+
+    async def _run_generate_topic_wiki(session, job, settings, llm_client=None):
+        from app.services.wiki import generate_article_wiki
+
+        await generate_article_wiki(session, job["article_id"], settings)
 
     async def task_dispatcher(session: AsyncSession, job: dict, settings, llm_client=None):
         task = job["task"]
@@ -89,6 +101,10 @@ async def lifespan(app: FastAPI):
             "summarize": run_summarize,
             "topics": run_classify_topics,
             "wiki": run_generate_wiki,
+            "translate": run_translate_wrapper,
+            "extract_entities": run_extract_entities,
+            "generate_entity_wiki": _run_generate_entity_wiki,
+            "generate_topic_wiki": _run_generate_topic_wiki,
         }
         handler = handlers.get(task)
         if not handler:
@@ -129,11 +145,18 @@ def create_app() -> FastAPI:
         pass
 
     # 路由（Phase 2 骨架，全部只做路由+调 service）
-    from app.api import dashboard, health, settings as settings_api
+    from app.api import articles, dashboard, feeds, graph, health, reports, search as search_api, settings as settings_api, topics, wiki
 
     app.include_router(dashboard.router)
     app.include_router(health.router)
     app.include_router(settings_api.router)
+    app.include_router(articles.router)
+    app.include_router(feeds.router)
+    app.include_router(wiki.router)
+    app.include_router(search_api.router)
+    app.include_router(graph.router)
+    app.include_router(topics.router)
+    app.include_router(reports.router)
 
     return app
 

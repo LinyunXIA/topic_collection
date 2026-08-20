@@ -1,0 +1,1 @@
+{% extends "base.html" %}{% block content %}<h1>搜索 {{ q }}</h1>{% for r in results %}<div>{{ r.title }} {{ r.score }}</div>{% endfor %}{% endblock %}

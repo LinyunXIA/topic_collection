@@ -227,12 +227,12 @@ async def handle_permanent_failure(
 # ── Done 检查 ─────────────────────────────────────────────────────
 
 async def check_and_set_done(session: AsyncSession, article_id: int) -> None:
-    """检查文章是否可置 done（DESIGN §6 状态机）。"""
+    """检查文章是否可置 done（DESIGN §6 状态机，§6.Z translate 后台不阻塞）。"""
     result = await session.execute(
         text(
             "SELECT NOT EXISTS ("
             "  SELECT 1 FROM processing_jobs "
-            "  WHERE article_id=:aid AND status IN ('queued','running')"
+            "  WHERE article_id=:aid AND status IN ('queued','running') AND task != 'translate'"
             ")"
         ),
         {"aid": article_id},

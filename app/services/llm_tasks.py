@@ -159,10 +159,104 @@ async def complete_summarize(
     # 5. wiki 入队
     await enqueue_jobs(session, article_id, ["wiki"], content_hash)
 
-    # 6. done 检查
+    # 6. 翻译入队（仅非中文，DESIGN §6.Z）
+    # 仅当 lang != 'zh' 时入队 translate，后台慢任务，不阻塞 done（check_and_set_done 排除 translate）
+    try:
+        lang_row = await session.execute(text("SELECT lang FROM articles WHERE id=:aid"), {"aid": article_id})
+        lang_val = lang_row.scalar()
+        if lang_val and lang_val != "zh":
+            await enqueue_jobs(session, article_id, ["translate"], content_hash)
+    except Exception:
+        pass  # 翻译入队失败不影响主流程
+
+    # 7. done 检查
     await check_and_set_done(session, article_id)
 
     logger.info("complete_summarize: article=%d 完成", article_id)
+
+
+# ── 翻译任务（Phase 2 切片 2.2，§6.Z） ─────────────────────────────
+
+async def run_translate(
+    session: AsyncSession,
+    job: dict,
+    settings: Settings,
+    llm_client: LLMClient | None,
+) -> None:
+    """处理 translate 任务：全文译为中文（DESIGN §6.Z，本地 27B 后台慢任务）。"""
+    article_id = job["article_id"]
+    content_hash = job["content_hash"]
+    result = await session.execute(
+        text("SELECT title, content_text, lang FROM articles WHERE id=:aid"),
+        {"aid": article_id},
+    )
+    row = result.mappings().first()
+    if not row:
+        raise PermanentError(f"文章 {article_id} 不存在")
+    if not row["content_text"] or not row["content_text"].strip():
+        raise PermanentError(f"文章 {article_id} 内容为空")
+    if not llm_client:
+        raise PermanentError("LLM client 未初始化")
+    # 中文文章无需翻译，直接完成
+    if row["lang"] == "zh":
+        await complete_translate(session, article_id, content_hash, "", "", settings, job)
+        return
+    system, user = get_prompt("translate", title=row["title"], content=row["content_text"][:8000])
+    _gen = settings.llm.generate
+    _default = _gen.model if _gen else settings.llm.model
+    model = settings.llm.models.get("translate", _default)
+    resp = await llm_client.generate(
+        GenerateRequest(model=model, messages=[{"role": "system", "content": system}, {"role": "user", "content": user}], json_mode=False)
+    )
+    text_out = resp.text.strip() if resp.text else ""
+    if not text_out:
+        raise PermanentError("翻译结果为空")
+    # 标题翻译：简单用原文标题，前 100 字符作为译后标题（Phase 2 可单调 translate_title）
+    await complete_translate(session, article_id, content_hash, row["title"], text_out, settings, job)
+
+
+async def complete_translate(
+    session: AsyncSession,
+    article_id: int,
+    content_hash: str,
+    translated_title: str,
+    translated_content: str,
+    settings: Settings,
+    job: dict | None = None,
+) -> None:
+    """complete_translate 钩子（DESIGN §6.Z）"""
+    # 中文原文无需翻译时，translated_content 为空，直接 done
+    if not translated_content:
+        if job is not None:
+            await session.execute(
+                text("UPDATE processing_jobs SET status='succeeded', lock_until=NULL, updated_at=now() WHERE id=:jid AND status='running'"),
+                {"jid": job["id"]},
+            )
+        await check_and_set_done(session, article_id)
+        return
+    # 取 lang
+    result = await session.execute(text("SELECT lang FROM articles WHERE id=:aid"), {"aid": article_id})
+    src_lang = result.scalar() or "en"
+    _gen = settings.llm.generate
+    _default = _gen.model if _gen else settings.llm.model
+    model = settings.llm.models.get("translate", _default)
+    await session.execute(
+        text(
+            "INSERT INTO translations (article_id, src_lang, tgt_lang, model, content_hash, translated_title, translated_content) "
+            "VALUES (:aid, :src, 'zh', :model, :ch, :tt, :tc) "
+            "ON CONFLICT (article_id, src_lang, tgt_lang, model) DO UPDATE "
+            "SET content_hash=EXCLUDED.content_hash, translated_title=EXCLUDED.translated_title, translated_content=EXCLUDED.translated_content "
+            "WHERE EXCLUDED.content_hash = (SELECT content_hash FROM articles WHERE id=EXCLUDED.article_id)"
+        ),
+        {"aid": article_id, "src": src_lang, "model": model, "ch": content_hash, "tt": translated_title[:500], "tc": translated_content},
+    )
+    if job is not None:
+        await session.execute(
+            text("UPDATE processing_jobs SET status='succeeded', lock_until=NULL, updated_at=now() WHERE id=:jid AND status='running'"),
+            {"jid": job["id"]},
+        )
+    await check_and_set_done(session, article_id)
+    logger.info("complete_translate: article=%d 完成", article_id)
 
 
 # ── Embed 任务 ─────────────────────────────────────────────────────

@@ -1,0 +1,42 @@
+{% extends "base.html" %}
+{% block title %}{{ article.title }} - Topic Collection{% endblock %}
+{% block content %}
+<h1>{{ article.title }}</h1>
+<div>Status: {{ article.status }} | Lang: {{ article.lang }}</div>
+
+<div class="tabs">
+  <a href="#original">原文</a> |
+  <a href="#summary">摘要</a> |
+  <a href="#translate">翻译</a> |
+  <a href="#entities">实体</a> |
+  <a href="#topics">相关话题</a> |
+  <a href="#wiki">Wiki</a>
+</div>
+
+<div id="original">
+  <h2>原文</h2>
+  <p>{{ article.content_text }}</p>
+</div>
+
+<div id="summary">
+  <h2>摘要</h2>
+  {% if article.summary_text %}
+    <p>{{ article.summary_text }}</p>
+  {% else %}
+    <p>暂无摘要</p>
+  {% endif %}
+</div>
+
+<div id="translate" hx-get="/api/articles/{{ article.id }}/translate_status" hx-trigger="every 5s" hx-swap="innerHTML">
+  <h2>翻译</h2>
+  {% if translation %}
+    <h3>{{ translation.translated_title }}</h3>
+    <p>{{ translation.translated_content }}</p>
+  {% elif translating %}
+    <div class="banner">翻译中，请稍后</div>
+  {% else %}
+    <p>暂无翻译</p>
+    <form method="post" action="/articles/{{ article.id }}/retry/translate"><button>翻译</button></form>
+  {% endif %}
+</div>
+{% endblock %}

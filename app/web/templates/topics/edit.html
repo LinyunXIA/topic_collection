@@ -1,0 +1,1 @@
+{% extends "base.html" %}{% block content %}<h1>编辑主题</h1><form method="post"><input name="name" value="{{ topic.name if topic else '' }}"><input name="keywords_csv"><button>保存</button></form>{% endblock %}

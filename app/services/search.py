@@ -49,8 +49,11 @@ async def search(
     llm_client: LLMClient | None = None,
     mode: str = "hybrid",
     limit: int = 20,
+    use_rerank: bool = False,
+    page: int = 1,
+    page_size: int | None = None,
 ) -> SearchResponse:
-    """混合检索入口。
+    """混合检索入口（Phase 2 2.6 支持 use_rerank/page/filters）。
 
     Args:
         session: async session
@@ -59,7 +62,12 @@ async def search(
         llm_client: LLM 客户端（语义搜索需要）
         mode: "hybrid" | "semantic" | "keyword"
         limit: 返回结果数
+        use_rerank: 是否走 rerank（P2）
+        page/page_size: 分页（Phase 2）
     """
+    if page_size is not None:
+        limit = page_size
+    # 分页 offset 后续在 merged 上处理
     if not query.strip():
         return SearchResponse(results=[], total=0, mode=mode)
 
@@ -87,11 +95,36 @@ async def search(
 
     # RRF 融合
     if mode == "hybrid":
-        merged = _rrf_merge(keyword_results, semantic_results, limit)
+        merged = _rrf_merge(keyword_results, semantic_results, limit * 2)
     elif mode == "semantic":
         merged = [(aid, score) for aid, score in semantic_results[:limit]]
     else:
         merged = [(aid, score) for aid, score in keyword_results[:limit]]
+
+    # Rerank (Phase 2 2.6, §7.1)
+    if use_rerank and llm_client and merged:
+        try:
+            # 需取标题/摘要作 rerank 文档
+            tmp_ids = [aid for aid, _ in merged[:20]]
+            tmp_arts = await _get_articles(session, tmp_ids)
+            docs = [tmp_arts.get(aid, {}).get("title", "") + "\n" + tmp_arts.get(aid, {}).get("content_text", "")[:200] for aid, _ in merged[:20]]
+            reranked = await llm_client.rerank(query, docs, top_n=len(docs))
+            # rerank 返回 indices
+            indices = getattr(reranked, "indices", None) or getattr(reranked, "results", [])
+            if isinstance(indices, list) and indices and isinstance(indices[0], dict):
+                indices = [r["index"] for r in indices]
+            if indices:
+                merged = [merged[i] for i in indices if 0 <= i < len(merged)]
+        except Exception as e:
+            logger.warning("rerank 失败，保持 RRF: %s", e)
+
+    # 分页
+    total_merged = len(merged)
+    if page and page_size:
+        start = (page - 1) * page_size
+        merged = merged[start : start + page_size]
+    elif limit and total_merged > limit:
+        merged = merged[:limit]
 
     if not merged:
         return SearchResponse(results=[], total=0, mode=mode)
@@ -259,3 +292,42 @@ async def _wiki_search(
     )
     by_id = {r["id"]: dict(r) for r in result.mappings().all()}
     return [by_id[i] for i in wiki_ids if i in by_id]
+
+async def similar_articles(
+    session: AsyncSession,
+    article_id: int,
+    settings: Settings,
+    top_k: int = 10,
+) -> list[tuple[int, float]]:
+    """相似文章（Phase 2 切片 2.6，§7.1）：用 summary 向量 + 同主题加权"""
+    # 取目标 summary 向量
+    result = await session.execute(
+        text(
+            "SELECT vector FROM article_embeddings WHERE article_id=:aid AND kind='summary' AND model=:model LIMIT 1"
+        ),
+        {"aid": article_id, "model": settings.llm.embed.model},
+    )
+    row = result.first()
+    if not row:
+        return []
+    target_vec = row[0]
+    vec_str = str(target_vec) if isinstance(target_vec, str) else "[" + ",".join(str(v) for v in target_vec) + "]"
+    # 候选：同模型 + dedupe + 非自身 + 同语言，取 3*top_k 再加权
+    result = await session.execute(
+        text(
+            "SELECT a.id, ae.vector <=> CAST(:vec AS vector) AS distance, COALESCE(at.score,0) AS topic_score "
+            "FROM article_embeddings ae "
+            "JOIN articles a ON a.id=ae.article_id "
+            "LEFT JOIN article_topics at ON at.article_id=a.id AND at.topic_id IN (SELECT topic_id FROM article_topics WHERE article_id=:aid) "
+            "WHERE ae.model=:model AND ae.kind='summary' AND ae.article_id != :aid AND a.dedupe_of IS NULL "
+            "ORDER BY distance ASC LIMIT :limit"
+        ),
+        {"vec": vec_str, "model": settings.llm.embed.model, "aid": article_id, "limit": top_k * 3},
+    )
+    cand = []
+    for aid, dist, tscore in result.fetchall():
+        combined = 1.0 / (1 + float(dist)) + float(tscore or 0) * 0.3
+        cand.append((aid, combined))
+    cand.sort(key=lambda x: x[1], reverse=True)
+    return cand[:top_k]
+
