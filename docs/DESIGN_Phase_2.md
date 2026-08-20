@@ -1,10 +1,12 @@
 # 技术设计文档 — Phase 2 蓝图 — Topic Collection
 
 > 关联文档：[DESIGN.md](DESIGN.md)（Phase 1/1+/1++ 已部署，无问题，新起点） + [PRD.md](PRD.md)
-> 版本：v0.14 · 2026-08-20 · 从 DESIGN.md 拆分，Phase 2 及之后设计独立存放
+> 版本：v0.15 · 2026-08-20 · Phase 2 增量：DB 隔离 + embed/rerank 外部化 + 翻译后台 + 飞书推送
 > 本文件为 Phase 2（WebUI Dashboard + 实体/图谱/报告/API 连接器）及后续阶段的权威设计，原 DESIGN.md 仅保留 Phase 1/1+/1++ 已部署内容
 
 > **拆分说明**：2026-08-20 Phase 1/1+/1++ 全部署且 204/204，无 OPEN Issue。按用户要求将 DESIGN.md 中 Phase 2 及之后章节移至此文件，DESIGN.md 作为 Phase 1 新起点。
+
+> v0.15（2026-08-20）：**Phase 2 PRD 4 项增量**——① `§5.4.1` 生产 DB 本机 `postgres:5432 postgres/${POSTGRES_PASSKEY}` 与开发 `5433 tc/tc` 隔离，可单独 `TC_APP_ENV=prod` 启动；② `§4.3/4.7` `embed`/`rerank` 解除强制本地，`per-capability` 自由切本地/外部（`dimensions=1536` 不变，标准 `ProviderPatch`）；③ `§6.Z` 翻译本地 27B 后台慢任务，落库即原文可读、译文 `translating: true` 轮询；④ `§10.4` 日报/周报飞书 Webhook 机器人推送（`open.feishu.cn`）。
 
 ---
 
@@ -159,6 +161,15 @@ static/
 - **style**：中性、纪实风格；不允许 LLM 制造统计量（Prompt 明确给出 `stats`，要求只引用 `stats` 中的数字）
 - **后处理**：服务端 `markdown(md, extras=['toc','fenced-code','tables'])` 渲染为 HTML，同事务写 `reports.content_html`
 
+### 4.8 Phase 2 扩展：`embed`/`rerank` 自由切本地/外部（v0.15）
+
+- **现状 `DESIGN.md:208` 强制本地**（隐私）→ Phase 2 解除，`per-capability` 自由切（与 `generate` 同形），`dimensions=1536` 不变，标准开发候选未定
+- **配置**：`config/config.yaml:27` `llm.embed {backend: omlx|openai, endpoint, api_key_env, model, patch:{send_dimensions:true,dimensions_value:1536}}`，`llm.rerank` 同；`app/config.py:49` `EmbedSettings/RerankSettings{backend,endpoint,api_key_env,model}` 已含 `api_key_env`
+- **工厂**：`app/llm/factory.py:173` 去 `if backend != "omlx": raise`，改为 `if backend=="omlx" → _build_omlx else if backend in providers → _build_openai(embedding_model=cfg.model, patch=_dict_to_patch(...))`，`rerank` 同理（外部不支持则早失败提示回退 `omlx`）
+- **适配**：`app/llm/patches.py:16` 预定义 `OPENAI_PATCH(send_dimensions=true)` 或 `SILICONFLOW_PATCH` 按需，`app/llm/adapter.py:88` `send_dimensions` 走 `ProviderPatch`，`app/llm/openai.py:91` 外部 `rerank` 补 `POST /v1/rerank`
+- **存储/检索**：`vector(1536)` 锁死，`app/db/engine.py:98` 维度校验不变，`app/services/search.py:168` `WHERE model=:active` + `app/services/llm_tasks.py:259` 校验 `dim==1536`，切换模型需 `TRUNCATE article_embeddings` 或 `scripts/backfill` 重建 `HNSW`
+- **Worker**：`app/worker.py:80` 增 `rerank_llm = LLMClient(build_provider("rerank"))` 供 `§7.1` 复用，`TC_LLM__EMBED__BACKEND=openai` 环境覆盖
+
 ### 5.1.5 Phase 2 增量 DDL（与 §14 切片同步迁移）
 
 Phase 2 表已经在 Phase 1 DDL 预创建（`entities`、`relations`、`translations`、`reports`、`wiki_pages`），但 Phase 2 任务对字段/索引有微调，落到 Alembic 增量迁移：
@@ -241,6 +252,18 @@ ALTER TABLE processing_jobs ADD CONSTRAINT processing_jobs_task_check
 1. 所有 ALTER TABLE 均 `IF EXISTS/IF NOT EXISTS` 幂等（多次跑脚本不报错）
 2. 新增 CHECK 约束前先 `UPDATE processing_jobs SET task=...` 把已存在的未知 task 映射到合法值（不能因为加约束让 worker 任务跑挂）
 3. 索引加 `CONCURRENTLY`（生产无锁），dev 阶段无所谓
+
+### 5.4.1 开发/生产 DB 隔离（Phase 2 新增，v0.15）
+
+| 环境 | DSN | 宿主机端口 | 用户 | 密码来源 | 启动方式 |
+|---|---|---|---|---|---|
+| `dev`（默认） | `postgresql+asyncpg://tc:tc@localhost:5433/topic_collection` | `5433 → 5432` | `tc` | 硬编码 `tc`（仅本地 dev） | `docker compose up -d` + `TC_APP_ENV=dev`（默认） |
+| `prod` | `postgresql+asyncpg://postgres:${POSTGRES_PASSKEY}@localhost:5432/topic_collection` | `5432`（本机 postgres 默认端口） | `postgres` | 环境变量 `POSTGRES_PASSKEY`（必填，`TC_DB__PROD_DSN` 可整串覆盖） | `TC_APP_ENV=prod POSTGRES_PASSKEY=*** python -m app.worker` 可单独启动 |
+
+- **配置**：`app/config.py:13` `DBSettings{dsn, pool_size, vector_dim, prod_dsn?, env: Literal[dev,prod]=dev}`，`TC_DB__PROD_DSN` / `POSTGRES_PASSKEY` fail fast；`config/config.yaml:6` 加 `db.prod` 示例与 `TC_DB__PROD_DSN` 覆盖说明
+- **引擎**：`app/db/engine.py:25` `get_engine` 按 `env` 选 `dsn`，`check_extensions` prod 仍校验 `vector/pg_trgm/vector_dim`，`init_db` 需本机 `postgres` 库已建 `CREATE EXTENSION IF NOT EXISTS vector`（`a001` 不写，由 `scripts/init_db.py:26` 负责）
+- **备份**：`app/scheduler.py:218` `run_pg_backup` dev 走 `docker compose exec -T postgres pg_dump -U tc`，prod 走 `pg_dump -h localhost -U postgres`（`PGPASSWORD=${POSTGRES_PASSKEY}`），`TC_DB__PROD_DSN` 已覆盖则解析 host/user/db
+- **初始化**：生产库当前为空，需 `initdb` + `createdb topic_collection` + `psql -c "CREATE USER postgres WITH PASSWORD '\$POSTGRES_PASSKEY'"`（若未设）+ `python -m scripts.init_db` 幂等（`CREATE EXTENSION + alembic upgrade head`）
 
 ### 6.X Phase 2 wiki 完整版（切片 2.4 + 2.5 / 2.6 完整 Wiki）
 
@@ -732,6 +755,17 @@ RETURNING *;
 
 ---
 
+### 6.Z 中文翻译后台慢任务（Phase 2 新增，v0.15）
+
+- **模型**：本地 `Qwen3.8-27B-MLX-4bit`（与 `summarize` 复用 27B，不单设轻量；`llm.translate.backend: omlx|openai` 可单设，但默认本地，不阻塞阅读）
+- **触发**：`complete_summarize` 同事务 `if lang != 'zh' → enqueue_jobs([translate], priority=7)`（最低，`§6` 表）；`auto_translate` 可配，`lang==zh` 跳过
+- **执行**：`run_translate(session,job,llm)` 读 `articles.content_text|content_md + title` → `get_prompt("translate")` → `generate (27B, 180s)` → `translations` upsert `UNIQUE(article_id,src_lang,tgt_lang,model) WHERE content_hash` + `check_and_set_done`；`processing_jobs` 长期 `queued` 亦不阻塞 `articles.status → done`（`done` 由 `queued/running` 是否为空判定，`translate` 缺席即满足）
+- **展示**：`GET /articles/{id}` 查 `translations` 无行 → 返回 `translating: true`，前端徽标 `翻译中，请稍后` + `HTMX every 5s hx-get /api/articles/{id}/translate_status` 轮询；有行则 `translated_title/translated_content` 与原文双栏，`CLI tc article <id>` 同理
+- **Worker**：`_TASK_CAPABILITY translate→generate`（`app/worker.py:31`），`handlers translate→run_translate`，`drain_queue` 不回灌 `translate`（仅 `embed_core/summarize`），`recover` 租约保护
+- **配置**：`config/config.yaml: llm.translate {backend: omlx, model: Qwen3.8-27B-MLX-4bit}`，`TC_LLM__TRANSLATE__BACKEND` 可覆盖
+
+---
+
 ### 7.1 Phase 2 检索增强（Rerank + 相似文章 + Wiki 跨表检索，§14 切片 2.6）
 
 #### Rerank 路径（Cohere 风格入参，§15 #9）
@@ -1152,6 +1186,14 @@ Phase 2 加：
 - `tc reclassify`（仅 30 天）：万级 articles 也只需几分钟（`match_keywords` 内存 jieba 匹配，无 LLM 调用）
 - `tc backfill extract_entities`（万级）：27B 50 秒/篇 × 10000 = 数小时；放后台跑，提供进度条 + 中断恢复
 - `tc report generate --now`：直接调 `generate_daily_report`，不等待 scheduler；调试用
+
+### 10.4 飞书 Webhook 机器人推送（Phase 2 新增，v0.15）
+
+- **选型**：先走 **WebHook 机器人**（中国版 `open.feishu.cn`），`POST https://open.feishu.cn/open-apis/bot/v2/hook/{token}` 推送 Markdown 卡片，无需鉴权续期；正式 `im.message.create + drive` 上传预留（需 `app_id/app_secret` 换 `tenant_access_token`，可 @人/建文档）
+- **配置**：`app/config.py:109` `FeishuSettings{enabled: bool=False, webhook_env: str="FEISHU_WEBHOOK", events: list[str]=["daily","weekly"]}`，全走环境变量（`FEISHU_WEBHOOK=https://open.feishu.cn/...`），`config/config.yaml: schedule.feishu {enabled, webhook_env}` 示例，`PRD §12` 外发白名单
+- **服务**：`app/services/notify.py: send_feishu_markdown(webhook, title, markdown)` → `httpx POST {msg_type: "post", content: {post: {zh_cn: {title, content: [[{tag:"text",text:...}]]}}}}` 或 `interactive` 卡片，10s 超时，失败写 `fetch_events(event_type="report_push_failed")` 不回滚 `reports` 落库
+- **触发**：`reports.status → succeeded` 后链式 `if feishu.enabled and report_type in events → send_feishu_markdown`，或 `app/scheduler.py:253` 定时 `feishu_notify` 复用日报触发；`CLI tc report retry` 同链
+- **安全**：`webhook` 含 `token` 走 `env` 不入库不入 repo，`open.feishu.cn` 中国版域名（国际 `open.larksuite.com` 可切），失败不阻塞报告生成
 
 ---
 
