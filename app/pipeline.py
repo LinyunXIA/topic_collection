@@ -32,8 +32,15 @@ TASK_PRIORITY = {
     "embed_summary": 6,
 }
 
-# 退避时间（瞬时错误）
+# 瞬时错误的阶梯退避，封顶 15m（DESIGN §6/§11）
 TRANSIENT_BACKOFFS = ["1 minute", "5 minutes", "15 minutes"]
+
+
+def _transient_backoff(step: int) -> str:
+    """按已失败次数取退避档位，超出则停在最后一档（封顶）。"""
+    if step < 0:
+        step = 0
+    return TRANSIENT_BACKOFFS[min(step, len(TRANSIENT_BACKOFFS) - 1)]
 
 
 # ── 入队 ──────────────────────────────────────────────────────────
@@ -114,22 +121,6 @@ async def pick_and_claim(session: AsyncSession) -> dict | None:
     return dict(row) if row else None
 
 
-# ── 续租 ──────────────────────────────────────────────────────────
-
-async def renew_lease(session_factory, job_id: int) -> None:
-    """续租 lock_until（随处理协程，不另起 watchdog）。"""
-    async with session_factory() as session:
-        await session.execute(
-            text(
-                "UPDATE processing_jobs "
-                "SET lock_until=now() + INTERVAL '5 minutes' "
-                "WHERE id=:jid AND status='running'"
-            ),
-            {"jid": job_id},
-        )
-        await session.commit()
-
-
 # ── 失败处理 ──────────────────────────────────────────────────────
 
 async def handle_transient_failure(
@@ -170,23 +161,27 @@ async def handle_transient_failure(
             logger.warning("Job %d 超时转死信 (timeouts=%d)", job_id, timeouts)
             return
 
+        backoff = _transient_backoff(timeouts - 1)
         await session.execute(
             text(
                 "UPDATE processing_jobs "
                 "SET status='queued', error_class='transient', "
                 "consecutive_timeouts=:timeouts, error=:err, "
-                "lock_until=now() + INTERVAL '15 minutes', updated_at=now() "
+                f"lock_until=now() + INTERVAL '{backoff}', updated_at=now() "
                 "WHERE id=:jid AND status='running'"
             ),
             {"jid": job_id, "timeouts": timeouts, "err": error_msg},
         )
     else:
-        # 连续超时（非首次）重置为 1，否则保持 0
+        # 非超时的瞬时错误：必须把 consecutive_timeouts 清零，
+        # 否则 "连续超时" 计数会跨越中间的非超时失败继续累加，
+        # 病态文章判定（3 次连续超时转死信）就会误伤正常任务。
         await session.execute(
             text(
                 "UPDATE processing_jobs "
                 "SET status='queued', error_class='transient', error=:err, "
-                "lock_until=now() + INTERVAL '5 minutes', updated_at=now() "
+                "consecutive_timeouts=0, "
+                f"lock_until=now() + INTERVAL '{TRANSIENT_BACKOFFS[0]}', updated_at=now() "
                 "WHERE id=:jid AND status='running'"
             ),
             {"jid": job_id, "err": error_msg},
@@ -359,9 +354,12 @@ async def process_job_with_lease_renewal(
                     # status='running' 留到天荒地老，renewer 还在续 lease。
                     await session.execute(
                         text(
+                            # 必须带 status='running' 守卫：job 可能已被
+                            # 近似去重或并发 enqueue 置为 'superseded'，
+                            # 无守卫会把它复活成 'succeeded'
                             "UPDATE processing_jobs "
                             "SET status='succeeded', lock_until=NULL, updated_at=now() "
-                            "WHERE id=:jid"
+                            "WHERE id=:jid AND status='running'"
                         ),
                         {"jid": job["id"]},
                     )
@@ -406,6 +404,8 @@ async def process_job_with_lease_renewal(
 
 # worker_loop 周期回收间隔（秒）
 WORKER_RECOVER_PERIOD_S = 60
+# LLM 不健康时的重探间隔（秒）
+HEALTH_RECHECK_PERIOD_S = 5
 
 
 async def worker_loop(
@@ -441,10 +441,19 @@ async def worker_loop(
                 await recover_interrupted(session_factory)
                 last_recover_at = now_t
 
-            # 领取门控：不 healthy 则 sleep 退避
+            # 领取门控：不 healthy 则退避，并重新探测。
+            # 只 sleep 不重探的话，启动时 LLM 恰好不可用就会永久空转
+            # ——healthy 只有 healthcheck() 会写，没人再调它（PRD 验收 7）。
             if llm_client and not llm_client.is_healthy:
-                logger.debug("LLM 不健康，跳过领取，sleep 5s")
-                await asyncio.sleep(5)
+                await asyncio.sleep(HEALTH_RECHECK_PERIOD_S)
+                try:
+                    status = await llm_client.healthcheck()
+                    if status.healthy:
+                        logger.info("LLM 恢复可用，继续消费队列")
+                    else:
+                        logger.debug("LLM 仍不可用: %s", status.error)
+                except Exception as e:
+                    logger.debug("healthcheck 异常: %s", e)
                 continue
 
             async with session_factory() as session:

@@ -114,10 +114,13 @@ async def search(
                 kind=mode,
             ))
 
-    # 同时搜索 wiki_pages
+    # 同时搜索 wiki_pages —— 按 ref_id 与已命中的 article 去重（DESIGN §7）。
+    # 不能拿 wiki_pages.id 去比 article id：两者不是同一个 id 空间，
+    # 撞号会误删、不撞号会漏删。
     wiki_results = await _wiki_search(session, query, limit)
+    seen_article_ids = {r.id for r in results}
     for wr in wiki_results:
-        if wr["id"] not in {r.id for r in results}:
+        if not (wr["kind"] == "article" and wr["ref_id"] in seen_article_ids):
             results.append(SearchResult(
                 id=wr["id"],
                 title=wr["title"] or "",
@@ -226,11 +229,15 @@ async def _wiki_search(
     query: str,
     limit: int,
 ) -> list[dict]:
-    """搜索 wiki_pages 词条。"""
-    q_joined = await jieba_join_async(query)
+    """搜索 wiki_pages 词条。
+
+    TODO(Phase 2): wiki_pages 没有 tsvector 列，这里只能做 ILIKE 子串匹配，
+    不是 PRD 验收 5 要求的全文搜索（多词查询、排序、jieba 分词都不支持）。
+    需要新增迁移加 tsv 列后改写。
+    """
     result = await session.execute(
         text(
-            "SELECT id, title, content_md "
+            "SELECT id, kind, ref_id, title, content_md "
             "FROM wiki_pages "
             "WHERE content_md ILIKE :q "
             "OR title ILIKE :q "
