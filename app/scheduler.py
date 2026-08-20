@@ -223,10 +223,11 @@ async def healthcheck(settings, llm_client=None) -> None:
         llm_client.healthy = False
 
 
-def run_pg_backup(settings) -> None:
+async def run_pg_backup(settings) -> None:
     """pg_dump 备份（DESIGN §10，每日 03:00）。
 
     走 docker compose exec，宿主机不一定有 pg_dump。
+    使用 asyncio.to_thread 避免 subprocess.run 阻塞事件循环。
     """
     backup_dir = Path(settings.data_dir) / "backups"
     backup_dir.mkdir(parents=True, exist_ok=True)
@@ -235,7 +236,8 @@ def run_pg_backup(settings) -> None:
     backup_file = backup_dir / f"tc-{timestamp}.sql.gz"
 
     try:
-        result = subprocess.run(
+        result = await asyncio.to_thread(
+            subprocess.run,
             [
                 "docker", "compose", "exec", "-T", "postgres",
                 "pg_dump", "-U", "tc", "-d", "topic_collection",
