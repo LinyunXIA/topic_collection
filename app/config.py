@@ -155,28 +155,26 @@ def _resolve_prod_dsn(settings: Settings) -> None:
     # 已有 prod_dsn（可能来自 TC_DB__PROD_DSN 或 config.yaml db.prod_dsn）
     prod_dsn = settings.db.prod_dsn
     if prod_dsn:
-        # 替换占位
+        # 替换占位；无密码则信任连接（去掉 :${POSTGRES_PASSKEY}）
         if "${POSTGRES_PASSKEY}" in prod_dsn or "$POSTGRES_PASSKEY" in prod_dsn:
             pwd = os.environ.get("POSTGRES_PASSKEY")
-            if not pwd:
-                raise RuntimeError(
-                    "TC_APP_ENV=prod 且 prod_dsn 含 ${POSTGRES_PASSKEY} 占位，但环境变量 POSTGRES_PASSKEY 未设置"
-                )
-            prod_dsn = prod_dsn.replace("${POSTGRES_PASSKEY}", pwd).replace("$POSTGRES_PASSKEY", pwd)
+            if pwd:
+                prod_dsn = prod_dsn.replace("${POSTGRES_PASSKEY}", pwd).replace("$POSTGRES_PASSKEY", pwd)
+            else:
+                # 去掉占位及前面的冒号，避免 postgres:@localhost
+                prod_dsn = prod_dsn.replace(":${POSTGRES_PASSKEY}", "").replace("${POSTGRES_PASSKEY}", "").replace(":$POSTGRES_PASSKEY", "").replace("$POSTGRES_PASSKEY", "")
             settings.db.prod_dsn = prod_dsn
         # 生效：覆盖 dsn
         settings.db.dsn = prod_dsn
         return
-    # 未配 prod_dsn，尝试用 POSTGRES_PASSKEY 构造默认
+    # 未配 prod_dsn，尝试用 POSTGRES_PASSKEY 构造默认；无密码则信任连接
     pwd = os.environ.get("POSTGRES_PASSKEY")
     if pwd:
         settings.db.dsn = f"postgresql+asyncpg://postgres:{pwd}@localhost:5432/topic_collection"
-        settings.db.prod_dsn = settings.db.dsn
-        return
-    raise RuntimeError(
-        "TC_APP_ENV=prod 但未配置 db.prod_dsn 且 POSTGRES_PASSKEY 未设置；"
-        "请设 TC_DB__PROD_DSN 或 POSTGRES_PASSKEY"
-    )
+    else:
+        settings.db.dsn = "postgresql+asyncpg://postgres@localhost:5432/topic_collection"
+    settings.db.prod_dsn = settings.db.dsn
+    return
 
 
 def load_settings(config_path: str | Path | None = None) -> Settings:

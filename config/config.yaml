@@ -6,7 +6,7 @@ data_dir: ./data
 
 db:
   dsn: postgresql+asyncpg://tc:tc@localhost:5433/topic_collection  # dev: 5433 tc/tc；prod: TC_DB__PROD_DSN 或 POSTGRES_PASSKEY 构造
-  # prod_dsn: postgresql+asyncpg://postgres:${POSTGRES_PASSKEY}@localhost:5432/topic_collection  # prod 示例，TC_DB__PROD_DSN 覆盖
+  prod_dsn: postgresql+asyncpg://postgres:${POSTGRES_PASSKEY}@localhost:5432/topic_collection  # prod 示例，TC_DB__PROD_DSN 覆盖
   pool_size: 5
   vector_dim: 1536            # Qwen3-Embedding 输出经 dimensions=1536 截断
 
