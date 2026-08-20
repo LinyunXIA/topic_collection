@@ -24,22 +24,13 @@ from app.llm.base import (
 
 logger = logging.getLogger(__name__)
 
-# 瞬时可重试的 HTTP 状态码
-_TRANSIENT_STATUS_CODES = {408, 429, 500, 502, 503, 504}
 # 永久错误的 HTTP 状态码（不退避，直接抛）
+# 瞬时错误（5xx/超时/连接拒绝）由 _retry_transient 内联走退避重试，不再单独分类
 _PERMANENT_STATUS_CODES = {400, 401, 403}
 
 
 class PermanentError(Exception):
     """永久/配置错误（401/403/400），不走指数退避。"""
-
-    def __init__(self, message: str, status_code: int | None = None):
-        super().__init__(message)
-        self.status_code = status_code
-
-
-class TransientError(Exception):
-    """瞬时错误（5xx/超时/连接拒绝），走指数退避。"""
 
     def __init__(self, message: str, status_code: int | None = None):
         super().__init__(message)
@@ -113,18 +104,6 @@ class LLMClient:
                     )
                     await asyncio.sleep(delay)
         raise last_exc  # type: ignore[misc]
-
-    def _classify_http_error(self, status_code: int, message: str):
-        """根据 HTTP 状态码分类为永久/瞬时错误。"""
-        if status_code in _PERMANENT_STATUS_CODES:
-            raise PermanentError(
-                f"永久错误 {status_code}: {message}", status_code
-            )
-        if status_code in _TRANSIENT_STATUS_CODES or status_code >= 500:
-            raise TransientError(
-                f"瞬时错误 {status_code}: {message}", status_code
-            )
-        raise Exception(f"HTTP {status_code}: {message}")
 
     async def generate(self, req: GenerateRequest) -> GenerateResult:
         """生成（带并发控制 + 重试）。"""
