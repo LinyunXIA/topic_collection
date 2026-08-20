@@ -658,3 +658,57 @@ class TestCleanupFetchEvents:
         finally:
             await factory.dispose()
             await eng.dispose()
+
+
+class TestRunPgBackup:
+    """验证 run_pg_backup 使用 asyncio.to_thread 不阻塞事件循环（fix #4）。"""
+
+    @pytest.mark.asyncio
+    async def test_is_coroutine(self):
+        """run_pg_backup 应为 async 函数。"""
+        import inspect
+        from app.scheduler import run_pg_backup
+
+        assert inspect.iscoroutinefunction(run_pg_backup)
+
+    @pytest.mark.asyncio
+    async def test_uses_to_thread(self, tmp_path):
+        """run_pg_backup 通过 asyncio.to_thread 调用 subprocess.run，不阻塞事件循环。"""
+        from unittest.mock import patch, MagicMock
+        from app.scheduler import run_pg_backup
+        from app.config import load_settings
+
+        settings = load_settings()
+
+        # 模拟 subprocess.run 返回成功
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"SET 1\nSELECT 1\n"
+
+        # 验证 asyncio.to_thread 被调用（而非直接调用 subprocess.run）
+        with patch("app.scheduler.asyncio.to_thread", wraps=__import__("asyncio").to_thread) as mock_to_thread, \
+             patch("app.scheduler.subprocess.run", return_value=mock_result):
+            await run_pg_backup(settings)
+            mock_to_thread.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_creates_backup_file(self, tmp_path):
+        """备份成功时应生成 .sql.gz 文件。"""
+        from unittest.mock import patch, MagicMock
+        from app.scheduler import run_pg_backup
+        from app.config import load_settings
+
+        settings = load_settings()
+        # 使用 tmp_path 作为 data_dir
+        settings.data_dir = str(tmp_path)
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = b"SET 1\nSELECT 1\n"
+
+        with patch("app.scheduler.subprocess.run", return_value=mock_result):
+            await run_pg_backup(settings)
+
+        backups = list((tmp_path / "backups").glob("tc-*.sql.gz"))
+        assert len(backups) == 1
+        assert backups[0].stat().st_size > 0
