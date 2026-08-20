@@ -1191,15 +1191,18 @@ Phase 2 加：
 
 ---
 
-## 14. Phase 2 实施清单（v0.15 优先级，开发/生产隔离最高）
+## 14. Phase 2 实施清单（v0.15 执行序，切片与优先级已对齐）
 
-> **优先级**：生产 DB 隔离 P0 > embed/rerank 外部化 P1 > 翻译后台 P2 > 飞书推送 P3 > 原切片 2.1→2.8。按此顺序交付可最大化阻塞解除。
+> **执行序（切片号即优先级序）**：`2.0 DB隔离 P0` → `2.1 WebUI P1` → `2.2 翻译 P2` → `2.3 实体 P2` → `2.4 图谱 P3` → `2.5 报告 P3` → `2.6 检索 P3`（含 `§4.8 embed/rerank` P1 部分提前至 `2.0` 后并行）→ `2.7 API P3` → `2.8 验收`；`10.4 飞书` 紧接 `2.5` 报告后（P3）。`2.0` 新增为 P0 前置，`2.1 WebUI` 不再隐含 DB 隔离，`P1 embed/rerank` 随 `2.0` 并行、代码量小。
 
-**Phase 2（WebUI Dashboard + 实体/翻译/报告/图谱/高级检索/API 连接器）**：
+**切片 2.0 生产 DB + 进程隔离（P0，v0.15 新增，最高）**：
+- [ ] 2.0.1 `app/config.py:13` `DBSettings{env: dev|prod, prod_dsn}` + `TC_DB__PROD_DSN`/`POSTGRES_PASSKEY` fail fast，`config/config.yaml:6` `db.prod` 示例
+- [ ] 2.0.2 `app/db/engine.py:25` `get_engine` 按 `env` 选 `dsn`，`check_extensions` prod 仍 `vector/pg_trgm`，`scripts/init_db.py:26` 本机 `postgres:5432` 幂等 `CREATE EXTENSION`
+- [ ] 2.0.3 `docker-compose.yml:10` 保留 `5433 tc/tc` dev，`app/scheduler.py:218` `run_pg_backup` prod 走 `pg_dump -h localhost -U postgres PGPASSWORD`，`Makefile` 加 `make prod: TC_APP_ENV=prod`
+- [ ] 2.0.4 初始化验证：`initdb` 空库 → `createdb topic_collection` → `alembic upgrade head` → `pytest 204`，`TC_APP_ENV=prod` 可单独启动 `python -m app.worker`
+- [ ] D0 `a007` 迁移幂等 + `engine` 单测（`prod` 分支）
 
-> Phase 2 在 Phase 1+ 基础上展开。**所有切片 [ ] 实施完后** 新增测试覆盖 §13 D7–D15；§5.1.5 增量 DDL 完整迁移在本批次完成。
-
-**切片 2.1 WebUI Dashboard 骨架（验收 1 回归 + 2 部分 UI 触发）**：
+**切片 2.1 WebUI Dashboard 骨架（P1，验收 1 回归 + 2 部分 UI 触发）**：
 - [ ] 2.1.1 `app/main.py: create_app()` + lifespan 顺序：init_db → probe oMLX 三端点 → recover_interrupted → 启动 scheduler + worker task；`uvicorn app.main:app --host 127.0.0.1 --port 7111`
 - [ ] 2.1.2 `app/api/{deps,health,dashboard,settings}.py` 路由骨架，**全部只做路由 + 调 service**，业务逻辑零侵入
 - [ ] 2.1.3 `app/web/templates/base.html` + `components/` + `static/` vendored JS（htmx/echarts/sortable/pico）——见 §8.1 vendored 资源清单
@@ -1264,11 +1267,11 @@ Phase 2 加：
 - [ ] 2.8.5 整体性能：单篇 27B 文章 end-to-end < 2min；搜索 P95 < 100ms；图谱加载 < 1s
 - [ ] 2.8.6 ≥ 162 + N 新测试全部通过（D7–D15），CI 全绿
 
-> **v0.15 增量与优先级说明**：
-> - **P0 `§5.4.1` 生产 DB 隔离**：`dev 5433 tc/tc` vs `prod 5432 postgres/${POSTGRES_PASSKEY}`，`TC_APP_ENV=prod` 可单独启动，需初始化（最高，阻塞生产）
-> - **P1 `§4.8` `embed`/`rerank` 外部化**：`per-capability` 自由切，`dimensions=1536` 不变，标准 `ProviderPatch`，候选未定按标准开发
-> - **P2 `§6.Z` 翻译后台**：本地 27B，后台慢任务，`translating: true` 轮询，原文可读
-> - **P3 `§10.4` 飞书 Webhook**：`open.feishu.cn` 机器人先行，`reports succeeded` 链式推送
+> **v0.15 增量与优先级说明（与 §14 执行序一致，切片号即优先级序）**：
+> - **P0 `§5.4.1` 生产 DB 隔离（`2.0`）**：`dev 5433 tc/tc` vs `prod 5432 postgres/${POSTGRES_PASSKEY}`，`TC_APP_ENV=prod` 可单独启动，需初始化（最高，阻塞生产，`2.1 WebUI` 不再隐含）
+> - **P1 `2.1 WebUI` + `§4.8` `embed`/`rerank` 外部化（`2.6` 前置并行）**：WebUI 为 Phase 2 入口，`embed` 小改解锁检索/成本，二者可并行于 `2.0` 后
+> - **P2 `§6.Z` 翻译后台（`2.2`）+ `2.3 实体`/`2.4 图谱`**：翻译本地 27B 慢后台，原文可读；实体为图谱前置
+> - **P3 `2.5 报告` → `10.4 飞书` → `2.6 检索` → `2.7 API` → `2.8 验收`**：飞书紧接报告后，检索含 `rerank` 已在 P1 部分完成
 
 ---
 
