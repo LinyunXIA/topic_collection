@@ -116,3 +116,56 @@ async def search_articles_fts(
         {"q": q_joined, "limit": limit},
     )
     return [row[0] for row in result.fetchall()]
+
+
+async def update_wiki_tsv(
+    session: AsyncSession,
+    wiki_id: int,
+) -> None:
+    """刷新 wiki_pages 的 tsv 列（DESIGN §5.3，fix #6）。
+
+    与 update_article_tsv 同一模式：
+      to_tsvector('simple', jieba_join(title || ' ' || content_md))
+
+    调用方：app/services/wiki.py:generate_article_wiki 在 upsert 之后调用。
+    缺 title/content_md 时从 wiki_pages 表读回（兜底）。
+    """
+    row = (
+        await session.execute(
+            text("SELECT title, content_md FROM wiki_pages WHERE id = :wid"),
+            {"wid": wiki_id},
+        )
+    ).mappings().first()
+    if not row:
+        return
+
+    raw = f"{row['title'] or ''} {row['content_md'] or ''}"
+    joined = await jieba_join_async(raw)
+
+    await session.execute(
+        text("UPDATE wiki_pages SET tsv = to_tsvector('simple', :joined) WHERE id = :wid"),
+        {"joined": joined, "wid": wiki_id},
+    )
+
+
+async def search_wiki_fts(
+    session: AsyncSession,
+    query: str,
+    limit: int = 20,
+) -> list[int]:
+    """Wiki 全文搜索，返回 wiki_pages.id 列表（按 ts_rank 降序，DESIGN §5.3）。
+
+    与 search_articles_fts 同模式：jieba 预切词 + websearch_to_tsquery('simple', ...)
+    + ts_rank 排序。PRD §15 验收 5 要求 Wiki 多词查询命中。
+    """
+    q_joined = await jieba_join_async(query)
+    result = await session.execute(
+        text(
+            "SELECT id FROM wiki_pages "
+            "WHERE tsv @@ websearch_to_tsquery('simple', :q) "
+            "ORDER BY ts_rank(tsv, websearch_to_tsquery('simple', :q)) DESC "
+            "LIMIT :limit"
+        ),
+        {"q": q_joined, "limit": limit},
+    )
+    return [row[0] for row in result.fetchall()]

@@ -247,6 +247,10 @@ class WikiPage(Base):
     slug: Mapped[str] = mapped_column(String, unique=True, nullable=False)
     content_md: Mapped[str | None] = mapped_column(Text)
     related_json: Mapped[dict | None] = mapped_column(JSONB)
+    # tsv 列真实类型 = tsvector，由 a003_wiki_tsv 迁移手工加 + GIN 索引，
+    # 应用层通过 app.db.fts.update_wiki_tsv 写入 jieba'd tsv（与 articles.tsv 同模式）。
+    # alembic autogenerate 会误报 tsv 类型 → 已知约束，迁移手工管。
+    tsv: Mapped[Any | None] = mapped_column(TSVECTOR)  # noqa: placeholder; see comment
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

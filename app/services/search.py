@@ -15,7 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.config import Settings
-from app.db.fts import jieba_join_async
+from app.db.fts import jieba_join_async, search_wiki_fts
 from app.llm.client import LLMClient
 
 logger = logging.getLogger(__name__)
@@ -230,20 +230,21 @@ async def _wiki_search(
     query: str,
     limit: int,
 ) -> list[dict]:
-    """搜索 wiki_pages 词条。
+    """搜索 wiki_pages 词条（DESIGN §7.1，fix #6）。
 
-    TODO(Phase 2): wiki_pages 没有 tsvector 列，这里只能做 ILIKE 子串匹配，
-    不是 PRD 验收 5 要求的全文搜索（多词查询、排序、jieba 分词都不支持）。
-    需要新增迁移加 tsv 列后改写。
+    走 tsv @@ websearch_to_tsquery('simple', jieba_join(q)) + ts_rank 排序，
+    与 search_wiki 一致——这是混合检索的 wiki 通道。Phase 2 §7.1 跨表 RRF 融合
+    也基于这条路径；之前 ILIKE 子串匹配的 TODO(Phase 2) 已不再适用。
     """
+    wiki_ids = await search_wiki_fts(session, query, limit)
+    if not wiki_ids:
+        return []
     result = await session.execute(
         text(
             "SELECT id, kind, ref_id, title, content_md "
-            "FROM wiki_pages "
-            "WHERE content_md ILIKE :q "
-            "OR title ILIKE :q "
-            "LIMIT :limit"
+            "FROM wiki_pages WHERE id = ANY(:ids)"
         ),
-        {"q": f"%{query}%", "limit": limit},
+        {"ids": wiki_ids},
     )
-    return [dict(row) for row in result.mappings().all()]
+    by_id = {r["id"]: dict(r) for r in result.mappings().all()}
+    return [by_id[i] for i in wiki_ids if i in by_id]
