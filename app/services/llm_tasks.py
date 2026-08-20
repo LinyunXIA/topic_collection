@@ -130,9 +130,11 @@ async def complete_summarize(
 
     # 2. tsv 刷新（关键词通道补全）
     key_points_text = " ".join(key_points) if key_points else ""
+    # title/content_text 留空 = 由 update_article_tsv 从 articles 读回原文段一起重建。
+    # tsv 是整列覆盖写，只传 summary 段会把入库时建好的原文索引抹掉（DESIGN §5.3）。
     await update_article_tsv(
         session, article_id,
-        title="", content_text="",  # 空 = 只补 summary 段
+        title="", content_text="",
         summary_text=summary_text,
         key_points_text=key_points_text,
     )
@@ -197,7 +199,7 @@ async def run_embed_core(
     await complete_embed(session, article_id, content_hash, [
         ("title", title_resp.embeddings[0], title_resp.dim),
         ("body", body_resp.embeddings[0], body_resp.dim),
-    ], settings)
+    ], settings, job=job)
 
 
 async def run_embed_summary(
@@ -213,9 +215,13 @@ async def run_embed_summary(
     result = await session.execute(
         text(
             "SELECT summary_text FROM summaries "
-            "WHERE article_id=:aid AND lang='zh'"
+            "WHERE article_id=:aid AND lang='zh' "
+            "ORDER BY (model = :model) DESC, id DESC LIMIT 1"
         ),
-        {"aid": article_id},
+        {"aid": article_id, "model": settings.llm.models.get(
+            "summarize",
+            settings.llm.generate.model if settings.llm.generate else settings.llm.model,
+        )},
     )
     row = result.first()
     if not row or not row[0]:
@@ -227,7 +233,7 @@ async def run_embed_summary(
     resp = await llm_client.embed([row[0]])
     await complete_embed(session, article_id, content_hash, [
         ("summary", resp.embeddings[0], resp.dim),
-    ], settings)
+    ], settings, job=job)
 
 
 async def complete_embed(
@@ -335,7 +341,7 @@ async def _check_near_dedup(
     lang_filter = "AND a.lang = :lang" if same_lang else ""
     result = await session.execute(
         text(
-            f"SELECT ae.article_id, ae.vector <=> :vec AS distance "
+            f"SELECT ae.article_id, ae.vector <=> CAST(:vec AS vector) AS distance "
             f"FROM article_embeddings ae "
             f"JOIN articles a ON a.id = ae.article_id "
             f"WHERE ae.kind='body' AND ae.model=:model "
@@ -343,7 +349,7 @@ async def _check_near_dedup(
             f"AND a.dedupe_of IS NULL "
             f"AND a.fetched_at > now() - INTERVAL '{window_days} days' "
             f"{lang_filter} "
-            f"ORDER BY ae.vector <=> :vec "
+            f"ORDER BY ae.vector <=> CAST(:vec AS vector) "
             f"LIMIT :k"
         ),
         {
@@ -366,23 +372,26 @@ async def _check_near_dedup(
             winner_id = await _find_ultimate_winner(session, cand_id)
 
             # loser status='done' + dedupe_of
-            await session.execute(
+            loser_res = await session.execute(
                 text(
                     "UPDATE articles SET status='done', dedupe_of=:winner "
                     "WHERE id=:aid AND status='processing'"
                 ),
                 {"aid": article_id, "winner": winner_id},
             )
+            merged = loser_res.rowcount > 0
 
-            # mention_count 累计转移到 winner
-            await session.execute(
-                text(
-                    "UPDATE articles SET mention_count = mention_count + "
-                    "  (SELECT mention_count FROM articles WHERE id=:aid) "
-                    "WHERE id=:winner"
-                ),
-                {"aid": article_id, "winner": winner_id},
-            )
+            # mention_count 累计转移到 winner —— 仅在 loser 本次确实被标记时执行，
+            # 否则重跑同一 job 会重复累加
+            if merged:
+                await session.execute(
+                    text(
+                        "UPDATE articles SET mention_count = mention_count + "
+                        "  (SELECT mention_count FROM articles WHERE id=:aid) "
+                        "WHERE id=:winner"
+                    ),
+                    {"aid": article_id, "winner": winner_id},
+                )
 
             # supersede summarize/topics/wiki
             await session.execute(
@@ -401,13 +410,12 @@ async def _check_near_dedup(
                 {"aid": article_id},
             )
 
-            # 审计
-            await session.execute(
-                text(
-                    "INSERT INTO fetch_events (feed_id, event_type, ok, item_count) "
-                    "VALUES (0, 'dedup_merge', true, :cnt)"
-                ),
-                {"cnt": 1},
+            # 审计：fetch_events.feed_id 是 NOT NULL + FK→feeds.id，
+            # 这里没有 feed 上下文，写 0 会外键违例并回滚整个 embed 事务。
+            # TODO(Phase 2): 建独立的 dedup_events 审计表后改回落库。
+            logger.info(
+                "dedup_merge: loser=%d winner=%d distance=%.4f",
+                article_id, winner_id, distance,
             )
 
             break  # 只合并第一个命中

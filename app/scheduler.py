@@ -25,9 +25,11 @@ logger = logging.getLogger(__name__)
 async def fetch_all(settings) -> None:
     """遍历所有 enabled feeds 抓取（DESIGN §10）。"""
     from app.db.engine import get_session_factory
+    from app.db.fts import update_article_tsv
     from app.ingest.feeds import FeedFetcher
     from app.ingest.dedup import url_hash, content_hash
     from app.services.cleaner import clean_article
+    from app.services.topics import match_keywords
     from app.pipeline import enqueue_jobs
 
     fetcher = FeedFetcher(settings)
@@ -59,11 +61,19 @@ async def fetch_all(settings) -> None:
                     uh = url_hash(item.source_url)
                     ch = content_hash(item.content_text)
 
-                    # 幂等检查
+                    # 幂等检查：已存在则累计 mention_count（与 cli._feeds_fetch 保持一致）
                     existing = await session.execute(
                         text("SELECT id FROM articles WHERE url_hash=:uh"), {"uh": uh}
                     )
-                    if existing.first():
+                    existing_row = existing.first()
+                    if existing_row:
+                        await session.execute(
+                            text(
+                                "UPDATE articles SET mention_count=mention_count+1 "
+                                "WHERE id=:aid"
+                            ),
+                            {"aid": existing_row[0]},
+                        )
                         continue
 
                     cleaned = await clean_article(item.content_html or item.content_text, item.title)
@@ -88,8 +98,18 @@ async def fetch_all(settings) -> None:
                         text("SELECT id FROM articles WHERE url_hash=:uh"), {"uh": uh}
                     )
                     art_row = art_result.first()
+                    if art_row:
+                        # tsv 阶段一（DESIGN §5.3）——与 cli._feeds_fetch 保持一致
+                        await update_article_tsv(
+                            session, art_row[0],
+                            title=item.title or "",
+                            content_text=cleaned["content_text"] or "",
+                        )
                     if art_row and status == "pending":
                         await enqueue_jobs(session, art_row[0], ["embed_core", "summarize"], ch)
+                        # 关键词快路径：不做这步的话 complete_summarize 里 has_keyword 恒为
+                        # false，每篇文章都会白烧一次 LLM 分类（PRD 验收 3）
+                        await match_keywords(session, art_row[0])
                     new_count += 1
 
                 await session.execute(

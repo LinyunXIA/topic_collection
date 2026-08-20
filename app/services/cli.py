@@ -23,7 +23,7 @@ from sqlalchemy import text
 
 from app.config import load_settings
 from app.db.engine import get_engine, get_session, get_session_factory, check_extensions, dispose_engine
-from app.db.fts import search_articles_fts
+from app.db.fts import search_articles_fts, update_article_tsv
 from app.ingest.dedup import url_hash, content_hash
 from app.services.cleaner import clean_article
 from app.services.llm_tasks import (
@@ -230,6 +230,14 @@ async def _feeds_fetch(feed_name: str | None = None, count: int | None = None):
                         {"uh": u_hash},
                     )
                     art_row = art_result.first()
+                    if art_row:
+                        # tsv 阶段一：title + content_text（DESIGN §5.3）
+                        # 不做这步的话 articles.tsv 一直是 NULL，关键词检索永远搜不到原文
+                        await update_article_tsv(
+                            session, art_row[0],
+                            title=item.title or "",
+                            content_text=cleaned["content_text"] or "",
+                        )
                     if art_row and status == "pending":
                         # 入队 LLM 任务
                         await enqueue_jobs(
