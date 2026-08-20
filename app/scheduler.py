@@ -253,11 +253,18 @@ def setup_scheduler(settings, llm_client=None) -> AsyncIOScheduler:
 
     Phase 1 单进程：worker.py 在 main() 中调用此函数，scheduler 与 worker
     共享同一 asyncio 事件循环，无需额外进程。
+
+    注意：必须直接注册**协程函数**本身——AsyncIOScheduler 看到原生协程函数
+    会直接在 event loop 中调度；若用 `lambda: asyncio.ensure_future(coro())`
+    这种同步包装，APScheduler 会把 lambda 丢进默认 ThreadPoolExecutor 执行，
+    而 `asyncio.ensure_future` 在没有 running event loop 的线程里抛
+    `RuntimeError: There is no current event loop in thread ...`，
+    任务体一次都不会执行（fix #30）。
     """
     scheduler = AsyncIOScheduler()
 
     scheduler.add_job(
-        lambda s: asyncio.ensure_future(fetch_all(s)),
+        fetch_all,
         trigger=IntervalTrigger(hours=settings.ingestion.fetch_interval_hours),
         args=(settings,),
         id="fetch_all",
@@ -266,7 +273,7 @@ def setup_scheduler(settings, llm_client=None) -> AsyncIOScheduler:
     )
 
     scheduler.add_job(
-        lambda s: asyncio.ensure_future(drain_queue(s)),
+        drain_queue,
         trigger=IntervalTrigger(seconds=30),
         args=(settings,),
         id="drain_queue",
@@ -275,17 +282,17 @@ def setup_scheduler(settings, llm_client=None) -> AsyncIOScheduler:
     )
 
     scheduler.add_job(
-        lambda s, c: asyncio.ensure_future(healthcheck(s, llm_client=c)),
+        healthcheck,
         trigger=IntervalTrigger(minutes=5),
         args=(settings,),
-        kwargs={"c": llm_client},
+        kwargs={"llm_client": llm_client},
         id="healthcheck",
         name="LLM 健康探测",
         replace_existing=True,
     )
 
     scheduler.add_job(
-        lambda s: asyncio.ensure_future(run_pg_backup(s)),
+        run_pg_backup,
         trigger=CronTrigger(hour=3, minute=0),
         args=(settings,),
         id="pg_backup",
@@ -294,7 +301,7 @@ def setup_scheduler(settings, llm_client=None) -> AsyncIOScheduler:
     )
 
     scheduler.add_job(
-        lambda s: asyncio.ensure_future(cleanup_fetch_events(s)),
+        cleanup_fetch_events,
         trigger=CronTrigger(hour=4, minute=0),
         args=(settings,),
         id="cleanup_fetch_events",
