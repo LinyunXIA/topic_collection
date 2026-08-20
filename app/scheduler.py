@@ -180,23 +180,33 @@ async def drain_queue(settings) -> None:
         )
 
 
-async def cleanup_fetch_events(settings) -> None:
-    """清理旧 fetch_events（DESIGN §10）。"""
+async def cleanup_fetch_events(settings, session=None) -> None:
+    """清理旧 fetch_events（DESIGN §10）。
+
+    session: 可选，外部传入时复用已有 session（测试/调用方控制生命周期）。
+    """
     from app.db.engine import get_session_factory
 
     retention_days = settings.ingestion.fetch_events_retention_days
-    factory = get_session_factory(settings)
-    async with factory() as session:
+    own_session = session is None
+    if own_session:
+        factory = get_session_factory(settings)
+        session = await factory().__aenter__()
+
+    try:
         result = await session.execute(
             text(
-                "DELETE FROM fetch_events "
-                "WHERE created_at < now() - INTERVAL ':days days'"
+                f"DELETE FROM fetch_events "
+                f"WHERE created_at < now() - INTERVAL '{int(retention_days)} days'"
             ),
-            {"days": retention_days},
         )
-        await session.commit()
+        if own_session:
+            await session.commit()
         if result.rowcount:
             logger.info("cleanup_fetch_events: 清理 %d 条旧记录", result.rowcount)
+    finally:
+        if own_session:
+            await session.__aexit__(None, None, None)
 
 
 async def healthcheck(settings, llm_client=None) -> None:
