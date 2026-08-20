@@ -5,6 +5,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import math
+import random
+
 import json
 import logging
 
@@ -35,10 +39,27 @@ FIXTURE_CLASSIFY_TOPICS = {"scores": {"1": 0.8}}
 
 FIXTURE_WIKI_ENTRY = "# 测试词条\n\n这是一个测试词条内容。\n\n## 要点\n\n- 要点1\n- 要点2"
 
-# 固定 1536 维向量（伪随机但确定性）
+# 固定 1536 维向量（保留给只关心维度的旧用例）
 _FIXTURE_VECTOR = [0.01] * 1536
 _FIXTURE_VECTOR[0] = 0.5
 _FIXTURE_VECTOR[1] = 0.3
+
+
+def _vector_for(text: str, dim: int = 1536) -> list[float]:
+    """由文本内容确定性派生单位向量。
+
+    原实现对所有文本返回同一个 _FIXTURE_VECTOR，导致任意两篇文章的
+    cosine distance 恒为 0——近似去重的"命中/不命中"两类用例都测不出真东西
+    （test_near_dedup_no_hit 在功能完全没接线时也能通过）。
+
+    这里改为：同文本 → 同向量（幂等可复现）；不同文本 → 近似正交
+    （高斯采样后归一化，期望 cosine ≈ 0，distance ≈ 1，远高于 0.05 阈值）。
+    """
+    seed = int.from_bytes(hashlib.sha256(text.encode("utf-8")).digest()[:8], "big")
+    rng = random.Random(seed)
+    vec = [rng.gauss(0.0, 1.0) for _ in range(dim)]
+    norm = math.sqrt(sum(v * v for v in vec)) or 1.0
+    return [v / norm for v in vec]
 
 
 class FakeLLMProvider:
@@ -104,7 +125,7 @@ class FakeLLMProvider:
         """模拟 embed：返回固定 1536 维向量。"""
         self._call_count += 1
         t0 = now_ms()
-        embeddings = [_FIXTURE_VECTOR[:] for _ in texts]
+        embeddings = [_vector_for(t) for t in texts]
         return EmbedResult(
             embeddings=embeddings,
             model=model or self.embedding_model,
