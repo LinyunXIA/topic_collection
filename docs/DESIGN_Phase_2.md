@@ -4,7 +4,9 @@
 > 版本：v0.15 · 2026-08-20 · Phase 2 增量：DB 隔离 + embed/rerank 外部化 + 翻译后台 + 飞书推送
 > 本文件为 Phase 2（WebUI Dashboard + 实体/图谱/报告/API 连接器）及后续阶段的权威设计，原 DESIGN.md 仅保留 Phase 1/1+/1++ 已部署内容
 
-> **拆分说明**：2026-08-20 Phase 1/1+/1++ 全部署且 204/204，无 OPEN Issue。按用户要求将 DESIGN.md 中 Phase 2 及之后章节移至此文件，DESIGN.md 作为 Phase 1 新起点。
+> **拆分说明**：2026-08-20 Phase 1/1+/1++ 全部署且 214/214，无 OPEN Issue。按用户要求将 DESIGN.md 中 Phase 2 及之后章节移至此文件，DESIGN.md 作为 Phase 1 新起点。
+
+> v0.15（2026-08-20 增量）：`PR #40` 补 `tests/test_regression_31_34.py` 10 用例，`204→214`；`§14 2.6.3` 拆为 `2.6.3a`/`2.6.3b`（`a003` 仅 `tsv` 列，跨表 UNION 待做）；`§10.4` 白名单下沉共享出口；`§5.4.1` 补池外长连接约束。
 
 > v0.15（2026-08-20）：**Phase 2 PRD 4 项增量**——① `§5.4.1` 生产 DB 本机 `postgres:5432 postgres/${POSTGRES_PASSKEY}` 与开发 `5433 tc/tc` 隔离，可单独 `TC_APP_ENV=prod` 启动；② `§4.3/4.7` `embed`/`rerank` 解除强制本地，`per-capability` 自由切本地/外部（`dimensions=1536` 不变，标准 `ProviderPatch`）；③ `§6.Z` 翻译本地 27B 后台慢任务，落库即原文可读、译文 `translating: true` 轮询；④ `§10.4` 日报/周报飞书 Webhook 机器人推送（`open.feishu.cn`）。
 
@@ -264,7 +266,7 @@ ALTER TABLE processing_jobs ADD CONSTRAINT processing_jobs_task_check
 - **引擎**：`app/db/engine.py:25` `get_engine` 按 `env` 选 `dsn`，`check_extensions` prod 仍校验 `vector/pg_trgm/vector_dim`，`init_db` 需本机 `postgres` 库已建 `CREATE EXTENSION IF NOT EXISTS vector`（`a001` 不写，由 `scripts/init_db.py:26` 负责）
 - **备份**：`app/scheduler.py:218` `run_pg_backup` dev 走 `docker compose exec -T postgres pg_dump -U tc`，prod 走 `pg_dump -h localhost -U postgres`（`PGPASSWORD=${POSTGRES_PASSKEY}`），`TC_DB__PROD_DSN` 已覆盖则解析 host/user/db
 - **初始化**：生产库当前为空，需 `initdb` + `createdb topic_collection` + `psql -c "CREATE USER postgres WITH PASSWORD '\$POSTGRES_PASSKEY'"`（若未设）+ `python -m scripts.init_db` 幂等（`CREATE EXTENSION + alembic upgrade head`）
-- **互斥**：`worker_loop` 启动前 `SELECT pg_try_advisory_lock(hashtext('topic_collection_worker'))`，未获锁则 `exit 1`，`uvicorn` 与 `python -m app.worker` 二选一，防 `force_all_running=True` 互抢租约（`§14 2.1.1`，`app/pipeline.py:253` 单 worker 假设）
+- **互斥（池外长连接，fix #3）**：`worker_loop` 启动前 `asyncpg.connect(dsn)` **池外专用长连接** `SELECT pg_try_advisory_lock(hashtext('topic_collection_worker'))` 并持有至进程退出（`pg_try_advisory_lock` 会话级绑定单连接，`get_session` 池化连接归还即失锁，双活静默），未获锁则 `exit 1`，`uvicorn` 与 `python -m app.worker` 二选一，`pg_try_advisory_xact_lock` 禁用（事务级提交即丢），30s 心跳校验连接未断
 
 ### 6.X Phase 2 wiki 完整版（切片 2.4 + 2.5 / 2.6 完整 Wiki）
 
@@ -1200,11 +1202,11 @@ Phase 2 加：
 - [ ] 2.0.1 `app/config.py:13` `DBSettings{env: dev|prod, prod_dsn}` + `TC_DB__PROD_DSN`/`POSTGRES_PASSKEY` fail fast，`config/config.yaml:6` `db.prod` 示例
 - [ ] 2.0.2 `app/db/engine.py:25` `get_engine` 按 `env` 选 `dsn`，`check_extensions` prod 仍 `vector/pg_trgm`，`scripts/init_db.py:26` 本机 `postgres:5432` 幂等 `CREATE EXTENSION`
 - [ ] 2.0.3 `docker-compose.yml:10` 保留 `5433 tc/tc` dev，`app/scheduler.py:218` `run_pg_backup` prod 走 `pg_dump -h localhost -U postgres PGPASSWORD`，`Makefile` 加 `make prod: TC_APP_ENV=prod`
-- [ ] 2.0.4 初始化验证：`initdb` 空库 → `createdb topic_collection` → `alembic upgrade head` → `pytest 204`，`TC_APP_ENV=prod uvicorn` 为 WebUI 唯一入口，`python -m app.worker` 仅 `dev`/CLI 批量，二者禁止同库并发
+- [ ] 2.0.4 初始化验证：`initdb` 空库 → `createdb topic_collection` → `alembic upgrade head` → `pytest 214` (=204+10 PR #40)，`TC_APP_ENV=prod uvicorn` 为 WebUI 唯一入口，`python -m app.worker` 仅 `dev`/CLI 批量，二者禁止同库并发
 - [ ] D0 `a007` 迁移幂等 + `engine` 单测（`prod` 分支）
 
 **切片 2.1 WebUI Dashboard 骨架（P1，验收 1 回归 + 2 部分 UI 触发，`prod` 唯一入口）**：
-- [ ] 2.1.1 `app/main.py: create_app()` + lifespan 顺序：init_db → probe oMLX 三端点 → `pg_try_advisory_lock` 单例校验 → `recover_interrupted` → 启动 scheduler + worker task；`uvicorn app.main:app --host 127.0.0.1 --port 7111`（与 `python -m app.worker` 互斥，`§5.4.1`，`app/pipeline.py:253` 单 worker 假设）
+- [ ] 2.1.1 `app/main.py: create_app()` + lifespan 顺序：init_db → probe oMLX 三端点 → **池外长连接** `pg_try_advisory_lock` 单例校验（`asyncpg.connect` 直连，不经 `get_engine` 池，持有至 `lifespan` 退出 `pg_advisory_unlock`）→ `recover_interrupted` → 启动 scheduler + worker task；`uvicorn app.main:app --host 127.0.0.1 --port 7111`（与 `python -m app.worker` 互斥，`§5.4.1`）
 - [ ] 2.1.2 `app/api/{deps,health,dashboard,settings}.py` 路由骨架，**全部只做路由 + 调 service**，业务逻辑零侵入
 - [ ] 2.1.3 `app/web/templates/base.html` + `components/` + `static/` vendored JS（htmx/echarts/sortable/pico）——见 §8.1 vendored 资源清单
 - [ ] 2.1.4 HTMX partial swap 模式 + 错误形态（404/422/500）—— §8.1 HTMX 策略
@@ -1247,7 +1249,8 @@ Phase 2 加：
 **切片 2.6 高级检索（验收 #9 增强）**：
 - [ ] 2.6.1 `app/services/search.py: search(*, use_rerank=False, mode='hybrid', page=1, page_size=20, filters)` 加 `use_rerank` 路径（§7.1 算法）
 - [ ] 2.6.2 `LLMClient.rerank()` 透明降级链：oMLX `/v1/rerank` → 进程内 `bge-reranker-v2-m3`（§7.1 懒加载）→ 不重排（保持 RRF）
-- [x] 2.6.3 §5.1.5 `wiki_pages.tsv` 加列 + 跨表 UNION RRF（§7.1 Wiki 跨表检索 SQL）——已落地 `a003`
+- [x] 2.6.3a §5.1.5 `wiki_pages.tsv` 加列 + GIN + `update_wiki_tsv` + backfill——已落地 `a003`（`fix #6`）
+- [ ] 2.6.3b §7.1 Wiki 跨表 UNION RRF 融合——`app/services/search.py:search()` 四集合 UNION → RRF 统一分页/score（废 `score 0.0` 附加），`app/db/fts.py:search_wiki_fts` 仅作子查询，`D10` 跨表排序
 - [ ] 2.6.4 `app/api/articles.py: GET /api/articles/{id}/similar?top_k=10` 同主题加权相似（§7.1 SQL）
 - [ ] 2.6.5 `app/web/templates/search/results.html` 高级筛选 + Rerank toggle + Wiki/Article 切换
 - [ ] 2.6.6 CLI：`tc search --rerank --mode rerank` 终态展示
@@ -1266,7 +1269,7 @@ Phase 2 加：
 - [ ] 2.8.3 验收 #4（图谱）：实体节点与关系边可点击跳回文章
 - [ ] 2.8.4 验收 #6（报告）：日报/周报按计划生成，Dashboard 查看 + 导出 Markdown
 - [ ] 2.8.5 整体性能：单篇 27B 文章 end-to-end < 2min；搜索 P95 < 100ms；图谱加载 < 1s
-- [ ] 2.8.6 ≥ 162 + N 新测试全部通过（D7–D15），CI 全绿
+- [ ] 2.8.6 ≥ 214 + N 新测试全部通过（D7–D15，基线 214=204+10 PR #40，原 162+N 已滞后两轮），CI 全绿
 
 > **v0.15 增量与优先级说明（与 §14 执行序一致，切片号即优先级序）**：
 > - **P0 `§5.4.1` 生产 DB 隔离（`2.0`）**：`dev 5433 tc/tc` vs `prod 5432 postgres/${POSTGRES_PASSKEY}`，`TC_APP_ENV=prod` 可单独启动，需初始化（最高，阻塞生产，`2.1 WebUI` 不再隐含）

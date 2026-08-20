@@ -1,7 +1,8 @@
 # PRD：Topic Collection —— 主题信息采集 + 摘要 / 翻译 / 知识图谱 / LLM Wiki
 
-版本：v0.14（2026-08-20）· 状态：Phase 1/1+/1++ 已部署，204/204；Phase 2 四项增量设计已落 DESIGN_Phase_2.md v0.15
+版本：v0.15（2026-08-20）· 状态：Phase 1/1+/1++ 已部署，214/214；Phase 2 四项增量 + 5 项回归设计已落 DESIGN_Phase_2.md v0.15
 > 工程细节（目录结构 / DDL / LLM 接口 / 流水线）以 [DESIGN.md](DESIGN.md) 为权威，Phase 2 以 [DESIGN_Phase_2.md](DESIGN_Phase_2.md) 为权威
+> v0.15：**测试计数同步 + 白名单下沉 + 池外长连接 + 2.6.3 拆分**——与 DESIGN/DESIGN_Phase_2 v0.15 同步；`214/214`（`PR #40` +10，`204→214`）；`§14 2.6.3` 拆分，`§13 白名单` 下沉共享出口，`§5.4.1` 补池外约束
 > v0.14：**Phase 2 PRD 四项增量 + 合约修正**——与 DESIGN_Phase_2 v0.15 同步；`v0.13 204/204` 基础上补 `§1 LLM 能力 per-capability`、`§12 Phase 2` 四项（DB 隔离/embed外部/翻译后台/飞书）、`§13 白名单`、`§15 #8 条件式`；`fix #30-34` 5 项回归已合入
 > v0.13：**代码与设计对齐 + 新增 5 项回归**——与 DESIGN v0.14 同步；`204/204 tests passing`（`pytest --collect-only` 204，`gh issue --state open` 0）；新增 `fix #30 scheduler 直注协程` + `fix #31 语义按相似度排序` + `fix #32 空碰撞 30d 窗口` + `fix #33 回灌 RETURNING ids` + `fix #34 tc reindex 回填`；PRD §15 验收 1/3/5/7/8/9/16/17/18 保持通过，`tc reindex` 补存量可检索性
 > v0.12：**代码与设计对齐**——与 DESIGN v0.13 同步；`200/200 tests passing`（`pytest --collect-only` 200）；P0 3 项（scheduler 装配/INTERVAL 修复/pg_backup 去阻塞）+ P1 3 项（Phase 2 四表+wiki tsv+task CHECK）+ P2 2 项（fetch_and_store 收敛+精确去重第二闸+配置统一）共 8 个 GitHub Issue 闭环；PRD §15 验收 1/3/5/7/8/9/16/17/18 保持通过
@@ -311,7 +312,7 @@ schedule: { daily_report: "08:00", weekly_report: "Mon 08:00" }
 - **运行时依赖**：Docker Compose 起 PostgreSQL 15+（`pgvector/pgvector:pg17` 镜像，已确认）；DB 仅本机回环访问（`127.0.0.1`），凭据由配置/环境变量管理
 - **可靠性**：源失败自动禁用+审计；LLM 掉线优雅降级（文章仍可浏览原文）；任务可重试/恢复/死信；增量处理幂等
 - **隐私/安全**：**默认全程本地**（`oMLX`），无数据出机；Dashboard 默认绑定 `127.0.0.1`；不保存任何云凭据；**开启外部 LLM/飞书时仅按 §12 白名单域名外发，明文原文/向量默认不出机，关闭即零外发**（`§15 #8` 条件式）
-  - **外发白名单（`§12`）**：`open.feishu.cn`（飞书中国）/ `open.larksuite.com`（国际）/ `api.openai.com` / `api.siliconflow.cn` / `api.minimax.chat` 等 LLM/通知域名；未列域名 `LLMClient` 拒绝 `POST`，`config.yaml` 需显式 `backend: openai` + `api_key_env` 才外发
+  - **外发白名单（`§12`，共享出口）**：`open.feishu.cn`（飞书中国）/ `open.larksuite.com`（国际）/ `api.openai.com` / `api.siliconflow.cn` / `api.minimax.chat` 等；未列域名 **共享出口 `app/core/egress.py` 拒绝 `POST`**（`notify.py` 与 `LLMClient` 同走 `safe_post`），`config.yaml` 需显式 `backend: openai` + `api_key_env` 才外发
 - **可维护性**：Services 层为应用 API，CLI/Web 均薄封装；Alembic 迁移；Rich 滚动日志；配置类型化校验
 - **可测试性**：LLM 可 mock；单元（dedup/cleaner/structured/FTS）+ 集成（fake LLM）
 
