@@ -24,7 +24,7 @@ from sqlalchemy import text
 from app.config import load_settings
 from app.db.engine import get_engine, get_session, get_session_factory, check_extensions, dispose_engine
 from app.db.fts import search_articles_fts, update_article_tsv
-from app.ingest.dedup import url_hash, content_hash
+from app.ingest.dedup import url_hash, content_hash, apply_exact_dedup
 from app.services.cleaner import clean_article
 from app.services.llm_tasks import (
     complete_summarize,
@@ -168,20 +168,9 @@ async def _feeds_fetch(feed_name: str | None = None, count: int | None = None):
                     u_hash = url_hash(item.source_url)
                     c_hash = content_hash(item.content_text)
 
-                    # 幂等：url_hash 已存在则 mention_count+1
-                    existing = await session.execute(
-                        text("SELECT id FROM articles WHERE url_hash=:uh"),
-                        {"uh": u_hash},
-                    )
-                    existing_row = existing.first()
-                    if existing_row:
-                        await session.execute(
-                            text(
-                                "UPDATE articles SET mention_count=mention_count+1 "
-                                "WHERE id=:aid"
-                            ),
-                            {"aid": existing_row[0]},
-                        )
+                    # 精确去重双闸（DESIGN §6）：url_hash 同 / content_hash 同
+                    # → winner mention_count+1 + 审计，跳过 insert + enqueue
+                    if await apply_exact_dedup(session, feed["id"], u_hash, c_hash):
                         continue
 
                     # 清洗

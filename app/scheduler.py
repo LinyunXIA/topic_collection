@@ -30,7 +30,7 @@ async def fetch_all(settings) -> None:
     from app.db.engine import get_session_factory
     from app.db.fts import update_article_tsv
     from app.ingest.feeds import FeedFetcher
-    from app.ingest.dedup import url_hash, content_hash
+    from app.ingest.dedup import url_hash, content_hash, apply_exact_dedup
     from app.services.cleaner import clean_article
     from app.services.topics import match_keywords
     from app.pipeline import enqueue_jobs
@@ -64,19 +64,9 @@ async def fetch_all(settings) -> None:
                     uh = url_hash(item.source_url)
                     ch = content_hash(item.content_text)
 
-                    # 幂等检查：已存在则累计 mention_count（与 cli._feeds_fetch 保持一致）
-                    existing = await session.execute(
-                        text("SELECT id FROM articles WHERE url_hash=:uh"), {"uh": uh}
-                    )
-                    existing_row = existing.first()
-                    if existing_row:
-                        await session.execute(
-                            text(
-                                "UPDATE articles SET mention_count=mention_count+1 "
-                                "WHERE id=:aid"
-                            ),
-                            {"aid": existing_row[0]},
-                        )
+                    # 精确去重双闸（DESIGN §6）：url_hash 同 / content_hash 同
+                    # → winner mention_count+1 + 审计，跳过 insert + enqueue
+                    if await apply_exact_dedup(session, feed["id"], uh, ch):
                         continue
 
                     cleaned = await clean_article(item.content_html or item.content_text, item.title)
