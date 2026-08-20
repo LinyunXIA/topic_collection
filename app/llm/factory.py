@@ -118,17 +118,13 @@ def build_provider(
             endpoint = gen.endpoint
             api_key_env = gen.api_key_env
             model = gen.model
-            models = gen.models
-            max_concurrency = gen.max_concurrency
-            max_timeout_retries = gen.max_timeout_retries
+            # 并发度/超时重试由 worker 直接读 settings 传给 LLMClient，
+            # 这里不再取出未使用的局部变量
         else:
             backend = llm.backend
             endpoint = llm.endpoint
             api_key_env = llm.api_key
             model = llm.model
-            models = llm.models
-            max_concurrency = llm.max_concurrency
-            max_timeout_retries = llm.max_timeout_retries
 
         if backend == "omlx":
             return _build_omlx(

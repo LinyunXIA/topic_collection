@@ -16,12 +16,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 logger = logging.getLogger(__name__)
 
 
-def _slugify(title: str) -> str:
-    """标题 → URL-friendly slug。"""
+def _slugify(title: str, ref_id: int | None = None) -> str:
+    """标题 → URL-friendly slug。
+
+    wiki_pages.slug 是 UNIQUE，而标题重复很常见（多家媒体转同一篇通稿、
+    "本周简报" 这类固定标题、纯符号标题 slug 化后为空串）。不带 ref_id 时
+    第二篇会 upsert 覆盖第一篇的正文，而 ref_id 仍指向第一篇——内容与引用错位。
+    因此附加 ref_id 后缀保证一文一条。
+    """
     slug = title.lower().strip()
     slug = re.sub(r"[^\w\s-]", "", slug)
     slug = re.sub(r"[\s_]+", "-", slug)
-    return slug[:100].strip("-")
+    slug = slug[:100].strip("-")
+    if ref_id is None:
+        return slug
+    return f"{slug}-{ref_id}" if slug else f"article-{ref_id}"
 
 
 async def generate_article_wiki(
@@ -72,14 +81,18 @@ async def generate_article_wiki(
     # 获取 related articles（同主题 top-5，DESIGN §6 Phase 1）
     related_result = await session.execute(
         text(
-            "SELECT a.id, a.title "
+            # 共享多个主题的文章会被 JOIN 出多行，必须按文章聚合去重，
+            # 否则同一篇相关文章会在 top-5 里重复占位
+            "SELECT a.id, a.title, MAX(at.score) AS best_score, "
+            "       MAX(a.published_at) AS pub "
             "FROM article_topics at "
             "JOIN articles a ON a.id = at.article_id "
             "WHERE a.id != :aid AND a.dedupe_of IS NULL "
             "AND at.topic_id IN ("
             "  SELECT topic_id FROM article_topics WHERE article_id = :aid"
             ") "
-            "ORDER BY at.score DESC, a.published_at DESC "
+            "GROUP BY a.id, a.title "
+            "ORDER BY best_score DESC, pub DESC "
             "LIMIT 5"
         ),
         {"aid": article_id},
@@ -87,13 +100,15 @@ async def generate_article_wiki(
     related = [{"id": r["id"], "title": r["title"]} for r in related_result.mappings().all()]
 
     # Upsert wiki_page
-    slug = _slugify(title)
+    slug = _slugify(title, article_id)
     await session.execute(
         text(
             "INSERT INTO wiki_pages (kind, ref_id, title, slug, content_md, related_json) "
             "VALUES ('article', :ref_id, :title, :slug, :content, :related) "
             "ON CONFLICT (slug) DO UPDATE "
-            "SET content_md = EXCLUDED.content_md, "
+            "SET ref_id = EXCLUDED.ref_id, "
+            "    title = EXCLUDED.title, "
+            "    content_md = EXCLUDED.content_md, "
             "    related_json = EXCLUDED.related_json, "
             "    updated_at = now()"
         ),

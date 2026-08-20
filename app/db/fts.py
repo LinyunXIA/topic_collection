@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 
 import jieba
@@ -39,15 +40,54 @@ async def update_article_tsv(
 
     阶段一（入库时）：title + content_text
     阶段二（summarize 后）：+ summary_text + key_points_text
+
+    tsv 是整列覆盖写，所以每次调用都必须重建**完整**索引，否则后一阶段会
+    抹掉前一阶段的段落。调用方只传自己那一段即可——缺失的段落在此从库里补齐：
+    - title/content_text 都为空 → 从 articles 读回（阶段二场景）
+    - summary/key_points 都为空 → 从 summaries 读回（阶段一重跑 / backfill 场景）
+
     两段拼接用同一 jieba_join 确保关键词通道一致。
     """
+    if not title and not content_text:
+        row = (
+            await session.execute(
+                text("SELECT title, content_text FROM articles WHERE id = :aid"),
+                {"aid": article_id},
+            )
+        ).mappings().first()
+        if row:
+            title = row["title"] or ""
+            content_text = row["content_text"] or ""
+
+    if not summary_text and not key_points_text:
+        row = (
+            await session.execute(
+                text(
+                    "SELECT summary_text, key_points_json FROM summaries "
+                    "WHERE article_id = :aid AND lang = 'zh' "
+                    "ORDER BY id DESC LIMIT 1"
+                ),
+                {"aid": article_id},
+            )
+        ).mappings().first()
+        if row:
+            summary_text = row["summary_text"] or ""
+            kp = row["key_points_json"] or []
+            if isinstance(kp, str):
+                try:
+                    kp = json.loads(kp)
+                except ValueError:
+                    kp = []
+            if isinstance(kp, list):
+                key_points_text = " ".join(str(k) for k in kp)
+
     parts = [title, content_text]
     if summary_text:
         parts.append(summary_text)
     if key_points_text:
         parts.append(key_points_text)
 
-    raw = " ".join(parts)
+    raw = " ".join(p for p in parts if p)
     joined = await jieba_join_async(raw)
 
     await session.execute(

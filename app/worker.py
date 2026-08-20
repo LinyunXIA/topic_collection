@@ -10,8 +10,8 @@ import logging
 import signal
 
 from app.config import load_settings
-from app.db.engine import check_extensions, dispose_engine, get_engine
-from app.llm.client import LLMClient
+from app.db.engine import check_extensions, dispose_engine
+from app.llm.client import LLMClient, PermanentError
 from app.llm.factory import build_provider
 from app.pipeline import worker_loop
 from app.services.llm_tasks import run_embed_core, run_embed_summary, run_summarize
@@ -65,7 +65,6 @@ async def main() -> None:
     logger.info("加载配置: db=%s", settings.db.dsn.split("@")[-1])
 
     # 校验扩展
-    engine = get_engine(settings)
     try:
         await check_extensions(settings)
     except RuntimeError as e:
@@ -75,8 +74,16 @@ async def main() -> None:
     # 构建 per-capability LLM client（独立信号量，embed 不被 generate 阻塞）
     gen_provider = build_provider("generate", settings)
     emb_provider = build_provider("embed", settings)
-    generate_llm = LLMClient(provider=gen_provider, max_concurrency=1)
-    embed_llm = LLMClient(provider=emb_provider, max_concurrency=1)
+    _gen_cfg = settings.llm.generate
+    generate_llm = LLMClient(
+        provider=gen_provider,
+        max_concurrency=(_gen_cfg.max_concurrency if _gen_cfg else settings.llm.max_concurrency),
+    )
+    # EmbedSettings 没有 max_concurrency 字段，退回顶层配置
+    embed_llm = LLMClient(
+        provider=emb_provider,
+        max_concurrency=settings.llm.max_concurrency,
+    )
 
     # 健康探测（探测 generate 端点即可）
     gen = settings.llm.generate
@@ -129,8 +136,9 @@ async def main() -> None:
         }
         handler = handlers.get(task)
         if not handler:
-            logger.warning("未知任务类型: %s (job %d)，标记跳过", task, job["id"])
-            return
+            # 直接 return 会被 process_job_with_lease_renewal 当成成功、
+            # 把未知任务标成 succeeded。必须抛永久错误进死信。
+            raise PermanentError(f"未知任务类型: {task} (job {job['id']})")
         await handler(session, job, settings, client)
 
     # 启动 worker

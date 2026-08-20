@@ -156,7 +156,8 @@ async def match_keywords(session: AsyncSession, article_id: int) -> list[int]:
                 text(
                     "INSERT INTO article_topics (article_id, topic_id, score, method) "
                     "VALUES (:aid, :tid, :score, 'keyword') "
-                    "ON CONFLICT (article_id, topic_id) DO NOTHING"
+                    "ON CONFLICT (article_id, topic_id) DO UPDATE "
+                    "SET score = EXCLUDED.score, method = 'keyword'"
                 ),
                 {"aid": article_id, "tid": topic_id, "score": score},
             )
@@ -320,23 +321,30 @@ async def reclassify_recent(
 
     window_days = settings.topics.reclassify_recent_days
 
-    # 1. 删除该主题的旧 keyword 行
+    # 1. 删除该主题的旧 keyword 行 —— 只删窗口内的。
+    #    原来是无条件全量删，但第 3 步只重算窗口内文章，
+    #    窗口外的文章会永久失去该主题的关键词归类。
     await session.execute(
         text(
             "DELETE FROM article_topics "
-            "WHERE topic_id = :tid AND method = 'keyword'"
+            "WHERE topic_id = :tid AND method = 'keyword' "
+            "AND article_id IN ("
+            "  SELECT id FROM articles "
+            f"  WHERE fetched_at > now() - INTERVAL '{int(window_days)} days'"
+            ")"
         ),
         {"tid": topic_id},
     )
 
     # 2. 获取近窗口内的活跃文章
+    #    注意：INTERVAL 的天数必须用 f-string 内插——:days 写在字符串字面量里
+    #    不会被绑定，Postgres 会拿到字面量 ':days days' 直接报语法错。
     result = await session.execute(
         text(
             "SELECT id, content_hash FROM articles "
             "WHERE dedupe_of IS NULL "
-            "AND fetched_at > now() - INTERVAL ':days days'"
-        ),
-        {"days": window_days},
+            f"AND fetched_at > now() - INTERVAL '{int(window_days)} days'"
+        )
     )
     articles = result.mappings().all()
 
