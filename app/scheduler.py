@@ -17,6 +17,9 @@ import sys
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from apscheduler.schedulers.asyncio import AsyncIOScheduler
+from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 from sqlalchemy import text
 
 logger = logging.getLogger(__name__)
@@ -255,3 +258,60 @@ def run_pg_backup(settings) -> None:
         logger.error("pg_backup: pg_dump 超时")
     except Exception as e:
         logger.error("pg_backup: %s", e)
+
+
+def setup_scheduler(settings, llm_client=None) -> AsyncIOScheduler:
+    """创建并配置 APScheduler，返回未启动的 scheduler 实例（DESIGN §6/§10）。
+
+    Phase 1 单进程：worker.py 在 main() 中调用此函数，scheduler 与 worker
+    共享同一 asyncio 事件循环，无需额外进程。
+    """
+    scheduler = AsyncIOScheduler()
+
+    scheduler.add_job(
+        lambda s: asyncio.ensure_future(fetch_all(s)),
+        trigger=IntervalTrigger(hours=settings.ingestion.fetch_interval_hours),
+        args=(settings,),
+        id="fetch_all",
+        name="定时抓取全部 enabled feeds",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        lambda s: asyncio.ensure_future(drain_queue(s)),
+        trigger=IntervalTrigger(seconds=30),
+        args=(settings,),
+        id="drain_queue",
+        name="维护队列：清理 superseded/死信 + 补入队",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        lambda s, c: asyncio.ensure_future(healthcheck(s, llm_client=c)),
+        trigger=IntervalTrigger(minutes=5),
+        args=(settings,),
+        kwargs={"c": llm_client},
+        id="healthcheck",
+        name="LLM 健康探测",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        lambda s: asyncio.ensure_future(run_pg_backup(s)),
+        trigger=CronTrigger(hour=3, minute=0),
+        args=(settings,),
+        id="pg_backup",
+        name="每日 pg_dump 备份",
+        replace_existing=True,
+    )
+
+    scheduler.add_job(
+        lambda s: asyncio.ensure_future(cleanup_fetch_events(s)),
+        trigger=CronTrigger(hour=4, minute=0),
+        args=(settings,),
+        id="cleanup_fetch_events",
+        name="清理旧 fetch_events 记录",
+        replace_existing=True,
+    )
+
+    return scheduler

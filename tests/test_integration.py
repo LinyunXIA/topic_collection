@@ -493,3 +493,45 @@ class TestFakeLLM:
         assert fake.call_count == 0
         await fake.generate(GenerateRequest(model="t", messages=[{"role": "user", "content": "x"}]))
         assert fake.call_count == 1
+
+
+class TestSetupScheduler:
+    """验证 setup_scheduler 工厂正确注册 5 个定时任务（DESIGN §6/§10）。"""
+
+    def test_registers_five_jobs(self):
+        settings = load_settings()
+        from app.scheduler import setup_scheduler
+
+        scheduler = setup_scheduler(settings, llm_client=None)
+        jobs = {job.id: job for job in scheduler.get_jobs()}
+
+        expected_ids = {"fetch_all", "drain_queue", "healthcheck", "pg_backup", "cleanup_fetch_events"}
+        assert set(jobs.keys()) == expected_ids
+
+    def test_fetch_interval_from_settings(self):
+        settings = load_settings()
+        from app.scheduler import setup_scheduler
+
+        scheduler = setup_scheduler(settings, llm_client=None)
+        fetch_job = scheduler.get_job("fetch_all")
+
+        # IntervalTrigger 以小时为单位
+        assert fetch_job.trigger.interval.total_seconds() == settings.ingestion.fetch_interval_hours * 3600
+
+    def test_drain_queue_30s(self):
+        settings = load_settings()
+        from app.scheduler import setup_scheduler
+
+        scheduler = setup_scheduler(settings, llm_client=None)
+        drain_job = scheduler.get_job("drain_queue")
+
+        assert drain_job.trigger.interval.total_seconds() == 30
+
+    def test_healthcheck_5m(self):
+        settings = load_settings()
+        from app.scheduler import setup_scheduler
+
+        scheduler = setup_scheduler(settings, llm_client=None)
+        hc_job = scheduler.get_job("healthcheck")
+
+        assert hc_job.trigger.interval.total_seconds() == 300
