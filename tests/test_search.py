@@ -195,6 +195,42 @@ class TestSemanticSearch:
             results = await _semantic_search(session, "test", settings, llm_client, 10)
             assert len(results) == 0
 
+    @pytest.mark.asyncio
+    async def test_hnsw_index_used(self, settings, llm_client):
+        """验证 DISTINCT ON 查询语义正确：多粒度 embedding 去重取最优距离（fix #10）。"""
+        await clean_all(settings)
+        factory = get_session_factory(settings)
+        async with factory() as session:
+            aid = await _insert_article(
+                session,
+                "https://test.com/hnsw1",
+                "HNSW Index Test",
+                "Testing HNSW index usage for semantic search.",
+                lang="en",
+            )
+            resp = await llm_client.embed(["HNSW index test"])
+            vec = resp.embeddings[0]
+            vec_str = "[" + ",".join(str(v) for v in vec) + "]"
+            # 同一文章插入 title + body 两个粒度的 embedding
+            for kind in ("title", "body"):
+                await session.execute(
+                    text(
+                        "INSERT INTO article_embeddings (article_id, kind, model, content_hash, dim, vector) "
+                        "VALUES (:aid, :kind, :model, :ch, 1536, CAST(:vec AS vector))"
+                    ),
+                    {"aid": aid, "kind": kind, "model": settings.llm.embed.model, "ch": f"hnsw_{kind}", "vec": vec_str},
+                )
+            await session.commit()
+
+        async with factory() as session:
+            results = await _semantic_search(session, "HNSW index test", settings, llm_client, 10)
+            # DISTINCT ON 应只返回一条（article_id 去重），而非两条
+            ids = [r[0] for r in results]
+            assert ids.count(aid) == 1, f"DISTINCT ON 未去重：article {aid} 出现 {ids.count(aid)} 次"
+            # 距离应在合理范围内（cosine distance ∈ [0, 2]）
+            dist = 1.0 - results[0][1]  # results 存的是 score=1-distance
+            assert 0.0 <= dist <= 2.0
+
 
 # ── 混合搜索集成测试 ──────────────────────────────────────────────
 

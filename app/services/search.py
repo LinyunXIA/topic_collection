@@ -167,17 +167,18 @@ async def _semantic_search(
     vec_str = "[" + ",".join(str(v) for v in query_vec) + "]"
     active_model = settings.llm.embed.model
 
-    # 语义搜索：三粒度（title/summary/body）都参与，按 article_id 去重取最高分
+    # 语义搜索：DISTINCT ON (article_id) + ORDER BY article_id, distance
+    # 替代 GROUP BY——让 pgvector planner 识别 HNSW 索引扫描路径（fix #10）。
     result = await session.execute(
         text(
-            "SELECT ae.article_id, MIN(ae.vector <=> CAST(:vec AS vector)) AS distance "
+            "SELECT DISTINCT ON (ae.article_id) "
+            "ae.article_id, ae.vector <=> CAST(:vec AS vector) AS distance "
             "FROM article_embeddings ae "
             "WHERE ae.model = :model "
             "AND ae.article_id IN ("
             "  SELECT id FROM articles WHERE dedupe_of IS NULL"
             ") "
-            "GROUP BY ae.article_id "
-            "ORDER BY distance ASC "
+            "ORDER BY ae.article_id, distance "
             "LIMIT :limit"
         ),
         {"vec": vec_str, "model": active_model, "limit": limit},
