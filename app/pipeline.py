@@ -97,6 +97,119 @@ async def enqueue_jobs(
         )
 
 
+async def enqueue_entity_wiki(
+    session: AsyncSession,
+    article_id: int,
+    entity_ids: list[int],
+    content_hash: str,
+) -> None:
+    """入队 generate_entity_wiki，payload 合并策略（DESIGN §6.X，fix #46）
+
+    同一 article 可能先后抽取到不同批次的新 entity，活跃唯一键 (article_id, task)
+    下需合并 entity_ids 而非 DO NOTHING 丢弃。
+    SQL：先合并已有活跃 payload（去重），再 supersede，最后 INSERT … ON CONFLICT 合并兜底
+    """
+    import json as _json
+
+    if not entity_ids:
+        return
+    # 合并已有活跃 job 的 entity_ids（去重），避免 supersede 后丢失旧批次
+    try:
+        existing = await session.execute(
+            text(
+                "SELECT payload_json FROM processing_jobs "
+                "WHERE article_id=:aid AND task='generate_entity_wiki' AND status IN ('queued','running')"
+            ),
+            {"aid": article_id},
+        )
+        merged_set = set(entity_ids)
+        for row in existing.fetchall():
+            pj = row[0]
+            if pj is None:
+                continue
+            if isinstance(pj, str):
+                try:
+                    pj = _json.loads(pj)
+                except Exception:
+                    continue
+            if isinstance(pj, dict) and isinstance(pj.get("entity_ids"), list):
+                merged_set.update(pj["entity_ids"])
+        payload = _json.dumps({"entity_ids": sorted(merged_set)}, ensure_ascii=False)
+    except Exception:
+        payload = _json.dumps({"entity_ids": entity_ids}, ensure_ascii=False)
+    # 先 supersede 同 (article_id, task) 的活跃 job
+    await session.execute(
+        text(
+            "UPDATE processing_jobs SET status='superseded', updated_at=now() "
+            "WHERE article_id=:aid AND task='generate_entity_wiki' AND status IN ('queued','running')"
+        ),
+        {"aid": article_id},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO processing_jobs (article_id, task, status, content_hash, priority, payload_json) "
+            "VALUES (:aid, 'generate_entity_wiki', 'queued', :ch, 5, :payload::jsonb) "
+            "ON CONFLICT (article_id, task) WHERE status IN ('queued','running') DO UPDATE SET "
+            "payload_json = processing_jobs.payload_json || EXCLUDED.payload_json, "
+            "content_hash = EXCLUDED.content_hash, updated_at = now()"
+        ),
+        {"aid": article_id, "ch": content_hash, "payload": payload},
+    )
+
+
+async def enqueue_topic_wiki(
+    session: AsyncSession,
+    article_id: int,
+    topic_ids: list[int],
+    content_hash: str,
+) -> None:
+    """入队 generate_topic_wiki，payload 合并策略（DESIGN §6.X，fix #46）"""
+    import json as _json
+
+    if not topic_ids:
+        return
+    try:
+        existing = await session.execute(
+            text(
+                "SELECT payload_json FROM processing_jobs "
+                "WHERE article_id=:aid AND task='generate_topic_wiki' AND status IN ('queued','running')"
+            ),
+            {"aid": article_id},
+        )
+        merged_set = set(topic_ids)
+        for row in existing.fetchall():
+            pj = row[0]
+            if pj is None:
+                continue
+            if isinstance(pj, str):
+                try:
+                    pj = _json.loads(pj)
+                except Exception:
+                    continue
+            if isinstance(pj, dict) and isinstance(pj.get("topic_ids"), list):
+                merged_set.update(pj["topic_ids"])
+        payload = _json.dumps({"topic_ids": sorted(merged_set)}, ensure_ascii=False)
+    except Exception:
+        payload = _json.dumps({"topic_ids": topic_ids}, ensure_ascii=False)
+    await session.execute(
+        text(
+            "UPDATE processing_jobs SET status='superseded', updated_at=now() "
+            "WHERE article_id=:aid AND task='generate_topic_wiki' AND status IN ('queued','running')"
+        ),
+        {"aid": article_id},
+    )
+    await session.execute(
+        text(
+            "INSERT INTO processing_jobs (article_id, task, status, content_hash, priority, payload_json) "
+            "VALUES (:aid, 'generate_topic_wiki', 'queued', :ch, 5, :payload::jsonb) "
+            "ON CONFLICT (article_id, task) WHERE status IN ('queued','running') DO UPDATE SET "
+            "payload_json = processing_jobs.payload_json || EXCLUDED.payload_json, "
+            "content_hash = EXCLUDED.content_hash, updated_at = now()"
+        ),
+        {"aid": article_id, "ch": content_hash, "payload": payload},
+    )
+
+
 # ── Worker 领取 ───────────────────────────────────────────────────
 
 async def pick_and_claim(session: AsyncSession) -> dict | None:
