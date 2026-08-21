@@ -1,4 +1,4 @@
-"""日报/周报 — Phase 2 切片 2.5（DESIGN §10.1 / §10.4 飞书推送）"""
+"""日报/周报 — Phase 2 切片 2.5（DESIGN §10.1 / §10.4 飞书推送，#52 同 #43 已实现同事务推送）"""
 
 from __future__ import annotations
 
