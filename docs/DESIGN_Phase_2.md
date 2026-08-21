@@ -1203,7 +1203,7 @@ Phase 2 加：
 - [x] 2.0.2 `app/db/engine.py:25` `get_engine` 按 `env` 选 `dsn`，`check_extensions` prod 仍 `vector/pg_trgm`，`scripts/init_db.py:26` 本机 `postgres:5432` 幂等 `CREATE EXTENSION`
 - [x] 2.0.3 `docker-compose.yml:10` 保留 `5433 tc/tc` dev，`app/scheduler.py:218` `run_pg_backup` prod 走 `pg_dump -h localhost -U postgres PGPASSWORD`，`Makefile` 加 `make prod: TC_APP_ENV=prod`
 - [x] 2.0.4 初始化验证：`initdb` 空库 → `createdb topic_collection` → `alembic upgrade head` → `pytest 214` (=204+10 PR #40)，`TC_APP_ENV=prod uvicorn` 为 WebUI 唯一入口，`python -m app.worker` 仅 `dev`/CLI 批量，二者禁止同库并发
-- [x] 2.0.5 `app/core/egress.py` 共享出口白名单（`safe_post`/`safe_get` 校验 `open.feishu.cn` 等，未列域名 `PermanentError`，`FEED_FETCH_ALLOW_ALL` 隔离抓取，PRD §13，`§10.4` 飞书唯一执行点）
+- [x] 2.0.5 `app/core/egress.py` 共享出口白名单（`safe_post`/`safe_get` 校验，未列域名 `PermanentError`，`FEED_FETCH_ALLOW_ALL` 隔离抓取，PRD §13，`§10.4` 飞书唯一执行点）—— v0.17：域名清单下移 `security/web_site_list.yaml` 按 `TC_APP_ENV` 分 dev/test/prod 段，真实文件 gitignored + `web_site_list.example.yaml` 示例入库，改文件即增减、无需改代码；#78 起外部 LLM 与抓取均走共享出口
 - [ ] D0 `a007` 迁移幂等 + `engine` 单测（`prod` 分支）
 
 **切片 2.1 WebUI Dashboard 骨架（P1，验收 1 回归 + 2 部分 UI 触发，`prod` 唯一入口）**：
