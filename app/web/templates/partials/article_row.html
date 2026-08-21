@@ -1,0 +1,5 @@
+{% for a in articles %}
+<div class="article-row"><a href="/articles/{{ a.id }}">{{ a.title }}</a> <small>{{ a.status }} | {{ a.lang }}</small></div>
+{% else %}
+<p>暂无文章</p>
+{% endfor %}

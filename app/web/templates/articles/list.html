@@ -1,1 +1,15 @@
-{% extends "base.html" %}{% block content %}<h1>文章列表</h1><p>筛选表格</p>{% endblock %}
+{% extends "base.html" %}
+{% block content %}
+<h1>文章列表</h1>
+<form method="get" action="/articles" hx-get="/articles" hx-target="#article-table" hx-push-url="true">
+  <input name="feed" placeholder="feed" value="{{ feed or '' }}">
+  <input name="topic" placeholder="topic" value="{{ topic or '' }}">
+  <select name="status"><option value="">全部状态</option><option value="pending" {% if status=='pending' %}selected{% endif %}>pending</option><option value="processing" {% if status=='processing' %}selected{% endif %}>processing</option><option value="done" {% if status=='done' %}selected{% endif %}>done</option></select>
+  <input name="q" placeholder="关键词" value="{{ q or '' }}">
+  <button type="submit">筛选</button>
+</form>
+<div id="article-table">
+{% include "partials/article_row.html" %}
+</div>
+<div>页码: {{ page }}</div>
+{% endblock %}
