@@ -48,7 +48,15 @@ OMLX_PATCH = ProviderPatch(
 )
 
 OPENAI_PATCH = ProviderPatch(
-    # 标准 OpenAI，无特殊 patch
+    send_dimensions=True,
+    dimensions_value=1536,
+    # 外部 OpenAI 兼容 embed 需显式传 dimensions=1536（§4.3/§4.7），否则模型原生 4096/3072 维度不匹配 vector(1536)
+)
+
+# OpenAI embed 专用 patch（与 OPENAI_PATCH 同值，语义显式，便于 factory 按能力选用）
+OPENAI_EMBED_PATCH = ProviderPatch(
+    send_dimensions=True,
+    dimensions_value=1536,
 )
 
 MINIMAX_PATCH = ProviderPatch(
