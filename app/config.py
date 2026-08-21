@@ -105,9 +105,22 @@ class TopicsSettings(BaseSettings):
     reclassify_recent_days: int = 30
 
 
+class FeishuSettings(BaseSettings):
+    """飞书 Webhook 推送配置（DESIGN §10.4 / PRD §15 #8）
+
+    webhook 本体含 token，永不写 yaml/DB，仅通过环境变量读取，
+    webhook_env 为环境变量名（默认 FEISHU_WEBHOOK）。
+    """
+
+    enabled: bool = False
+    webhook_env: str = "FEISHU_WEBHOOK"
+    events: list[str] = Field(default_factory=lambda: ["daily", "weekly"])
+
+
 class ScheduleSettings(BaseSettings):
     daily_report: str = "08:00"
     weekly_report: str = "Mon 08:00"
+    feishu: FeishuSettings = Field(default_factory=FeishuSettings)
 
 
 class Settings(BaseSettings):
