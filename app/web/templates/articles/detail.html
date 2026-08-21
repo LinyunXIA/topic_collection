@@ -39,4 +39,37 @@
     <form method="post" action="/articles/{{ article.id }}/retry/translate"><button>翻译</button></form>
   {% endif %}
 </div>
+
+<div id="entities">
+  <h2>实体</h2>
+  {% if entities %}
+    {% for e in entities %}
+      <div class="entity-card">{{ e.canonical_name_zh }} <small>{{ e.entity_type }} | {{ e.confidence }}</small> {% if e.surface %}<span>({{ e.surface }})</span>{% endif %}</div>
+    {% endfor %}
+  {% else %}
+    <p>暂无实体</p>
+  {% endif %}
+</div>
+
+<div id="topics">
+  <h2>相关话题</h2>
+  {% if topics %}
+    {% for t in topics %}
+      <div class="topic-chip">{{ t.name }} — {{ t.score }} ({{ t.method }})</div>
+    {% endfor %}
+  {% else %}
+    <p>暂无话题</p>
+  {% endif %}
+</div>
+
+<div id="wiki">
+  <h2>Wiki</h2>
+  {% if wiki %}
+    <a href="/wiki/{{ wiki.slug }}">{{ wiki.title }}</a>
+    <div>{{ wiki.content_md[:500] }}</div>
+  {% else %}
+    <p>暂无 Wiki 词条</p>
+    <form method="post" action="/articles/{{ article.id }}/retry/wiki"><button>生成 Wiki</button></form>
+  {% endif %}
+</div>
 {% endblock %}

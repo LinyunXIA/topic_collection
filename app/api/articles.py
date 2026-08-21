@@ -46,7 +46,7 @@ async def article_detail(
     request: Request,
     session: AsyncSession = Depends(get_session),
 ):
-    """文章详情 7 Tab（翻译 Tab 空时显示 CTA）"""
+    """文章详情 7 Tab（翻译 Tab 空时显示 CTA，含 entities/topics/wiki）"""
     result = await session.execute(
         text("SELECT a.*, s.summary_text, s.key_points_json FROM articles a LEFT JOIN summaries s ON s.article_id=a.id AND s.lang='zh' WHERE a.id=:aid"),
         {"aid": article_id},
@@ -68,10 +68,56 @@ async def article_detail(
             {"aid": article_id},
         )
         translating = jr.first() is not None
+    # 实体列表（canonical_name_zh + type + confidence）
+    entities = []
+    try:
+        er = await session.execute(
+            text(
+                "SELECT e.id, e.canonical_name_zh, e.entity_type, e.confidence, ae.surface "
+                "FROM article_entities ae JOIN entities e ON e.id = ae.entity_id "
+                "WHERE ae.article_id = :aid ORDER BY ae.confidence DESC LIMIT 20"
+            ),
+            {"aid": article_id},
+        )
+        entities = [dict(r) for r in er.mappings().all()]
+    except Exception:
+        pass
+    # 话题列表
+    topics = []
+    try:
+        tr2 = await session.execute(
+            text(
+                "SELECT t.name, at.score, at.method FROM article_topics at "
+                "JOIN topics t ON t.id = at.topic_id WHERE at.article_id = :aid ORDER BY at.score DESC"
+            ),
+            {"aid": article_id},
+        )
+        topics = [dict(r) for r in tr2.mappings().all()]
+    except Exception:
+        pass
+    # Wiki 词条（article kind）
+    wiki = None
+    try:
+        wr = await session.execute(
+            text("SELECT id, title, slug, content_md FROM wiki_pages WHERE kind='article' AND ref_id=:aid LIMIT 1"),
+            {"aid": article_id},
+        )
+        wrow = wr.mappings().first()
+        if wrow:
+            wiki = dict(wrow)
+    except Exception:
+        pass
     return templates.TemplateResponse(
         request,
         "articles/detail.html",
-        {"article": dict(row), "translation": dict(tro) if tro else None, "translating": translating},
+        {
+            "article": dict(row),
+            "translation": dict(tro) if tro else None,
+            "translating": translating,
+            "entities": entities,
+            "topics": topics,
+            "wiki": wiki,
+        },
     )
 
 
