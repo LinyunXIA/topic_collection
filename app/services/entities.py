@@ -12,6 +12,8 @@ from difflib import SequenceMatcher
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.llm.client import PermanentError
+
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +80,15 @@ async def complete_extract(
 ) -> None:
     """公共钩子（DESIGN §6.Y）：entities/article_entities/relations + wiki 入队 + done"""
     from app.pipeline import check_and_set_done
+
+    # 0. content_hash 必须是 sha256 64 位十六进制（版本守卫可比，DESIGN §6；fix #81
+    #    曾把正文前 100 字符误当 content_hash 传入 → downstream 版本守卫恒不通过）
+    import re as _re
+
+    if not (_re.fullmatch(r"[0-9a-f]{64}", content_hash) if isinstance(content_hash, str) else False):
+        raise PermanentError(
+            f"complete_extract: content_hash 非法（期望 sha256 64 位十六进制，实际前 32 字符='{str(content_hash)[:32]}'）"
+        )
 
     # 1. entities upsert
     for ent in parsed.get("entities", []):
@@ -184,9 +195,11 @@ async def extract_entities(session: AsyncSession, article_id: int, settings, llm
     from app.llm.base import GenerateRequest
     from app.llm.prompts import get_prompt
     from app.llm.structured import parse_with_repair
-    from app.llm.client import PermanentError
 
-    result = await session.execute(text("SELECT title, content_text, lang FROM articles WHERE id=:aid"), {"aid": article_id})
+    result = await session.execute(
+        text("SELECT title, content_text, lang, content_hash FROM articles WHERE id=:aid"),
+        {"aid": article_id},
+    )
     row = result.mappings().first()
     if not row or not row["content_text"]:
         raise PermanentError(f"article {article_id} 内容为空")
@@ -198,7 +211,8 @@ async def extract_entities(session: AsyncSession, article_id: int, settings, llm
     parsed = parse_with_repair(resp.text, expected_keys=["entities", "relations"])
     if not parsed:
         raise PermanentError(f"JSON 解析失败: {resp.text[:200]}")
-    await complete_extract(session, article_id, row["content_text"][:100], parsed, content_text=row["content_text"], settings=settings)
+    # fix #81：传真实 content_hash（版本守卫可比），勿传正文片段
+    await complete_extract(session, article_id, row["content_hash"], parsed, content_text=row["content_text"], settings=settings)
 
 
 async def merge_aliases(session: AsyncSession, alias: str, entity_type: str, canonical_zh: str):
