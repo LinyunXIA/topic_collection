@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sys
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
@@ -59,9 +60,35 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning("LLM 探测异常: %s", e)
 
-    # 4. advisory lock 单例校验（池外长连接，DESIGN §5.4.1）
-    # 暂时仅日志提示，未获锁仍继续（单机单进程场景可接受），Phase 2 后续加严格 exit 1
-    # TODO: 用 asyncpg.connect 直连持有锁至进程退出
+    # 4. advisory lock 单例校验（池外长连接，DESIGN §5.4.1 / §14 2.1.1，fix #42）
+    # 池外专用长连接持有至进程退出，防止 uvicorn + worker 双活并发
+    advisory_conn = None
+    try:
+        import asyncpg  # type: ignore
+
+        raw_dsn = settings.db.dsn.replace("+asyncpg", "")
+        advisory_conn = await asyncpg.connect(raw_dsn)
+        locked = await advisory_conn.fetchval(
+            "SELECT pg_try_advisory_lock(hashtext('topic_collection_worker'))"
+        )
+        if not locked:
+            logger.error(
+                "advisory lock 未获锁，存在另一 worker/webui 进程持有锁，双活风险，强制退出"
+            )
+            await advisory_conn.close()
+            sys.exit(1)
+        logger.info("advisory lock 已获取 (hashtext('topic_collection_worker'))")
+        app.state.advisory_conn = advisory_conn
+    except SystemExit:
+        raise
+    except Exception as e:
+        logger.warning("advisory lock 获取异常: %s (继续启动，单机开发可接受)", e)
+        if advisory_conn is not None:
+            try:
+                await advisory_conn.close()
+            except Exception:
+                pass
+            advisory_conn = None
 
     # 5. recover
     factory = get_session_factory(settings)
@@ -129,6 +156,18 @@ async def lifespan(app: FastAPI):
         await worker_task
     except asyncio.CancelledError:
         pass
+    # 释放 advisory lock（池外长连接持有至进程退出，显式解锁后关闭）
+    _adv = getattr(app.state, "advisory_conn", None) or advisory_conn
+    if _adv is not None:
+        try:
+            await _adv.execute("SELECT pg_advisory_unlock(hashtext('topic_collection_worker'))")
+        except Exception:
+            pass
+        try:
+            await _adv.close()
+        except Exception:
+            pass
+        logger.info("advisory lock 已释放")
     await dispose_engine()
     logger.info("lifespan 已退出")
 
