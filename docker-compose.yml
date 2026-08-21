@@ -1,11 +1,11 @@
-# 开发环境 PostgreSQL + pgvector — DESIGN §5.4（dev 5433，prod 本机 5432 见 §5.4.1）
+# 开发/测试环境 PostgreSQL + pgvector — DESIGN §5.4（dev 5433 / test 5434，prod 本机 5432 见 §5.4.1）
 services:
   postgres:
     image: pgvector/pgvector:pg17
     container_name: tc-postgres
     environment:
-      POSTGRES_USER: ${POSTGRES_USER:-tc}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSKEY:-tc}
+      POSTGRES_USER: tc
+      POSTGRES_PASSWORD: tc
       POSTGRES_DB: topic_collection
     ports:
       - "127.0.0.1:5433:5432"
@@ -17,5 +17,23 @@ services:
       timeout: 5s
       retries: 5
 
+  postgres-test:
+    image: pgvector/pgvector:pg17
+    container_name: tc-postgres-test
+    environment:
+      POSTGRES_USER: tc
+      POSTGRES_PASSWORD: tc
+      POSTGRES_DB: topic_collection_test
+    ports:
+      - "127.0.0.1:5434:5432"
+    volumes:
+      - pgdata-test:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tc -d topic_collection_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
 volumes:
   pgdata:
+  pgdata-test:

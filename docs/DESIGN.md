@@ -470,18 +470,18 @@ CREATE TABLE fetch_events (
 - **tsv 两阶段刷新（防 content 变更后陈旧）**：① 文章入库时即时刷新 tsv 的 `title + content_text` 段（jieba 切词并入）——content 变更后即使尚未重跑 summarize，关键词通道对原文段也是新的；② `summarize` 成功后补刷 `summary_zh + key_points` 段（§6 `complete_summarize` 同事务）。两段拼接用同一条 `jieba_join(title || ' ' || content_text || ' ' || summary_zh || ' ' || key_points_text)`，确保中文关键词能命中英文文章的摘要表述
 - **查询侧**：用 `websearch_to_tsquery('simple', jieba(q))` 或 `plainto_tsquery('simple', jieba(q))`，**不要**用裸 `to_tsquery`——jieba 切出的 token 可能含 `&` `:` `(` `)` 等保留字符，裸 `to_tsquery` 会直接报语法错误；`websearch_to_tsquery` 会自动把非操作符 token 用 `&` 串起来，最安全
 
-### 5.4 开发环境（Docker Compose，已确认）
+### 5.4 开发/测试环境（Docker Compose，已确认）
 
 `docker-compose.yml`（项目根）：
 
 ```yaml
 services:
-  postgres:
+  postgres:                            # dev: 5433
     image: pgvector/pgvector:pg17      # 内置 vector 扩展
     container_name: tc-postgres
     environment:
       POSTGRES_USER: tc
-      POSTGRES_PASSWORD: tc            # 仅本地 dev；生产/非本机改 env 覆盖
+      POSTGRES_PASSWORD: tc            # 仅本地 dev/test；生产/非本机改 env 覆盖
       POSTGRES_DB: topic_collection
     ports:
       - "127.0.0.1:5433:5432"          # 宿主机 5433 避免与本地 PG 冲突
@@ -492,17 +492,39 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+
+  postgres-test:                       # test: 5434，独立卷 pgdata-test
+    image: pgvector/pgvector:pg17
+    container_name: tc-postgres-test
+    environment:
+      POSTGRES_USER: tc
+      POSTGRES_PASSWORD: tc
+      POSTGRES_DB: topic_collection_test
+    ports:
+      - "127.0.0.1:5434:5432"          # 宿主机 5434，test 专用
+    volumes:
+      - pgdata-test:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U tc -d topic_collection_test"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
 volumes:
   pgdata:
+  pgdata-test:
 ```
 
 使用流程：
 ```bash
-docker compose up -d                  # 起库
-python -m scripts.init_db             # CREATE EXTENSION vector + alembic upgrade head（幂等）
-docker compose down                   # 停库（数据保留在 pgdata 卷）
+docker compose up -d                  # 起 dev + test 两个库
+docker compose up -d postgres         # 仅起 dev
+docker compose up -d postgres-test    # 仅起 test
+python -m scripts.init_db             # dev:  CREATE EXTENSION vector + alembic upgrade head（幂等）
+TC_APP_ENV=test python -m scripts.init_db  # test: 同上，初始化 5434/topic_collection_test
+make init / make test-init            # 快捷方式
+docker compose down                   # 停库（数据保留在 pgdata / pgdata-test 卷，-v 才会删）
 ```
-- DSN 与 §9 一致：`postgresql+asyncpg://tc:tc@localhost:5433/topic_collection`（宿主机 5433 映射容器 5432，见 docker-compose.yml）
+- DSN 与 §9 一致：dev `postgresql+asyncpg://tc:tc@localhost:5433/topic_collection`，test `postgresql+asyncpg://tc:tc@localhost:5434/topic_collection_test`（`TC_APP_ENV=test` 时 `db.test_dsn` 自动覆盖 `db.dsn`，`TC_DB__TEST_DSN` 可再覆盖）
 - **schema 唯一真源 = Alembic 迁移**：`scripts/init_db` 只做两件事——① `CREATE EXTENSION IF NOT EXISTS vector;`（`pgvector/pgvector:pg17` 镜像已内置，无需额外安装）；② `alembic upgrade head`（建表全走迁移，**不写裸 DDL**）。§5.1 的 DDL 是「迁移产物的参考快照」、不是另一条建表路径——裸 `CREATE TABLE` 会与首迁移冲突（表已存在报错 / alembic 版本表对不上），且与 §14 切片一「Alembic 迁移 + 扩展/维度校验」重复造轮子
 
 ---

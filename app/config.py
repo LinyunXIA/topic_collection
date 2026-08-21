@@ -14,6 +14,10 @@ class DBSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="TC_DB_")
 
     dsn: str = "postgresql+asyncpg://tc:tc@localhost:5433/topic_collection"
+    test_dsn: str = Field(
+        default="postgresql+asyncpg://tc:tc@localhost:5434/topic_collection_test",
+        description="测试 DSN，TC_APP_ENV=test 时生效（docker postgres-test 5434）",
+    )
     prod_dsn: str | None = Field(
         default=None,
         description="生产 DSN，可含 ${POSTGRES_PASSKEY} 占位，需 TC_APP_ENV=prod 时生效",
@@ -132,7 +136,7 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    app_env: str = Field(default="dev", description="运行环境 dev|prod，TC_APP_ENV 覆盖")
+    app_env: str = Field(default="dev", description="运行环境 dev|test|prod，TC_APP_ENV 覆盖")
     data_dir: str = "./data"
     db: DBSettings = Field(default_factory=DBSettings)
     web: WebSettings = Field(default_factory=WebSettings)
@@ -153,15 +157,28 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return merged
 
 
-def _resolve_prod_dsn(settings: Settings) -> None:
-    """解析生产 DSN：处理 prod_dsn 占位与 POSTGRES_PASSKEY 注入（DESIGN §5.4.1）。
+def _resolve_env_dsn(settings: Settings) -> None:
+    """解析环境 DSN：test/prod 覆盖 dsn（DESIGN §5.4.1）。
 
-    - 仅当 app_env == "prod" 时生效
-    - prod_dsn 可含 ${POSTGRES_PASSKEY} 或 $POSTGRES_PASSKEY 占位，运行时替换
-    - 若 prod_dsn 未配置但 POSTGRES_PASSKEY 已设，构造默认 prod DSN
-    - 缺密码时 fail fast
+    - test: TC_APP_ENV=test 时 dsn = test_dsn（默认 5434/topic_collection_test）
+    - prod: TC_APP_ENV=prod 时处理 prod_dsn 占位与 POSTGRES_PASSKEY 注入
+    - dev: 保持默认 dsn（5433/topic_collection）
     """
     import os
+
+    if settings.app_env == "test":
+        # test_dsn 可含 ${POSTGRES_PASSKEY} 占位（与 prod 同逻辑）
+        test_dsn = settings.db.test_dsn
+        if test_dsn and ("${POSTGRES_PASSKEY}" in test_dsn or "$POSTGRES_PASSKEY" in test_dsn):
+            pwd = os.environ.get("POSTGRES_PASSKEY")
+            if pwd:
+                test_dsn = test_dsn.replace("${POSTGRES_PASSKEY}", pwd).replace("$POSTGRES_PASSKEY", pwd)
+            else:
+                test_dsn = test_dsn.replace(":${POSTGRES_PASSKEY}", "").replace("${POSTGRES_PASSKEY}", "").replace(":$POSTGRES_PASSKEY", "").replace("$POSTGRES_PASSKEY", "")
+            settings.db.test_dsn = test_dsn
+        if test_dsn:
+            settings.db.dsn = test_dsn
+        return
 
     if settings.app_env != "prod":
         return
@@ -190,6 +207,11 @@ def _resolve_prod_dsn(settings: Settings) -> None:
     return
 
 
+def _resolve_prod_dsn(settings: Settings) -> None:
+    """兼容旧名：转发至 _resolve_env_dsn。"""
+    return _resolve_env_dsn(settings)
+
+
 def load_settings(config_path: str | Path | None = None) -> Settings:
     """加载配置：config.yaml → 环境变量覆盖。"""
     import os
@@ -205,10 +227,14 @@ def load_settings(config_path: str | Path | None = None) -> Settings:
     # TC_APP_ENV 需显式覆盖 file_data（model_validate 的 file_data 优先于 env，需手动处理）
     if "TC_APP_ENV" in os.environ:
         settings.app_env = os.environ["TC_APP_ENV"]
-    # TC_DB__PROD_DSN 同理（嵌套 env，需手动覆盖 file_data 的 prod_dsn 占位）
+    # TC_DB__TEST_DSN / TC_DB__PROD_DSN 同理（嵌套 env，需手动覆盖 file_data 的占位）
+    if "TC_DB__TEST_DSN" in os.environ:
+        settings.db.test_dsn = os.environ["TC_DB__TEST_DSN"]
+    elif "TC_DB_TEST_DSN" in os.environ:
+        settings.db.test_dsn = os.environ["TC_DB_TEST_DSN"]
     if "TC_DB__PROD_DSN" in os.environ:
         settings.db.prod_dsn = os.environ["TC_DB__PROD_DSN"]
     elif "TC_DB_PROD_DSN" in os.environ:
         settings.db.prod_dsn = os.environ["TC_DB_PROD_DSN"]
-    _resolve_prod_dsn(settings)
+    _resolve_env_dsn(settings)
     return settings

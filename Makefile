@@ -1,9 +1,12 @@
-.PHONY: init worker prod prod-init backup
+.PHONY: init test-init prod-init worker prod prod-init backup test
 
 # 初始化数据库（CREATE EXTENSION vector + alembic upgrade head）
-# 默认 dev（5433 tc/tc），prod 用 TC_APP_ENV=prod POSTGRES_PASSKEY=*** make prod-init
+# 默认 dev（5433 tc/tc），test 用 TC_APP_ENV=test（5434），prod 用 TC_APP_ENV=prod POSTGRES_PASSKEY=*** make prod-init
 init:
 	python -m scripts.init_db
+
+test-init:
+	TC_APP_ENV=test python -m scripts.init_db
 
 prod-init:
 	TC_APP_ENV=prod python -m scripts.init_db
@@ -20,9 +23,9 @@ prod:
 backup:
 	bash scripts/backup.sh
 
-# 运行测试
+# 运行测试（强制走 test 环境 5434，避免污染 dev）
 test:
-	pytest -x -v
+	TC_APP_ENV=test pytest -x -v
 
 # 代码检查
 lint:
