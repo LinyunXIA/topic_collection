@@ -233,5 +233,12 @@ class TestPredefinedPatches:
 
     def test_openai_patch(self):
         assert OPENAI_PATCH.strip_think_tags is False
-        assert OPENAI_PATCH.send_dimensions is False
+        assert OPENAI_PATCH.send_dimensions is True
+        assert OPENAI_PATCH.dimensions_value == 1536
         assert OPENAI_PATCH.chat_path == "/v1/chat/completions"
+
+    def test_openai_embed_patch(self):
+        from app.llm.patches import OPENAI_EMBED_PATCH
+
+        assert OPENAI_EMBED_PATCH.send_dimensions is True
+        assert OPENAI_EMBED_PATCH.dimensions_value == 1536
