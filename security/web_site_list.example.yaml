@@ -1,0 +1,47 @@
+# 示例：外发白名单（共享出口）— PRD §12 / #78
+#
+# 复制本文件为 security/web_site_list.yaml 并按需修改：
+#     cp security/web_site_list.example.yaml security/web_site_list.yaml
+# 真实文件 security/web_site_list.yaml 已被 .gitignore 忽略（本机环境差异不入库，
+# 避免把你的实际外发域名单/策略提交到仓库）。本示例文件入库，供他人参考结构。
+#
+# app/core/egress.py 的 safe_post / safe_get 按 TC_APP_ENV（dev|test|prod，默认 dev）
+# 读取对应 env 段落校验外发域名。改白名单 = 编辑其对应段落，无需改代码。
+#
+# 说明：
+#   - 每个环境独立成段；未命中当前环境段则回退 dev 段。
+#   - localhost / 私网地址（127.0.0.1、10.*、192.168.*、链路本地等）始终放行，
+#     不在此列。
+#   - FEED_FETCH_ALLOW_ALL=1 可放开 RSS/API 抓取链路（is_feed=True），互不影响。
+#   - 缺失/损坏的回退：加载失败时白名单为空 → 拦截所有非私网外发（fail-closed）。
+
+dev:
+  # 外部 LLM 生成/嵌入
+  - api.minimaxi.com
+  - api.minimax.chat
+  - api.openai.com
+  - api.siliconflow.cn
+  - api.anthropic.com
+  - ark.cn-beijing.volces.com
+  # 飞书推送
+  - open.feishu.cn
+  - open.larksuite.com
+
+test:
+  # 测试套件实际会触发 safe_post/get 的域名
+  - api.openai.com
+  # 飞书推送（若 test 开推送）
+  - open.feishu.cn
+  - open.larksuite.com
+
+prod:
+  # 生产允许的外部端点（按需收缩）
+  - api.minimaxi.com
+  - api.minimax.chat
+  - api.openai.com
+  - api.siliconflow.cn
+  - api.anthropic.com
+  - ark.cn-beijing.volces.com
+  # 飞书推送
+  - open.feishu.cn
+  - open.larksuite.com
