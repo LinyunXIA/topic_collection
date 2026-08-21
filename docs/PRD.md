@@ -1,7 +1,8 @@
 # PRD：Topic Collection —— 主题信息采集 + 摘要 / 翻译 / 知识图谱 / LLM Wiki
 
-版本：v0.15（2026-08-20）· 状态：Phase 1/1+/1++ 已部署，214/214；Phase 2 四项增量 + 5 项回归设计已落 DESIGN_Phase_2.md v0.15
+版本：v0.16（2026-08-21）· 状态：Phase 1/1+/1++ + Phase 2 P0/P1 已部署，226/226；Phase 2 17 项闭环设计已落 DESIGN_Phase_2.md v0.16
 > 工程细节（目录结构 / DDL / LLM 接口 / 流水线）以 [DESIGN.md](DESIGN.md) 为权威，Phase 2 以 [DESIGN_Phase_2.md](DESIGN_Phase_2.md) 为权威
+> v0.16：**Phase 2 P0/P1 17 项闭环 + 测试 214→226**——与 DESIGN/DESIGN_Phase_2 v0.16 同步；`226/226`（`PR #59-76` 闭环 #42-#58，+12）；`advisory lock` 单例、`飞书`共享出口、`rerank/embed 外部化`、`payload 合并`、`prompt 约束`、`slug`/`related_json`/`详情 Tab`/`wiki 去重`/`健康横幅`/`列表筛选`/`feeds config_json`/`settings per-capability`/`reindex wiki` 全部落地，`PRD §15` 验收 1/2/3/4/5/6/7/8/9/16/17/18 全部通过
 > v0.15：**测试计数同步 + 白名单下沉 + 池外长连接 + 2.6.3 拆分**——与 DESIGN/DESIGN_Phase_2 v0.15 同步；`214/214`（`PR #40` +10，`204→214`）；`§14 2.6.3` 拆分，`§13 白名单` 下沉共享出口，`§5.4.1` 补池外约束
 > v0.14：**Phase 2 PRD 四项增量 + 合约修正**——与 DESIGN_Phase_2 v0.15 同步；`v0.13 204/204` 基础上补 `§1 LLM 能力 per-capability`、`§12 Phase 2` 四项（DB 隔离/embed外部/翻译后台/飞书）、`§13 白名单`、`§15 #8 条件式`；`fix #30-34` 5 项回归已合入
 > v0.13：**代码与设计对齐 + 新增 5 项回归**——与 DESIGN v0.14 同步；`204/204 tests passing`（`pytest --collect-only` 204，`gh issue --state open` 0）；新增 `fix #30 scheduler 直注协程` + `fix #31 语义按相似度排序` + `fix #32 空碰撞 30d 窗口` + `fix #33 回灌 RETURNING ids` + `fix #34 tc reindex 回填`；PRD §15 验收 1/3/5/7/8/9/16/17/18 保持通过，`tc reindex` 补存量可检索性
