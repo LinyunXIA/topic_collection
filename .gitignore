@@ -35,6 +35,9 @@ logs/
 *.sqlite3
 project.md
 
+# ───────── 本地安全配置（真实白名单不入库，示例入 repo） ─────────
+security/web_site_list.yaml
+
 # ───────── Secrets / 本地覆盖 ─────────
 .env
 .env.local
