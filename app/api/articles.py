@@ -30,14 +30,50 @@ async def list_articles(
     page: int = 1,
     session: AsyncSession = Depends(get_session),
 ):
-    """文章列表（筛选+分页，Phase 2 骨架）"""
-    # 简化：不做复杂筛选，仅按 dedupe_of IS NULL 分页
-    result = await session.execute(
-        text("SELECT id, title, status, lang, published_at FROM articles WHERE dedupe_of IS NULL ORDER BY fetched_at DESC LIMIT 20 OFFSET :off"),
-        {"off": (page - 1) * 20},
-    )
+    """文章列表（筛选+分页，Phase 2）"""
+    # 动态 WHERE 构建（§3.1: feed/topic/status/q）
+    where = ["a.dedupe_of IS NULL"]
+    params: dict = {"off": (page - 1) * 20, "limit": 20}
+    join_topic = False
+    if feed:
+        # feed 可能是 id 或 name
+        if feed.isdigit():
+            where.append("a.feed_id = :feed_id")
+            params["feed_id"] = int(feed)
+        else:
+            where.append("a.feed_id IN (SELECT id FROM feeds WHERE name = :feed_name)")
+            params["feed_name"] = feed
+    if topic:
+        join_topic = True
+        where.append("a.id IN (SELECT article_id FROM article_topics at JOIN topics t ON t.id = at.topic_id WHERE t.name = :topic_name)")
+        params["topic_name"] = topic
+    if status:
+        where.append("a.status = :status")
+        params["status"] = status
+    if q and q.strip():
+        # q 优先走 FTS，若 tsv 为空则降级 ILIKE
+        try:
+            from app.db.fts import jieba_join_async
+
+            q_joined = await jieba_join_async(q.strip())
+            where.append("a.tsv @@ websearch_to_tsquery('simple', :q)")
+            params["q"] = q_joined
+        except Exception:
+            where.append("(a.title ILIKE :qlike OR a.content_text ILIKE :qlike)")
+            params["qlike"] = f"%{q.strip()}%"
+    where_sql = " AND ".join(where)
+    # HTMX partial 支持
+    is_hx = request.headers.get("HX-Request") == "true"
+    template = "partials/article_row.html" if is_hx else "articles/list.html"
+    # 查询
+    sql = f"SELECT a.id, a.title, a.status, a.lang, a.published_at, a.feed_id FROM articles a WHERE {where_sql} ORDER BY a.fetched_at DESC LIMIT :limit OFFSET :off"
+    result = await session.execute(text(sql), params)
     articles = [dict(row) for row in result.mappings().all()]
-    return templates.TemplateResponse(request, "articles/list.html", {"articles": articles, "page": page})
+    # 分页总数（简化：不计总数，仅传 page）
+    ctx = {"articles": articles, "page": page, "feed": feed, "topic": topic, "status": status, "q": q}
+    if is_hx:
+        return templates.TemplateResponse(request, template, ctx)
+    return templates.TemplateResponse(request, "articles/list.html", ctx)
 
 
 @router.get("/articles/{article_id}", response_class=HTMLResponse)
