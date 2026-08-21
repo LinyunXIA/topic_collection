@@ -70,3 +70,7 @@ topics:
 schedule:
   daily_report: "08:00"
   weekly_report: "Mon 08:00"
+  feishu:
+    enabled: false                       # 置 true 开启飞书推送（需 FEISHU_WEBHOOK 环境变量）
+    webhook_env: FEISHU_WEBHOOK          # webhook URL 所在环境变量名（PRD §12 白名单 open.feishu.cn，不入库）
+    events: ["daily", "weekly"]          # 推送事件范围

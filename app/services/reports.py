@@ -1,9 +1,10 @@
-"""日报/周报 — Phase 2 切片 2.5（DESIGN §10.1）"""
+"""日报/周报 — Phase 2 切片 2.5（DESIGN §10.1 / §10.4 飞书推送）"""
 
 from __future__ import annotations
 
 import json
 import logging
+import os
 from datetime import date, datetime, timedelta
 
 from sqlalchemy import text
@@ -12,6 +13,30 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.config import Settings
 
 logger = logging.getLogger(__name__)
+
+
+async def _maybe_notify_feishu(report_type: str, title: str, markdown: str, settings: Settings | None) -> None:
+    """报告 succeeded 后链式触发飞书推送（DESIGN §10.4）
+
+    失败仅 warning，不阻塞报告生成；webhook 含 token 从环境变量读取。
+    """
+    if not settings:
+        return
+    feishu = getattr(getattr(settings, "schedule", None), "feishu", None)
+    if not feishu or not feishu.enabled:
+        return
+    if report_type not in (feishu.events or []):
+        return
+    webhook = os.getenv(feishu.webhook_env or "FEISHU_WEBHOOK", "")
+    if not webhook:
+        logger.warning("飞书推送跳过：环境变量 %s 未设置", feishu.webhook_env)
+        return
+    try:
+        from app.services.notify import send_feishu_markdown
+
+        await send_feishu_markdown(webhook, title, markdown)
+    except Exception as e:
+        logger.warning("飞书推送异常（不阻塞报告）: %s", e)
 
 
 async def _aggregate_stats(session: AsyncSession, period_start: datetime, period_end: datetime) -> dict:
@@ -125,6 +150,8 @@ async def generate_daily_report(session: AsyncSession, report_dt: datetime | Non
             {"md": content_md, "html": content_html, "stats": json.dumps(stats), "rid": report_id},
         )
         await session.commit()
+        # 飞书推送（succeeded 后链式，失败不阻塞）
+        await _maybe_notify_feishu("daily", f"日报 {period_s}", content_md, settings)
         return report_id
     except Exception as e:
         if 'report_id' in locals() and report_id:
@@ -172,6 +199,8 @@ async def generate_weekly_report(session: AsyncSession, report_dt: datetime | No
             {"md": content_md, "html": content_html, "stats": json.dumps(stats), "rid": report_id},
         )
         await session.commit()
+        # 飞书推送（succeeded 后链式，失败不阻塞）
+        await _maybe_notify_feishu("weekly", f"周报 {period_s} - {period_e}", content_md, settings)
         return report_id
     except Exception as e:
         if 'report_id' in locals() and report_id:
