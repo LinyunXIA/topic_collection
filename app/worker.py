@@ -91,15 +91,41 @@ async def run_extract_entities(
 
 
 async def _run_generate_entity_wiki(session: AsyncSession, job: dict, settings, llm_client=None):
+    import json as _json
+
     from app.services.wiki import generate_article_wiki
 
-    await generate_article_wiki(session, job["article_id"], settings)
+    payload = job.get("payload_json")
+    if isinstance(payload, str):
+        try:
+            payload = _json.loads(payload)
+        except Exception:
+            payload = {}
+    entity_ids = (payload or {}).get("entity_ids") if isinstance(payload, dict) else None
+    if entity_ids:
+        for _eid in entity_ids:
+            await generate_article_wiki(session, job["article_id"], settings)
+    else:
+        await generate_article_wiki(session, job["article_id"], settings)
 
 
 async def _run_generate_topic_wiki(session: AsyncSession, job: dict, settings, llm_client=None):
+    import json as _json
+
     from app.services.wiki import generate_article_wiki
 
-    await generate_article_wiki(session, job["article_id"], settings)
+    payload = job.get("payload_json")
+    if isinstance(payload, str):
+        try:
+            payload = _json.loads(payload)
+        except Exception:
+            payload = {}
+    topic_ids = (payload or {}).get("topic_ids") if isinstance(payload, dict) else None
+    if topic_ids:
+        for _tid in topic_ids:
+            await generate_article_wiki(session, job["article_id"], settings)
+    else:
+        await generate_article_wiki(session, job["article_id"], settings)
 
 
 async def main() -> None:
