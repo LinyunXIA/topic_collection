@@ -59,6 +59,78 @@ def _slugify(title: str, ref_id: int | None = None, kind: str = "article") -> st
         return f"{slug}-{ref_id}" if slug else f"{ref_id}"
 
 
+async def build_related_json(session: AsyncSession, article_id: int) -> list[dict]:
+    """三源合并 related_json（DESIGN §6.X，fix #49）
+
+    - same_topic: 同主题 top-5（按 score）
+    - same_entity: 共现实体 top-5（按共现次数）
+    - same_feed: 同源 top-3（按时间）
+    合并去重取 top-10，字段 {id, title, src, score}，前端按 src 分组渲染。
+    """
+    related_map: dict[int, dict] = {}
+
+    # same_topic — 同主题（score 来自 article_topics.score）
+    try:
+        r = await session.execute(
+            text(
+                "SELECT a.id, a.title, MAX(at.score) AS best_score, MAX(a.published_at) AS pub "
+                "FROM article_topics at JOIN articles a ON a.id = at.article_id "
+                "WHERE a.id != :aid AND a.dedupe_of IS NULL "
+                "AND at.topic_id IN (SELECT topic_id FROM article_topics WHERE article_id = :aid) "
+                "GROUP BY a.id, a.title ORDER BY best_score DESC, pub DESC LIMIT 5"
+            ),
+            {"aid": article_id},
+        )
+        for row in r.mappings().all():
+            related_map[row["id"]] = {"id": row["id"], "title": row["title"], "src": "topic", "score": float(row["best_score"] or 0)}
+    except Exception:
+        pass
+
+    # same_entity — 共现实体（通过 article_entities，若表不存在则跳过）
+    try:
+        r = await session.execute(
+            text(
+                "SELECT a.id, a.title, COUNT(*) AS cnt, MAX(a.published_at) AS pub "
+                "FROM article_entities ae "
+                "JOIN article_entities ae2 ON ae2.entity_id = ae.entity_id "
+                "JOIN articles a ON a.id = ae2.article_id "
+                "WHERE ae.article_id = :aid AND a.id != :aid AND a.dedupe_of IS NULL "
+                "GROUP BY a.id, a.title ORDER BY cnt DESC, pub DESC LIMIT 5"
+            ),
+            {"aid": article_id},
+        )
+        for row in r.mappings().all():
+            if row["id"] in related_map:
+                continue
+            # 共现次数归一化为 0.5 基准 + 计数权重
+            score = 0.5 + min(float(row["cnt"]) * 0.1, 0.5)
+            related_map[row["id"]] = {"id": row["id"], "title": row["title"], "src": "entity", "score": score}
+    except Exception:
+        pass
+
+    # same_feed — 同源（按时间）
+    try:
+        r = await session.execute(
+            text(
+                "SELECT a.id, a.title, a.published_at AS pub FROM articles a "
+                "WHERE a.feed_id = (SELECT feed_id FROM articles WHERE id = :aid) "
+                "AND a.id != :aid AND a.dedupe_of IS NULL "
+                "ORDER BY pub DESC LIMIT 3"
+            ),
+            {"aid": article_id},
+        )
+        for row in r.mappings().all():
+            if row["id"] in related_map:
+                continue
+            related_map[row["id"]] = {"id": row["id"], "title": row["title"], "src": "feed", "score": 0.3}
+    except Exception:
+        pass
+
+    # 合并去重后按 score 排序取 top-10
+    merged = sorted(related_map.values(), key=lambda x: x["score"], reverse=True)[:10]
+    return merged
+
+
 async def generate_article_wiki(
     session: AsyncSession,
     article_id: int,
@@ -66,7 +138,7 @@ async def generate_article_wiki(
 ) -> int | None:
     """为文章生成 wiki 词条（DESIGN §6：摘要落地后触发）。
 
-    Phase 1: related_json = 同主题 article top-5（按 score DESC, published_at DESC）。
+    related_json 三源合并：同主题 + 共现实体 + 同源（§6.X）。
     返回 wiki_page id。
     """
     # 获取文章信息 + 摘要
@@ -104,26 +176,8 @@ async def generate_article_wiki(
 
     content_md = "\n".join(md_parts)
 
-    # 获取 related articles（同主题 top-5，DESIGN §6 Phase 1）
-    related_result = await session.execute(
-        text(
-            # 共享多个主题的文章会被 JOIN 出多行，必须按文章聚合去重，
-            # 否则同一篇相关文章会在 top-5 里重复占位
-            "SELECT a.id, a.title, MAX(at.score) AS best_score, "
-            "       MAX(a.published_at) AS pub "
-            "FROM article_topics at "
-            "JOIN articles a ON a.id = at.article_id "
-            "WHERE a.id != :aid AND a.dedupe_of IS NULL "
-            "AND at.topic_id IN ("
-            "  SELECT topic_id FROM article_topics WHERE article_id = :aid"
-            ") "
-            "GROUP BY a.id, a.title "
-            "ORDER BY best_score DESC, pub DESC "
-            "LIMIT 5"
-        ),
-        {"aid": article_id},
-    )
-    related = [{"id": r["id"], "title": r["title"]} for r in related_result.mappings().all()]
+    # 三源合并 related_json（§6.X）
+    related = await build_related_json(session, article_id)
 
     # Upsert wiki_page
     slug = _slugify(title, article_id)
