@@ -1,8 +1,9 @@
 """LLM Provider Factory — 按能力构建 provider
 
 per-capability backend 选择：generate / embed / rerank 各自独立，
-embed 强制本地 omlx（隐私，DESIGN §4.3/§12），rerank 同 embed 支持
-backend: openai 等外部，外部暂不支持则早失败提示回退 omlx（DESIGN §4.8）。
+embed 支持 omlx（本地，默认）| 外部 OpenAI 兼容 providers（需显式传 dimensions=1536，
+DESIGN §4.3/§4.7/§12），rerank 同 embed 支持 backend: openai 等外部，外部暂不支持则
+早失败提示回退 omlx（DESIGN §4.8）。
 
 用法：
     provider = build_provider("generate", settings)
@@ -13,11 +14,12 @@ from __future__ import annotations
 
 import logging
 import os
+from dataclasses import replace
 from typing import Literal
 
 from app.config import LLMSettings, Settings
 from app.llm.base import LLMProvider
-from app.llm.patches import ProviderPatch
+from app.llm.patches import OPENAI_EMBED_PATCH, ProviderPatch
 
 logger = logging.getLogger(__name__)
 
@@ -104,6 +106,24 @@ def _build_openai(
     )
 
 
+def _merge_embed_patch(provider_cfg) -> ProviderPatch:
+    """外部 embed patch：以 OPENAI_EMBED_PATCH（强制 dimensions=1536）为基底，
+    叠加 provider.patch 中用户显式声明的字段（如 embed_path=/embeddings）。
+
+    数据库是 vector(1536) + HNSW，结果会在 llm_tasks.complete_embed 强校验维度，
+    因此外部嵌入必须发 dimensions=1536；这里保证该语义始终生效。
+    """
+    base = OPENAI_EMBED_PATCH
+    yaml_patch = _dict_to_patch(provider_cfg.patch) or ProviderPatch()
+    overrides = {}
+    for name in ProviderPatch.__dataclass_fields__:
+        yv = getattr(yaml_patch, name)
+        dv = getattr(ProviderPatch(), name)
+        if yv != dv:  # 用户显式声明才覆盖
+            overrides[name] = yv
+    return replace(base, **overrides)
+
+
 def build_provider(
     capability: Literal["generate", "embed", "rerank"],
     settings: Settings | LLMSettings,
@@ -111,7 +131,7 @@ def build_provider(
     """根据能力类型和配置构建对应的 LLMProvider。
 
     - generate：可选 omlx | openai（从 settings.generate 或顶层字段读取）
-    - embed：强制 omlx（本地，隐私）
+    - embed：可选 omlx | 外部 OpenAI 兼容 providers（需显式传 dimensions=1536，DESIGN §4.7）
     - rerank：可选 omlx | openai 等外部，外部暂抛 ValueError 提示回退 omlx（DESIGN §4.8）
 
     Raises:
@@ -172,20 +192,31 @@ def build_provider(
             )
 
     elif capability == "embed":
-        # 强制本地
+        # §4.3/§4.7 支持 backend: openai 等外部，需显式传 dimensions=1536
         cfg = llm.embed
-        if cfg.backend != "omlx":
-            raise ValueError(
-                f"embed 能力强制本地 omlx，不支持 '{cfg.backend}'；"
-                f"请勿修改 embed.backend 配置"
+        if cfg.backend == "omlx":
+            return _build_omlx(
+                endpoint=cfg.endpoint,
+                api_key_env=cfg.api_key_env,
+                generation_model="",  # embed 不用 generation_model
+                embedding_model=cfg.model,
+                rerank_model=None,
             )
-        return _build_omlx(
-            endpoint=cfg.endpoint,
-            api_key_env=cfg.api_key_env,
-            generation_model="",  # embed 不用 generation_model
-            embedding_model=cfg.model,
-            rerank_model=None,
-        )
+        elif cfg.backend in llm.providers:
+            # 外部 OpenAI 兼容 embed：按 providers 注册表走
+            provider_cfg = llm.providers[cfg.backend]
+            return _build_openai(
+                endpoint=provider_cfg.endpoint,
+                api_key_env=provider_cfg.api_key_env,
+                generation_model="",  # embed 不用 generation_model
+                embedding_model=cfg.model,
+                patch=_merge_embed_patch(provider_cfg),
+            )
+        else:
+            raise ValueError(
+                f"embed 能力不支持 backend '{cfg.backend}'；"
+                f"可用：omlx（本地）或 providers 注册表中的 key（{list(llm.providers.keys())}）"
+            )
 
     elif capability == "rerank":
         # §4.8 同 embed 支持 backend: openai 等外部 provider，外部不支持则早失败提示回退 omlx

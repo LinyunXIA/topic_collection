@@ -15,7 +15,7 @@ import pytest
 from app.llm.base import GenerateRequest, HealthStatus
 from app.llm.client import LLMClient, PermanentError
 from app.llm.factory import build_provider, _resolve_api_key
-from app.config import load_settings
+from app.config import EmbedSettings, ProviderConfig, load_settings
 
 
 # ── OpenAIProvider 基本行为 ────────────────────────────────────────
@@ -243,11 +243,34 @@ class TestBuildProvider:
         with pytest.raises(RuntimeError, match="FAKE_KEY_FOR_TEST.*未设置"):
             build_provider("generate", settings)
 
-    def test_build_embed_rejects_non_omlx(self):
-        """embed 后端不是 omlx → ValueError。"""
+    def test_build_embed_openai(self, monkeypatch):
+        """embed 后端切到 providers 注册的外部 OpenAI 兼容服务（火山方舟 Doubao）→ OpenAIProvider。"""
+        monkeypatch.setenv("DOUBAO_KEY_FOR_TEST", "sk-test")
         settings = load_settings()
-        settings.llm.embed = MagicMock(backend="openai")
-        with pytest.raises(ValueError, match="embed.*强制本地"):
+        settings.llm.embed = EmbedSettings(
+            backend="doubao",
+            endpoint="https://ark.cn-beijing.volces.com/api/v3",
+            model="doubao-embedding-vision-251215",
+        )
+        settings.llm.providers = {
+            "doubao": ProviderConfig(
+                endpoint="https://ark.cn-beijing.volces.com/api/v3",
+                api_key_env="DOUBAO_KEY_FOR_TEST",
+                patch={"send_dimensions": True, "dimensions_value": 1536, "embed_path": "/embeddings"},
+            ),
+        }
+        p = build_provider("embed", settings)
+        assert p.name == "openai"
+        assert p.embedding_model == "doubao-embedding-vision-251215"
+        # 外部 embed 必发 dimensions=1536 且走 /embeddings 路径（避免 /v3/v1/embeddings）
+        assert p._adapter.patch.send_dimensions is True
+        assert p._adapter.patch.embed_path == "/embeddings"
+
+    def test_build_embed_unknown_backend(self):
+        """embed 后端不在 omlx 也不在 providers 注册表 → ValueError 提示可用后端。"""
+        settings = load_settings()
+        settings.llm.embed = MagicMock(backend="not-a-provider")
+        with pytest.raises(ValueError, match="embed 能力不支持 backend"):
             build_provider("embed", settings)
 
     def test_build_rerank_rejects_non_omlx(self):

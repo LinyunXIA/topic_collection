@@ -1,11 +1,12 @@
 # Topic Collection 主配置 — DESIGN §9
 # 凭据走环境变量覆盖，不在此文件中
 
-# app_env: dev  # dev|prod，TC_APP_ENV 覆盖；prod 走本机 5432 postgres/${POSTGRES_PASSKEY}（DESIGN §5.4.1），默认 dev
+# app_env: dev  # dev|test|prod，TC_APP_ENV 覆盖；test 走 5434/topic_collection_test，prod 走本机 5432 postgres/${POSTGRES_PASSKEY}（DESIGN §5.4.1），默认 dev
 data_dir: ./data
 
 db:
-  dsn: postgresql+asyncpg://tc:tc@localhost:5433/topic_collection  # dev: 5433 tc/tc；prod: TC_DB__PROD_DSN 或 POSTGRES_PASSKEY 构造
+  dsn: postgresql+asyncpg://tc:tc@localhost:5433/topic_collection  # dev: 5433 tc/tc；test: 5434/topic_collection_test；prod: TC_DB__PROD_DSN 或 POSTGRES_PASSKEY 构造
+  test_dsn: postgresql+asyncpg://tc:tc@localhost:5434/topic_collection_test  # test: 5434 tc/tc，可被 TC_DB__TEST_DSN 覆盖
   prod_dsn: postgresql+asyncpg://postgres:${POSTGRES_PASSKEY}@localhost:5432/topic_collection  # prod 示例，TC_DB__PROD_DSN 覆盖
   pool_size: 5
   vector_dim: 1536            # Qwen3-Embedding 输出经 dimensions=1536 截断
@@ -27,7 +28,7 @@ llm:
     api_key_env: MiniMax_Key
     model: MiniMax-M3
   embed:
-    backend: omlx
+    backend: omlx                       # 默认本地；改 doubao 即切外部（已在下方注册，DESIGN §4.7）
     endpoint: http://localhost:8000
     model: Qwen3-Embedding-8B-4bit-DWQ
     max_tokens: 8192
@@ -42,6 +43,15 @@ llm:
       patch:
         strip_think_tags: true
         strip_code_fences: true
+    # 外部嵌入可选：将 embed.backend 改为 doubao、model 改为 doubao-embedding-vision-251215
+    # 同时 export volcengine_key=<key> 即可切换（desc 维度须为 1536）
+    doubao:
+      endpoint: https://ark.cn-beijing.volces.com/api/v3
+      api_key_env: volcengine_key
+      patch:
+        send_dimensions: true
+        dimensions_value: 1536
+        embed_path: /embeddings        # 拼出 .../api/v3/embeddings，避免 /v3/v1/embeddings
   # 外部 provider 注册表（仅 OpenAI 兼容协议；多个可同时声明）
   # providers:
   #   openai:
