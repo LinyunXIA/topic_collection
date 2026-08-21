@@ -16,9 +16,24 @@ try:
 except ImportError:
     jmespath = None
 
+from app.core.egress import safe_get, safe_post
 from app.ingest.base import FeedItem
 
 logger = logging.getLogger(__name__)
+
+
+async def _api_request(
+    method: str,
+    url: str,
+    *,
+    headers: dict | None = None,
+    params: dict | None = None,
+    timeout: float = 30.0,
+) -> httpx.Response:
+    """经共享出口 egress（is_feed=True，FEED_FETCH_ALLOW_ALL 可全量放行）发起 API 抓取请求。"""
+    if method.upper() == "POST":
+        return await safe_post(url, headers=headers, json=params, timeout=timeout, is_feed=True)
+    return await safe_get(url, headers=headers, params=params, timeout=timeout, is_feed=True)
 
 
 def _map_to_feed_item(doc: dict, mapper: dict, lang: str = "en") -> FeedItem:
@@ -100,44 +115,43 @@ async def fetch_api(feed: dict | Any) -> list[FeedItem]:
     id_to_detail = cfg.get("id_to_detail")
 
     # 速率限制：本机简单 sleep，已有 per_host 限速在外层
-    async with httpx.AsyncClient(timeout=30, headers=headers) as client:
-        resp = await client.request(method, endpoint, params=params)
-        resp.raise_for_status()
-        data = resp.json()
-        if jmespath:
-            ids = jmespath.search(items_path, data) or []
-        else:
-            ids = data if isinstance(data, list) else []
+    resp = await _api_request(method, endpoint, headers=headers, params=params)
+    resp.raise_for_status()
+    data = resp.json()
+    if jmespath:
+        ids = jmespath.search(items_path, data) or []
+    else:
+        ids = data if isinstance(data, list) else []
 
-        # 若有 id_to_detail，需二次拉取详情
-        if id_to_detail and isinstance(ids, list) and ids and isinstance(ids[0], (str, int)):
-            results: list[FeedItem] = []
-            max_items = cfg.get("max_items_per_fetch", 50)
-            for id_ in ids[:max_items]:
-                detail_url = id_to_detail["endpoint_template"].format(id=id_)
-                detail_method = id_to_detail.get("method", "GET")
-                try:
-                    detail = await client.request(detail_method, detail_url)
-                    detail.raise_for_status()
-                    doc = detail.json()
-                    item = _map_to_feed_item(doc, mapper, lang)
-                    item.feed_id = feed_id
-                    results.append(item)
-                except Exception as e:
-                    logger.warning("fetch_api detail %s 失败: %s", id_, e)
-                    continue
-            return results
-        # 否则直接映射
-        if isinstance(ids, dict):
-            # jmespath 返回单对象而非列表
-            ids = [ids]
-        if not isinstance(ids, list):
-            ids = [data]
-        results = []
-        for doc in ids:
-            if not isinstance(doc, dict):
+    # 若有 id_to_detail，需二次拉取详情
+    if id_to_detail and isinstance(ids, list) and ids and isinstance(ids[0], (str, int)):
+        results: list[FeedItem] = []
+        max_items = cfg.get("max_items_per_fetch", 50)
+        for id_ in ids[:max_items]:
+            detail_url = id_to_detail["endpoint_template"].format(id=id_)
+            detail_method = id_to_detail.get("method", "GET")
+            try:
+                detail = await _api_request(detail_method, detail_url, headers=headers)
+                detail.raise_for_status()
+                doc = detail.json()
+                item = _map_to_feed_item(doc, mapper, lang)
+                item.feed_id = feed_id
+                results.append(item)
+            except Exception as e:
+                logger.warning("fetch_api detail %s 失败: %s", id_, e)
                 continue
-            item = _map_to_feed_item(doc, mapper, lang)
-            item.feed_id = feed_id
-            results.append(item)
         return results
+    # 否则直接映射
+    if isinstance(ids, dict):
+        # jmespath 返回单对象而非列表
+        ids = [ids]
+    if not isinstance(ids, list):
+        ids = [data]
+    results = []
+    for doc in ids:
+        if not isinstance(doc, dict):
+            continue
+        item = _map_to_feed_item(doc, mapper, lang)
+        item.feed_id = feed_id
+        results.append(item)
+    return results

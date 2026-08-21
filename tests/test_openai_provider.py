@@ -23,10 +23,14 @@ from app.config import EmbedSettings, ProviderConfig, load_settings
 class TestOpenAIProvider:
     """OpenAI provider 端到端调用测试（mock HTTP）。"""
 
-    def _make_provider(self, api_key: str | None = "sk-test"):
+    def _make_provider(
+        self,
+        api_key: str | None = "sk-test",
+        base_url: str = "https://api.openai.com/v1",
+    ):
         from app.llm.openai import OpenAIProvider
         return OpenAIProvider(
-            base_url="https://api.openai.com/v1",
+            base_url=base_url,
             api_key=api_key,
             generation_model="gpt-4o-mini",
             embedding_model="text-embedding-3-small",
@@ -138,6 +142,17 @@ class TestOpenAIProvider:
 
         assert status.healthy is False
         assert "connection refused" in status.error
+
+    @pytest.mark.asyncio
+    async def test_generate_rejects_non_whitelisted_host(self):
+        """base_url 域名不在 egress 白名单 → generate 抛 PermanentError，且不发任何请求（#78）。"""
+        provider = self._make_provider(base_url="https://not-in-whitelist.example.com/v1")
+        req = GenerateRequest(model="m", messages=[{"role": "user", "content": "hi"}])
+        with patch("httpx.AsyncClient.post", new_callable=AsyncMock) as mock_post:
+            with pytest.raises(PermanentError, match="白名单"):
+                await provider.generate(req)
+        # 白名单拦截发生在 safe_post 入网前，不会真正发出 HTTP 请求
+        mock_post.assert_not_awaited()
 
 
 # ── LLMClient 401 → PermanentError（Phase 0 集成验证） ─────────────

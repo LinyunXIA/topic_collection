@@ -9,8 +9,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-import httpx
-
+from app.core.egress import safe_get, safe_post
 from app.llm.adapter import LLMAdapter
 from app.llm.base import (
     EmbedResult,
@@ -57,15 +56,18 @@ class OpenAIProvider:
     async def _post(
         self, url: str, payload: dict, timeout: float = 180
     ) -> dict[str, Any]:
-        """发送 POST 请求并返回 JSON 响应。"""
-        async with httpx.AsyncClient(timeout=timeout) as client:
-            resp = await client.post(url, headers=self._headers(), json=payload)
-            if resp.status_code != 200:
-                logger.error(
-                    "API %s %s → %d: %s",
-                    resp.request.method, url, resp.status_code, resp.text[:500],
-                )
-            resp.raise_for_status()
+        """发送 POST 请求并返回 JSON 响应。
+
+        走共享出口 egress.safe_post：外部 LLM 域名必须命中白名单（PRD §12），
+        未命中直接抛 PermanentError，避免文章全文发往任意域名（#78）。
+        """
+        resp = await safe_post(url, headers=self._headers(), json=payload, timeout=timeout)
+        if resp.status_code != 200:
+            logger.error(
+                "API %s %s → %d: %s",
+                resp.request.method, url, resp.status_code, resp.text[:500],
+            )
+        resp.raise_for_status()
         return resp.json()
 
     async def generate(self, req: GenerateRequest) -> GenerateResult:
@@ -97,15 +99,15 @@ class OpenAIProvider:
         )
 
     async def healthcheck(self) -> HealthStatus:
-        """GET /v1/models 探测端点可用性。"""
+        """GET /v1/models 探测端点可用性（走 egress.safe_get 白名单校验）。"""
         t0 = now_ms()
         try:
-            async with httpx.AsyncClient(timeout=10) as client:
-                resp = await client.get(
-                    self._adapter.models_url(self.base_url),
-                    headers=self._headers(),
-                )
-                resp.raise_for_status()
+            resp = await safe_get(
+                self._adapter.models_url(self.base_url),
+                headers=self._headers(),
+                timeout=10,
+            )
+            resp.raise_for_status()
             data = resp.json()
             models = [m["id"] for m in data.get("data", [])]
             return HealthStatus(
