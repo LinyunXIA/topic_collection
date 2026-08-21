@@ -368,7 +368,7 @@ async def recover_interrupted(
     *,
     force_all_running: bool = False,
 ) -> int:
-    """回收过期 / 孤立的 running job（DESIGN §6）。
+    """回收过期 / 孤立的 running job（DESIGN §6，#58 P2 边界）。
 
     Args:
         session_factory: async session factory
@@ -376,8 +376,10 @@ async def recover_interrupted(
                             处理前 worker 被强杀、lease 尚未过期的场景）；
                           False（默认）→ 仅回收 lock_until < now() 的过期 lease（运行期安全）。
 
-    Phase 1 单 worker 假设由 CLAUDE.md 锁定：启动时可用 force_all_running=True 抢锁，
-    周期回收维持 force_all_running=False 防止双 worker 误抢。
+    Phase 1 单进程锁定（#58.1）：`force_all_running=True` 仅限单实例启动期使用（`worker_loop` 启动时一次、`lifespan` 启动时一次），
+    依赖 Phase 1 “单 worker / 单 uvicorn” 不变量（`CLAUDE.md` + `§5.4.1 advisory lock`）。多 worker 同时以 `True` 启动会撞锁误抢、
+    把对方正处理的 running job 重置回 queued → 重复执行。保持现状，补充本文档；
+    Phase 2 多进程时改用分布式锁（advisory lock 保护 recover 临界区或 `SELECT ... FOR UPDATE` 排他）。
 
     不动 error 字段，recover_count 追踪回收次数。
     """
