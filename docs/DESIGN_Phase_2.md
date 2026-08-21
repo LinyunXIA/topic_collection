@@ -1,12 +1,12 @@
 # 技术设计文档 — Phase 2 蓝图 — Topic Collection
 
 > 关联文档：[DESIGN.md](DESIGN.md)（Phase 1/1+/1++ 已部署，无问题，新起点） + [PRD.md](PRD.md)
-> 版本：v0.15 · 2026-08-20 · Phase 2 增量：DB 隔离 + embed/rerank 外部化 + 翻译后台 + 飞书推送
+> 版本：v0.16 · 2026-08-21 · Phase 2 P0/P1 完成（17 项闭环，226/226 tests）
 > 本文件为 Phase 2（WebUI Dashboard + 实体/图谱/报告/API 连接器）及后续阶段的权威设计，原 DESIGN.md 仅保留 Phase 1/1+/1++ 已部署内容
 
-> **拆分说明**：2026-08-20 Phase 1/1+/1++ 全部署且 214/214，无 OPEN Issue。按用户要求将 DESIGN.md 中 Phase 2 及之后章节移至此文件，DESIGN.md 作为 Phase 1 新起点。
+> **拆分说明**：2026-08-21 Phase 1/1+/1++ + Phase 2 P0/P1 全部署且 226/226，无 OPEN Issue（除 P2 #58 已单 PR 闭环）。按用户要求将 DESIGN.md 中 Phase 2 及之后章节移至此文件，DESIGN.md 作为 Phase 1 新起点。
 
-> v0.15（2026-08-20 增量）：`PR #40` 补 `tests/test_regression_31_34.py` 10 用例，`204→214`；`§14 2.6.3` 拆为 `2.6.3a`/`2.6.3b`（`a003` 仅 `tsv` 列，跨表 UNION 待做）；`§10.4` 白名单下沉共享出口；`§5.4.1` 补池外长连接约束。
+> v0.16（2026-08-21 增量）：`PR #59-76` 闭环 #42-#58（17 项，214→226）；`advisory lock` 池外长连接单例、`飞书`共享出口、`rerank`外部化回退、`embed dimensions=1536`（`OPENAI_EMBED_PATCH`）、`payload 合并`、`prompt canonical_name_zh`、`slug`分 kind、`related_json`三源、`详情 7 Tab`、`wiki 去重`按 `ref_id`、`健康横幅`三端点、`列表筛选`、`feeds config_json`、`settings per-capability`、`reindex wiki`、`P2 边界`；`§4.3/§4.7` 外部化同步代码，`§5.4.1` 生产隔离与 `§10.4` 白名单已落地
 
 > v0.15（2026-08-20）：**Phase 2 PRD 4 项增量**——① `§5.4.1` 生产 DB 本机 `postgres:5432 postgres/${POSTGRES_PASSKEY}` 与开发 `5433 tc/tc` 隔离，可单独 `TC_APP_ENV=prod` 启动；② `§4.3/4.7` `embed`/`rerank` 解除强制本地，`per-capability` 自由切本地/外部（`dimensions=1536` 不变，标准 `ProviderPatch`）；③ `§6.Z` 翻译本地 27B 后台慢任务，落库即原文可读、译文 `translating: true` 轮询；④ `§10.4` 日报/周报飞书 Webhook 机器人推送（`open.feishu.cn`）。
 

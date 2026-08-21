@@ -2,7 +2,8 @@
 
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述（目录结构 / DDL / 接口）只在一处维护、另一处引用，避免漂移
-> 版本：v0.15 · 2026-08-20 · Phase 1/1+/1++ 已部署（13 项 Issue 闭环，214/214 tests，Phase 2 已拆分至 DESIGN_Phase_2.md）
+> 版本：v0.16 · 2026-08-21 · Phase 1/1+/1++ + Phase 2 P0/P1 完成（17 项 Issue 闭环，226/226 tests，Phase 2 已拆分至 DESIGN_Phase_2.md）
+> v0.16：**Phase 2 P0/P1 17 项闭环 + 测试 214→226**——`PR #59 #60 #61 #62 #63 #65-76` 闭环 #42-#58（`advisory lock`/`飞书`/`rerank+embed 外部化`/`payload 合并`/`prompt 约束`/`slug`/`related_json`/`详情 Tab`/`wiki 去重`/`健康横幅`/`列表筛选`/`feeds config_json`/`settings per-capability`/`reindex wiki`/`P2 边界`），`226/226 tests passing`（`--collect-only` 226），`§4.3/§4.7` 外部化及 `dimensions=1536` 同步代码，`§5.1/§9/§10` 白名单与配置同步
 > v0.15：**测试计数同步 + 2.6.3 拆分**——`PR #40` 补 `tests/test_regression_31_34.py` 10 用例，`204→214`，`gh issue --state open` 0；`§14 2.6.3` 拆为 `2.6.3a`/`2.6.3b`
 > v0.14：**代码与设计对齐 + 新增 5 项回归修复**——与当时代码（204/204 tests passing, `pytest --collect-only` 204）对齐，`gh issue --state open` 0：
 >   **P0 阻断 2 项**——① `app/scheduler.py:251` 直注协程函数（`fix #30` 去 `lambda: ensure_future`，APScheduler 线程池 `RuntimeError: no current event loop` 导致 5 任务永不执行）；② `app/services/search.py:170` `DISTINCT ON + ORDER BY article_id` 改 `ORDER BY distance` 全局相似度 + 应用层去重（`fix #31`，`PRD 9` 按 id 选结果，HNSW 失效，RRF 污染）；
@@ -204,11 +205,11 @@ class GenerateResult: text: str; finish_reason: str; usage: dict | None; latency
 - **实现**：`app/llm/openai.py`（`OpenAIProvider`），遵循 §4.1 `LLMProvider` Protocol
 - **端点**：与 oMLX 相同路径（`/v1/chat/completions`、`/v1/embeddings`、`/v1/models`），但 **Authorization header 必带**（外部 API 必鉴权）
 - **json_mode**：`response_format: {type: json_object}`，与 oMLX 行为一致
-- **embed `dimensions`**：**不传**（不同 OpenAI 兼容 API 支持情况不一），由 `complete_embed` 钩子统一校验维度（§5.2）
-- **rerank**：`raise NotImplementedError`（OpenAI 不支持 Cohere 风格 rerank）；rerank 强制走本地 oMLX
+- **embed `dimensions`**：按 `ProviderPatch.send_dimensions=true` 传 `dimensions=1536`（`OPENAI_PATCH`/`OPENAI_EMBED_PATCH`，§4.7），外部 `dimensions` 对齐 `vector(1536)`，`complete_embed` 钩子再校验维度（§5.2）
+- **rerank**：外部暂 `ValueError` 提示回退 `omlx`（`factory` 早失败），`OpenAIProvider.rerank` 仍 `NotImplementedError`；Phase 2 自由切 `backend: openai` 已打通（§4.8）
 - **错误分类**（§4.4 / §6）：401/403/400 → `PermanentError`（不退避，`attempt+1`，`max_attempts` 死信）；5xx/429 → 瞬时退避；**在 `LLMClient._retry_transient` 内联判断**（不调用 `_classify_http_error` 方法——Python except 块内 raise 的异常不被同 try 的其他 except 捕获）
 - **instruct prefix**：OpenAI embedding 不加 instruct prefix（`embed_instruct_prefix = ""`）；oMLX 加 Qwen3 prefix（§4.2）；`LLMClient.embed_query` 通过 `provider.embed_instruct_prefix` 属性读取（Protocol 新增此字段）
-- **per-capability 切换**：`app/llm/factory.py` 的 `build_provider(capability, settings)` 按能力构建 provider；generate 可选 `omlx | openai`，embed/rerank 强制 `omlx`（隐私，§12）；API key 从环境变量读取（`api_key_env` 字段引用 env var 名），启动时 fail fast
+- **per-capability 切换**：`app/llm/factory.py` 的 `build_provider(capability, settings)` 按能力构建 provider；`generate` 可选 `omlx|openai`，`embed`/`rerank` 已自由切 `backend: openai` 等外部（`§4.8`，`ProviderPatch` 控制 `dimensions` 与 `ValueError` 回退 `omlx`）；API key 从环境变量读取（`api_key_env` 字段引用 env var 名），启动时 fail fast
 - **配置**（§9）：`llm.generate.backend: openai` + `llm.providers.openai.endpoint` + `llm.providers.openai.api_key_env: OPENAI_API_KEY`；环境变量 `TC_LLM__GENERATE__BACKEND=openai`
 
 ### 4.4 降级链路
@@ -279,10 +280,11 @@ GenerateResult (内部DTO，text 已清理 think/围栏)
 
 **预定义 Patch**（`app/llm/patches.py`）：
 - `OMLX_PATCH`：`send_dimensions=True, dimensions_value=1536`
+- `OPENAI_PATCH`：`send_dimensions=True, dimensions_value=1536`（外部 embed 对齐 `vector(1536)`，§4.3）
+- `OPENAI_EMBED_PATCH`：同上，语义显式便于 `embed` 能力选用
 - `MINIMAX_PATCH`：`strip_think_tags=True, strip_code_fences=True`
 - `DEEPSEEK_CHAT_PATCH`：`chat_path="/chat/completions"`
 - `DEEPSEEK_REASONER_PATCH`：`strip_think_tags=True, chat_path="/chat/completions", drop_request_fields=["temperature"]`
-- `OPENAI_PATCH`：空（标准 OpenAI 无特殊 patch）
 
 **新增 provider 流程（零代码改动）**：
 1. `config.yaml` 加 `providers.xxx: {endpoint, api_key_env, patch: {...}}`
