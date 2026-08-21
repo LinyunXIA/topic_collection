@@ -320,3 +320,69 @@ class TestHybridSearch:
             # 无 LLM → 降级 keyword
             assert resp.mode == "keyword"
             assert len(resp.results) >= 1
+
+
+# ── Wiki 通道去重集成测试（#51）───────────────────────────────
+
+class TestWikiDedup:
+    @pytest.mark.asyncio
+    async def test_wiki_article_dedup_by_ref_id(self, settings):
+        """wiki kind=article 且 ref_id 已命中 article → 去重；kind!=article 不去重（§7.1）。"""
+        from app.db.fts import update_wiki_tsv
+
+        await clean_all(settings)
+        # 额外清理 wiki
+        from sqlalchemy.ext.asyncio import create_async_engine
+
+        eng = create_async_engine(settings.db.dsn, pool_size=2)
+        async with eng.connect() as conn:
+            await conn.execute(text("DELETE FROM wiki_pages"))
+            await conn.commit()
+        await eng.dispose()
+        from app.db import engine as _eng_mod
+
+        if _eng_mod._engine is not None:
+            await _eng_mod._engine.dispose()
+            _eng_mod._engine = None
+            _eng_mod._session_factory = None
+
+        factory = get_session_factory(settings)
+        async with factory() as session:
+            aid = await _insert_article(
+                session,
+                "https://test.com/wiki-dedup-a",
+                "量子计算技术深度解析",
+                "量子计算是下一代计算技术的核心方向，本文深度解析。",
+                lang="zh",
+            )
+            # wiki1: kind=article, ref_id=aid → 应被去重
+            r = await session.execute(
+                text(
+                    "INSERT INTO wiki_pages (kind, ref_id, title, slug, content_md) "
+                    "VALUES ('article', :ref_id, :title, :slug, :md) RETURNING id"
+                ),
+                {"ref_id": aid, "title": "量子计算 Wiki", "slug": f"quantum-wiki-{aid}", "md": "量子计算 Wiki 内容深度解析"},
+            )
+            wiki_article_id = r.scalar()
+            await update_wiki_tsv(session, wiki_article_id)
+            # wiki2: kind=entity, ref_id 与 aid 数值相同但 kind 不同 → 不去重
+            r2 = await session.execute(
+                text(
+                    "INSERT INTO wiki_pages (kind, ref_id, title, slug, content_md) "
+                    "VALUES ('entity', :ref_id, :title, :slug, :md) RETURNING id"
+                ),
+                {"ref_id": aid, "title": "量子计算实体", "slug": f"entity-quantum-{aid}", "md": "量子计算实体介绍"},
+            )
+            wiki_entity_id = r2.scalar()
+            await update_wiki_tsv(session, wiki_entity_id)
+            await session.commit()
+
+        async with factory() as session:
+            resp = await search(session, "量子计算", settings, None, mode="keyword", limit=10)
+            ids = [(r.id, r.source) for r in resp.results]
+            # article 必命中
+            assert any(i == aid and s == "article" for i, s in ids)
+            # 同 ref_id 的 article wiki 应被去重（按 ref_id，不按 wiki id）
+            assert not any(i == wiki_article_id and s == "wiki" for i, s in ids), "kind=article 的 wiki 未去重"
+            # entity wiki 即使 ref_id 数值相同也不去重
+            assert any(i == wiki_entity_id and s == "wiki" for i, s in ids), "kind=entity 的 wiki 被误删"
