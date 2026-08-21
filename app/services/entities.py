@@ -216,7 +216,11 @@ async def extract_entities(session: AsyncSession, article_id: int, settings, llm
 
 
 async def merge_aliases(session: AsyncSession, alias: str, entity_type: str, canonical_zh: str):
-    """把 alias 折叠到 canonical_zh（pg_trgm 相似度 >0.6）"""
+    """[ ] 未实现 — 仅返回相似候选，尚未执行折叠（fix #79 标注，勿当已实现使用）。
+
+    设计意图（DESIGN §6.Y）：把 alias 折叠到 canonical_zh（pg_trgm 相似度 >0.6）。
+    当前仅查候选返回，未做任何合并写入。
+    """
     # 1. 找候选
     candidates = await session.execute(
         text(
@@ -227,7 +231,6 @@ async def merge_aliases(session: AsyncSession, alias: str, entity_type: str, can
         ),
         {"type": entity_type, "alias": alias},
     )
-    # 简化：不实际合并，仅示例
     return [dict(r) for r in candidates.mappings().all()]
 
 

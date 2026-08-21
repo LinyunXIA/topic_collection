@@ -506,7 +506,10 @@ class TestSetupScheduler:
         scheduler = setup_scheduler(settings, llm_client=None)
         jobs = {job.id: job for job in scheduler.get_jobs()}
 
-        expected_ids = {"fetch_all", "drain_queue", "healthcheck", "pg_backup", "cleanup_fetch_events"}
+        expected_ids = {
+            "fetch_all", "drain_queue", "healthcheck", "pg_backup", "cleanup_fetch_events",
+            "daily_report", "weekly_report",  # fix #79 报告定时
+        }
         assert set(jobs.keys()) == expected_ids
 
     def test_fetch_interval_from_settings(self):
