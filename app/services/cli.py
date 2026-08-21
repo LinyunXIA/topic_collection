@@ -653,6 +653,90 @@ async def _topic(action: str, name: str | None, keywords: str | None, descriptio
         console.print(f"[red]未知操作: {action}[/red]")
 
 
+# ── extract（实体抽取，DESIGN §14 2.3，fix #79） ────────────────────
+
+@app.command()
+def extract(
+    article_id: int = typer.Argument(help="文章 ID"),
+):
+    """抽取文章实体并入库（DESIGN §14 2.3）。"""
+    _run_async(_extract(article_id))
+
+
+async def _extract(article_id: int):
+    from app.llm.client import LLMClient
+    from app.llm.factory import build_provider
+    from app.services.entities import extract_entities
+
+    settings = load_settings()
+    provider = build_provider("generate", settings)
+    llm_client = LLMClient(provider=provider, max_concurrency=1)
+    async with get_session(settings) as session:
+        await extract_entities(session, article_id, settings, llm_client)
+        await session.commit()
+        console.print(f"[green]✅ 实体抽取完成: article {article_id}[/green]")
+
+
+# ── report（日报/周报，DESIGN §14 2.5，fix #79） ────────────────────
+
+@app.command()
+def report(
+    action: str = typer.Argument(help="generate | list"),
+    report_type: str = typer.Option("daily", "--type", "-t", help="daily|weekly（generate 时）"),
+    limit: int = typer.Option(20, "--limit", "-l"),
+):
+    """报告管理。generate = 生成日报/周报；list = 列出报告。"""
+    _run_async(_report(action, report_type, limit))
+
+
+async def _report(action: str, report_type: str, limit: int):
+    settings = load_settings()
+
+    if action == "list":
+        async with get_session(settings) as session:
+            result = await session.execute(
+                text(
+                    "SELECT id, report_type, period_start, period_end, status, created_at "
+                    "FROM reports ORDER BY created_at DESC LIMIT :limit"
+                ),
+                {"limit": limit},
+            )
+            rows = result.mappings().all()
+        if not rows:
+            console.print("[yellow]没有报告[/yellow]")
+            return
+        table = Table(title="报告列表")
+        table.add_column("ID", style="dim")
+        table.add_column("类型")
+        table.add_column("周期开始")
+        table.add_column("状态")
+        table.add_column("创建时间")
+        for r in rows:
+            color = "green" if r["status"] == "succeeded" else "yellow" if r["status"] == "pending" else "red"
+            table.add_row(str(r["id"]), r["report_type"], str(r["period_start"])[:10], f"[{color}]{r['status']}[/{color}]", str(r["created_at"])[:19])
+        console.print(table)
+        return
+
+    if action != "generate":
+        console.print(f"[red]未知操作: {action}（generate | list）[/red]")
+        return
+
+    from datetime import datetime
+
+    from app.llm.client import LLMClient
+    from app.llm.factory import build_provider
+    from app.services.reports import generate_daily_report, generate_weekly_report
+
+    provider = build_provider("generate", settings)
+    llm_client = LLMClient(provider=provider, max_concurrency=1)
+    async with get_session(settings) as session:
+        if report_type == "weekly":
+            rid = await generate_weekly_report(session, datetime.now(), settings, llm_client)
+        else:
+            rid = await generate_daily_report(session, datetime.now(), settings, llm_client)
+    console.print(f"[green]✅ {report_type} 报告生成完成 (id={rid})[/green]")
+
+
 # ── backup ─────────────────────────────────────────────────────────
 
 @app.command()

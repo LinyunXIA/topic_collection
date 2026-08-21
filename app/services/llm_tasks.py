@@ -159,6 +159,9 @@ async def complete_summarize(
     # 5. wiki 入队
     await enqueue_jobs(session, article_id, ["wiki"], content_hash)
 
+    # 5.5 实体抽取入队（DESIGN §14 2.3.3，priority 3，与 topics 并列；fix #79 原缺失）
+    await enqueue_jobs(session, article_id, ["extract_entities"], content_hash)
+
     # 6. 翻译入队（仅非中文，DESIGN §6.Z）
     # 仅当 lang != 'zh' 时入队 translate，后台慢任务，不阻塞 done（check_and_set_done 排除 translate）
     try:

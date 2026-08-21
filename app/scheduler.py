@@ -292,6 +292,48 @@ async def run_pg_backup(settings) -> None:
         logger.error("pg_backup: %s", e)
 
 
+def _report_trigger(spec: str, default_day: str | None = None) -> CronTrigger:
+    """把报告调度配置解析成 CronTrigger。
+
+    支持 'HH:MM'（daily）与 'Mon HH:MM'（weekly 带工作日前缀）。
+    """
+    parts = spec.strip().split()
+    day = default_day
+    if len(parts) == 2:
+        day, timepart = parts[0].lower(), parts[1]
+    else:
+        timepart = parts[0]
+    hh, mm = timepart.split(":")
+    kwargs: dict = {"hour": int(hh), "minute": int(mm)}
+    if day:
+        kwargs["day_of_week"] = day
+    return CronTrigger(**kwargs)
+
+
+async def _run_daily_report(settings, llm_client=None) -> None:
+    """定时生成日报（DESIGN §10.1），succeeded 后链式触发飞书推送（§10.4）。"""
+    from datetime import datetime
+
+    from app.db.engine import get_session_factory
+    from app.services.reports import generate_daily_report
+
+    factory = get_session_factory(settings)
+    async with factory() as session:
+        await generate_daily_report(session, datetime.now(), settings, llm_client)
+
+
+async def _run_weekly_report(settings, llm_client=None) -> None:
+    """定时生成周报（DESIGN §10.1），succeeded 后链式触发飞书推送（§10.4）。"""
+    from datetime import datetime
+
+    from app.db.engine import get_session_factory
+    from app.services.reports import generate_weekly_report
+
+    factory = get_session_factory(settings)
+    async with factory() as session:
+        await generate_weekly_report(session, datetime.now(), settings, llm_client)
+
+
 def setup_scheduler(settings, llm_client=None) -> AsyncIOScheduler:
     """创建并配置 APScheduler，返回未启动的 scheduler 实例（DESIGN §6/§10）。
 
@@ -350,6 +392,26 @@ def setup_scheduler(settings, llm_client=None) -> AsyncIOScheduler:
         args=(settings,),
         id="cleanup_fetch_events",
         name="清理旧 fetch_events 记录",
+        replace_existing=True,
+    )
+
+    # 日报/周报定时生成（DESIGN §10.1；fix #79 原缺失，报告链路从未自动触发）
+    scheduler.add_job(
+        _run_daily_report,
+        trigger=_report_trigger(settings.schedule.daily_report, default_day=None),
+        args=(settings,),
+        kwargs={"llm_client": llm_client},
+        id="daily_report",
+        name="每日日报生成",
+        replace_existing=True,
+    )
+    scheduler.add_job(
+        _run_weekly_report,
+        trigger=_report_trigger(settings.schedule.weekly_report, default_day="mon"),
+        args=(settings,),
+        kwargs={"llm_client": llm_client},
+        id="weekly_report",
+        name="每周周报生成",
         replace_existing=True,
     )
 
