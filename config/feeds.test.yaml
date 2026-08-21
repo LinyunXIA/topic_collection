@@ -1,0 +1,28 @@
+# Topic Collection 订阅源清单 — test 环境 — DESIGN §9 方案 C
+# 测试库（5434/topic_collection_test，conftest 强制 TC_APP_ENV=test）。
+# 说明：
+#   - pytest 套件用 _StubFetcher + 自行插入 feeds，不读取本文件；
+#     本文件用于「显式在 test 环境跑 tc feeds import」时行为正确——没有它，
+#     _resolve_feeds_path 会回退到 config/feeds.yaml（硬编码 env: dev），
+#     往 test 库写 env 不匹配的行，随后 fetch 按 env='test' 过滤抓不到。
+#   - 新增订阅：在此加一项 → TC_APP_ENV=test tc feeds import → tc fetch
+
+feeds:
+  - name: "Hacker News"
+    type: rss
+    url: "https://hnrss.org/frontpage"
+    enabled: true
+    env: test
+
+  - name: "TechCrunch AI"
+    type: rss
+    url: "https://techcrunch.com/category/artificial-intelligence/feed/"
+    enabled: true
+    env: test
+
+  # 测试环境可按需加 test 专属源（与 dev/prod 完全隔离）：
+  # - name: "Test Only Feed"
+  #   type: rss
+  #   url: "https://example.com/test-feed.xml"
+  #   enabled: true
+  #   env: test
