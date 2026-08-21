@@ -6,9 +6,28 @@
   <div class="toast">已保存，需重启 worker 生效</div>
 {% endif %}
 <form method="post" action="/settings" hx-post="/settings" hx-target="#settings-result" hx-swap="innerHTML">
+  <h3>通用</h3>
   <label>LLM 后端 <input name="llm_backend" value="{{ settings.llm.backend }}"></label>
   <label>模型 <input name="llm_model" value="{{ settings.llm.model }}"></label>
   <label>并发 <input name="max_concurrency" type="number" value="{{ settings.llm.max_concurrency }}"></label>
+  <h3>Generate (per-capability)</h3>
+  <label>backend <input name="gen_backend" value="{{ settings.llm.generate.backend if settings.llm.generate else '' }}"></label>
+  <label>endpoint <input name="gen_endpoint" value="{{ settings.llm.generate.endpoint if settings.llm.generate else '' }}"></label>
+  <label>api_key_env <input name="gen_api_key_env" value="{{ settings.llm.generate.api_key_env if settings.llm.generate else '' }}"></label>
+  <label>model <input name="gen_model" value="{{ settings.llm.generate.model if settings.llm.generate else '' }}"></label>
+  <label>max_concurrency <input name="gen_max_concurrency" type="number" value="{{ settings.llm.generate.max_concurrency if settings.llm.generate else '' }}"></label>
+  <h3>Embed (per-capability)</h3>
+  <label>backend <input name="embed_backend" value="{{ settings.llm.embed.backend }}"></label>
+  <label>endpoint <input name="embed_endpoint" value="{{ settings.llm.embed.endpoint }}"></label>
+  <label>api_key_env <input name="embed_api_key_env" value="{{ settings.llm.embed.api_key_env }}"></label>
+  <label>model <input name="embed_model" value="{{ settings.llm.embed.model }}"></label>
+  <h3>Rerank (per-capability)</h3>
+  <label>backend <input name="rerank_backend" value="{{ settings.llm.rerank.backend }}"></label>
+  <label>endpoint <input name="rerank_endpoint" value="{{ settings.llm.rerank.endpoint }}"></label>
+  <label>api_key_env <input name="rerank_api_key_env" value="{{ settings.llm.rerank.api_key_env }}"></label>
+  <label>model <input name="rerank_model" value="{{ settings.llm.rerank.model }}"></label>
+  <h3>任务级覆盖（models）</h3>
+  <label>JSON <textarea name="models_override" rows="4" placeholder='{"summarize":"model-a","translate":"model-b"}'>{{ settings.llm.models | tojson }}</textarea></label>
   <button type="submit">保存</button>
 </form>
 <div id="settings-result"></div>
