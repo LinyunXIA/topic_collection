@@ -320,6 +320,17 @@ async def classify_topics(
             )
             matched_topic_ids.append(tid)
 
+    # fix #80：为命中的主题入队 topic wiki（enqueue_topic_wiki 合并 payload，#46 逻辑真正生效）
+    if matched_topic_ids:
+        from app.pipeline import enqueue_topic_wiki
+
+        ch = await session.execute(
+            text("SELECT content_hash FROM articles WHERE id=:aid"), {"aid": article_id}
+        )
+        content_hash = ch.scalar()
+        if content_hash:
+            await enqueue_topic_wiki(session, article_id, matched_topic_ids, content_hash)
+
     return matched_topic_ids
 
 

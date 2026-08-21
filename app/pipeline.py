@@ -148,7 +148,7 @@ async def enqueue_entity_wiki(
     await session.execute(
         text(
             "INSERT INTO processing_jobs (article_id, task, status, content_hash, priority, payload_json) "
-            "VALUES (:aid, 'generate_entity_wiki', 'queued', :ch, 5, :payload::jsonb) "
+            "VALUES (:aid, 'generate_entity_wiki', 'queued', :ch, 5, CAST(:payload AS jsonb)) "
             "ON CONFLICT (article_id, task) WHERE status IN ('queued','running') DO UPDATE SET "
             "payload_json = processing_jobs.payload_json || EXCLUDED.payload_json, "
             "content_hash = EXCLUDED.content_hash, updated_at = now()"
@@ -201,7 +201,7 @@ async def enqueue_topic_wiki(
     await session.execute(
         text(
             "INSERT INTO processing_jobs (article_id, task, status, content_hash, priority, payload_json) "
-            "VALUES (:aid, 'generate_topic_wiki', 'queued', :ch, 5, :payload::jsonb) "
+            "VALUES (:aid, 'generate_topic_wiki', 'queued', :ch, 5, CAST(:payload AS jsonb)) "
             "ON CONFLICT (article_id, task) WHERE status IN ('queued','running') DO UPDATE SET "
             "payload_json = processing_jobs.payload_json || EXCLUDED.payload_json, "
             "content_hash = EXCLUDED.content_hash, updated_at = now()"

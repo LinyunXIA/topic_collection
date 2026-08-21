@@ -108,10 +108,10 @@ async def lifespan(app: FastAPI):
     _clients = {"generate": generate_llm, "embed": embed_llm}
 
     async def _run_generate_entity_wiki(session, job, settings, llm_client=None):
-        # Phase 2：payload 合并策略（DESIGN §6.X，fix #46）—— entity_ids 已在 enqueue 时合并
+        # fix #80：payload.json 里的 entity_ids 真正逐个生成实体词条（原忽略 _eid 调文章词条）
         import json as _json
 
-        from app.services.wiki import generate_article_wiki
+        from app.services.wiki import generate_entity_wiki
 
         payload = job.get("payload_json")
         if isinstance(payload, str):
@@ -120,16 +120,14 @@ async def lifespan(app: FastAPI):
             except Exception:
                 payload = {}
         entity_ids = (payload or {}).get("entity_ids") if isinstance(payload, dict) else None
-        if entity_ids:
-            for _eid in entity_ids:
-                await generate_article_wiki(session, job["article_id"], settings)
-        else:
-            await generate_article_wiki(session, job["article_id"], settings)
+        for eid in entity_ids or []:
+            await generate_entity_wiki(session, eid, settings)
 
     async def _run_generate_topic_wiki(session, job, settings, llm_client=None):
+        # fix #80：payload.json 里的 topic_ids 真正逐个生成主题词条（原忽略 _tid 调文章词条）
         import json as _json
 
-        from app.services.wiki import generate_article_wiki
+        from app.services.wiki import generate_topic_wiki
 
         payload = job.get("payload_json")
         if isinstance(payload, str):
@@ -138,11 +136,8 @@ async def lifespan(app: FastAPI):
             except Exception:
                 payload = {}
         topic_ids = (payload or {}).get("topic_ids") if isinstance(payload, dict) else None
-        if topic_ids:
-            for _tid in topic_ids:
-                await generate_article_wiki(session, job["article_id"], settings)
-        else:
-            await generate_article_wiki(session, job["article_id"], settings)
+        for tid in topic_ids or []:
+            await generate_topic_wiki(session, tid, settings)
 
     async def task_dispatcher(session: AsyncSession, job: dict, settings, llm_client=None):
         task = job["task"]

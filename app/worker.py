@@ -91,41 +91,36 @@ async def run_extract_entities(
 
 
 async def _run_generate_entity_wiki(session: AsyncSession, job: dict, settings, llm_client=None):
-    import json as _json
+    from app.services.wiki import generate_entity_wiki
 
-    from app.services.wiki import generate_article_wiki
-
-    payload = job.get("payload_json")
-    if isinstance(payload, str):
-        try:
-            payload = _json.loads(payload)
-        except Exception:
-            payload = {}
+    payload = _parse_payload(job)
     entity_ids = (payload or {}).get("entity_ids") if isinstance(payload, dict) else None
-    if entity_ids:
-        for _eid in entity_ids:
-            await generate_article_wiki(session, job["article_id"], settings)
-    else:
-        await generate_article_wiki(session, job["article_id"], settings)
+    # fix #80：真正按 entity_ids 逐个生成实体词条（原忽略 _eid 调文章词条）
+    for eid in entity_ids or []:
+        await generate_entity_wiki(session, eid, settings)
 
 
 async def _run_generate_topic_wiki(session: AsyncSession, job: dict, settings, llm_client=None):
-    import json as _json
+    from app.services.wiki import generate_topic_wiki
 
-    from app.services.wiki import generate_article_wiki
+    payload = _parse_payload(job)
+    topic_ids = (payload or {}).get("topic_ids") if isinstance(payload, dict) else None
+    # fix #80：真正按 topic_ids 逐个生成主题词条（原忽略 _tid 调文章词条）
+    for tid in topic_ids or []:
+        await generate_topic_wiki(session, tid, settings)
+
+
+def _parse_payload(job: dict) -> dict | None:
+    """解析 job payload_json（可能为 str 或 dict）。"""
+    import json as _json
 
     payload = job.get("payload_json")
     if isinstance(payload, str):
         try:
-            payload = _json.loads(payload)
+            return _json.loads(payload)
         except Exception:
-            payload = {}
-    topic_ids = (payload or {}).get("topic_ids") if isinstance(payload, dict) else None
-    if topic_ids:
-        for _tid in topic_ids:
-            await generate_article_wiki(session, job["article_id"], settings)
-    else:
-        await generate_article_wiki(session, job["article_id"], settings)
+            return {}
+    return payload if isinstance(payload, dict) else None
 
 
 async def main() -> None:
