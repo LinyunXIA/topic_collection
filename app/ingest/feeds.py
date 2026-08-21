@@ -15,6 +15,7 @@ import feedparser
 import httpx
 
 from app.config import Settings
+from app.core.egress import safe_get
 from app.ingest.base import FeedItem
 
 logger = logging.getLogger(__name__)
@@ -65,17 +66,19 @@ class FeedFetcher:
         async with self._semaphore:
             await self._rate_limit(host)
             try:
-                async with httpx.AsyncClient(
+                resp = await safe_get(
+                    url,
+                    headers=headers,
                     timeout=30,
+                    is_feed=True,
                     follow_redirects=True,
-                ) as client:
-                    resp = await client.get(url, headers=headers)
+                )
 
-                    if resp.status_code == 304:
-                        logger.info("304 Not Modified: %s", url)
-                        return [], etag, last_modified
+                if resp.status_code == 304:
+                    logger.info("304 Not Modified: %s", url)
+                    return [], etag, last_modified
 
-                    resp.raise_for_status()
+                resp.raise_for_status()
 
             except httpx.HTTPStatusError as e:
                 logger.error("HTTP %d 抓取失败: %s", e.response.status_code, url)
