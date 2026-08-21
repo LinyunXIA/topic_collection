@@ -2,7 +2,8 @@
 
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述（目录结构 / DDL / 接口）只在一处维护、另一处引用，避免漂移
-> 版本：v0.16 · 2026-08-21 · Phase 1/1+/1++ + Phase 2 P0/P1 完成（17 项 Issue 闭环，226/226 tests，Phase 2 已拆分至 DESIGN_Phase_2.md）
+> 版本：v0.17 · 2026-08-21 · Phase 1/1+/1++ + Phase 2 P0/P1 + Phase 2+（排错工具/白名单配置化，241 tests，Phase 2 已拆分至 DESIGN_Phase_2.md）
+> v0.17：**Phase 2+ 排错工具 + 白名单下移**——`scripts/customization/`（`fetch_rss_raw.py` 查看 feed 原始返回）；外发白名单改由 `security/web_site_list.yaml` 按 `TC_APP_ENV` 加载（真实 gitignored + `example` 入库），`app/core/egress.py` 缺实文件回退示例，#79/#80/#81 修复；235→241
 > v0.16：**Phase 2 P0/P1 17 项闭环 + 测试 214→226**——`PR #59 #60 #61 #62 #63 #65-76` 闭环 #42-#58（`advisory lock`/`飞书`/`rerank+embed 外部化`/`payload 合并`/`prompt 约束`/`slug`/`related_json`/`详情 Tab`/`wiki 去重`/`健康横幅`/`列表筛选`/`feeds config_json`/`settings per-capability`/`reindex wiki`/`P2 边界`），`226/226 tests passing`（`--collect-only` 226），`§4.3/§4.7` 外部化及 `dimensions=1536` 同步代码，`§5.1/§9/§10` 白名单与配置同步
 > v0.15：**测试计数同步 + 2.6.3 拆分**——`PR #40` 补 `tests/test_regression_31_34.py` 10 用例，`204→214`，`gh issue --state open` 0；`§14 2.6.3` 拆为 `2.6.3a`/`2.6.3b`
 > v0.14：**代码与设计对齐 + 新增 5 项回归修复**——与当时代码（204/204 tests passing, `pytest --collect-only` 204）对齐，`gh issue --state open` 0：
@@ -161,7 +162,12 @@ topic_collection/
 │   └── web/                    # (Phase 2) 前端资源
 │       ├── templates/          # Jinja2 页面
 │       └── static/             # app.js / echarts.min.js / styles.css（本地 vendored）
+├── security/
+│   └── web_site_list.yaml          # 外发白名单（真实，gitignored 不入库）
+│   └── web_site_list.example.yaml  # 外发白名单示例（入库，模板）
+│
 ├── data/  logs/  scripts/  tests/
+│   └── scripts/customization/      # Phase 2+ 排错工具（fetch_rss_raw 等）
 ```
 
 ## 4. LLM Provider 抽象（核心）
@@ -984,6 +990,7 @@ scheduler.add_job(
 - Dashboard 默认绑定 `127.0.0.1`；无外网暴露
 - DB 凭据走配置/env，仅本机回环访问
 - 全部推理本地完成，无数据出机
+- **外发白名单**：域名清单在 `security/web_site_list.yaml`（`app/core/egress.py` 按 `TC_APP_ENV` 读取对应段；真实文件 gitignored，`web_site_list.example.yaml` 为入库示例）。localhost/私网始终放行，`FEED_FETCH_ALLOW_ALL=1` 放开抓取；非白名单外发抛 `PermanentError`（fail-closed）
 
 ---
 
