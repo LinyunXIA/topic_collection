@@ -8,6 +8,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import signal
+import sys
 
 from app.config import load_settings
 from app.db.engine import check_extensions, dispose_engine
@@ -142,6 +143,35 @@ async def main() -> None:
     else:
         logger.warning("⚠️  LLM 不可用: %s — 将在运行时重试", status.error)
 
+    # advisory lock 单例校验（池外长连接，DESIGN §5.4.1 / §14 2.1.1，fix #42）
+    # 池外专用长连接持有至进程退出，防止 uvicorn + worker 双活并发
+    advisory_conn = None
+    try:
+        import asyncpg  # type: ignore
+
+        raw_dsn = settings.db.dsn.replace("+asyncpg", "")
+        advisory_conn = await asyncpg.connect(raw_dsn)
+        locked = await advisory_conn.fetchval(
+            "SELECT pg_try_advisory_lock(hashtext('topic_collection_worker'))"
+        )
+        if not locked:
+            logger.error(
+                "advisory lock 未获锁，存在另一 worker/webui 进程持有锁，双活风险，强制退出"
+            )
+            await advisory_conn.close()
+            sys.exit(1)
+        logger.info("advisory lock 已获取 (hashtext('topic_collection_worker'))")
+    except SystemExit:
+        raise
+    except Exception as e:
+        logger.warning("advisory lock 获取异常: %s (继续启动，单机开发可接受)", e)
+        if advisory_conn is not None:
+            try:
+                await advisory_conn.close()
+            except Exception:
+                pass
+            advisory_conn = None
+
     # 信号处理
     loop = asyncio.get_running_loop()
     stop_event = asyncio.Event()
@@ -208,6 +238,20 @@ async def main() -> None:
         await worker_task
     except asyncio.CancelledError:
         pass
+
+    # 释放 advisory lock（池外长连接持有至进程退出，显式解锁后关闭）
+    if advisory_conn is not None:
+        try:
+            await advisory_conn.execute(
+                "SELECT pg_advisory_unlock(hashtext('topic_collection_worker'))"
+            )
+        except Exception:
+            pass
+        try:
+            await advisory_conn.close()
+        except Exception:
+            pass
+        logger.info("advisory lock 已释放")
 
     await dispose_engine()
     logger.info("worker 已退出")
