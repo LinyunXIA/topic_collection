@@ -251,10 +251,10 @@ class TestBuildProvider:
             build_provider("embed", settings)
 
     def test_build_rerank_rejects_non_omlx(self):
-        """rerank 后端不是 omlx → ValueError。"""
+        """rerank 后端不是 omlx → ValueError（§4.8 外部暂不支持，早失败提示回退 omlx）。"""
         settings = load_settings()
         settings.llm.rerank = MagicMock(backend="openai")
-        with pytest.raises(ValueError, match="rerank.*强制本地"):
+        with pytest.raises(ValueError, match="rerank"):
             build_provider("rerank", settings)
 
     def test_build_unknown_capability(self):
