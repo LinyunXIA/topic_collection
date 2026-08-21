@@ -1,7 +1,8 @@
 """LLM Provider Factory — 按能力构建 provider
 
 per-capability backend 选择：generate / embed / rerank 各自独立，
-embed/rerank 强制本地 omlx（隐私，DESIGN §4.3/§12）。
+embed 强制本地 omlx（隐私，DESIGN §4.3/§12），rerank 同 embed 支持
+backend: openai 等外部，外部暂不支持则早失败提示回退 omlx（DESIGN §4.8）。
 
 用法：
     provider = build_provider("generate", settings)
@@ -111,7 +112,7 @@ def build_provider(
 
     - generate：可选 omlx | openai（从 settings.generate 或顶层字段读取）
     - embed：强制 omlx（本地，隐私）
-    - rerank：强制 omlx（本地，隐私）
+    - rerank：可选 omlx | openai 等外部，外部暂抛 ValueError 提示回退 omlx（DESIGN §4.8）
 
     Raises:
         ValueError: unknown backend
@@ -187,20 +188,27 @@ def build_provider(
         )
 
     elif capability == "rerank":
-        # 强制本地
+        # §4.8 同 embed 支持 backend: openai 等外部 provider，外部不支持则早失败提示回退 omlx
         cfg = llm.rerank
-        if cfg.backend != "omlx":
-            raise ValueError(
-                f"rerank 能力强制本地 omlx，不支持 '{cfg.backend}'；"
-                f"请勿修改 rerank.backend 配置"
+        if cfg.backend == "omlx":
+            return _build_omlx(
+                endpoint=cfg.endpoint,
+                api_key_env=cfg.api_key_env,
+                generation_model="",  # rerank 不用 generation_model
+                embedding_model="",   # rerank 不用 embedding_model
+                rerank_model=cfg.model,
             )
-        return _build_omlx(
-            endpoint=cfg.endpoint,
-            api_key_env=cfg.api_key_env,
-            generation_model="",  # rerank 不用 generation_model
-            embedding_model="",   # rerank 不用 embedding_model
-            rerank_model=cfg.model,
-        )
+        elif cfg.backend in llm.providers:
+            # 外部 provider 当前均不支持 rerank（OpenAI 兼容协议无 Cohere 风格 /v1/rerank），早失败提示回退
+            raise ValueError(
+                f"rerank 能力暂不支持外部 backend '{cfg.backend}'；"
+                f"外部 provider 不支持 rerank，请回退为 'omlx'（本地 Qwen3-Reranker-4B-mxfp8）"
+            )
+        else:
+            raise ValueError(
+                f"rerank 能力不支持 backend '{cfg.backend}'；"
+                f"可用：omlx（本地）或 providers 注册表中的 key（{list(llm.providers.keys())}）"
+            )
 
     else:
         raise ValueError(f"不支持的 capability: '{capability}'（仅 generate | embed | rerank）")
