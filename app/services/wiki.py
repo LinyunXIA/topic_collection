@@ -18,8 +18,14 @@ from app.db.fts import search_wiki_fts, update_wiki_tsv
 logger = logging.getLogger(__name__)
 
 
-def _slugify(title: str, ref_id: int | None = None) -> str:
-    """标题 → URL-friendly slug。
+def _slugify(title: str, ref_id: int | None = None, kind: str = "article") -> str:
+    """标题 → URL-friendly slug（DESIGN §6.X，fix #48）。
+
+    Phase 2 需区分 kind：
+    - article: <slug>-<article_id>（如 qwen3-...-1234）
+    - topic: topic-<name-slug>-<topic_id>
+    - entity: entity-<canonical_name_zh-slug>-<entity_id>
+    - manual: 用户提供 slug（不自动加 id，需上层校验 UNIQUE 冲突 422）
 
     wiki_pages.slug 是 UNIQUE，而标题重复很常见（多家媒体转同一篇通稿、
     "本周简报" 这类固定标题、纯符号标题 slug 化后为空串）。不带 ref_id 时
@@ -30,9 +36,27 @@ def _slugify(title: str, ref_id: int | None = None) -> str:
     slug = re.sub(r"[^\w\s-]", "", slug)
     slug = re.sub(r"[\s_]+", "-", slug)
     slug = slug[:100].strip("-")
-    if ref_id is None:
-        return slug
-    return f"{slug}-{ref_id}" if slug else f"article-{ref_id}"
+    if kind == "article":
+        if ref_id is None:
+            return slug
+        return f"{slug}-{ref_id}" if slug else f"article-{ref_id}"
+    elif kind == "topic":
+        if ref_id is None:
+            return f"topic-{slug}" if slug else "topic"
+        return f"topic-{slug}-{ref_id}" if slug else f"topic-{ref_id}"
+    elif kind == "entity":
+        if ref_id is None:
+            return f"entity-{slug}" if slug else "entity"
+        return f"entity-{slug}-{ref_id}" if slug else f"entity-{ref_id}"
+    elif kind == "manual":
+        # manual slug 由用户提供，不自动加 id，需上层校验 UNIQUE 冲突 422
+        if slug:
+            return slug
+        return f"manual-{ref_id}" if ref_id is not None else "manual"
+    else:
+        if ref_id is None:
+            return slug
+        return f"{slug}-{ref_id}" if slug else f"{ref_id}"
 
 
 async def generate_article_wiki(
