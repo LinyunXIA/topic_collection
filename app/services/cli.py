@@ -671,48 +671,69 @@ def backup():
 def reindex(
     all_articles: bool = typer.Option(True, "--all", help="重建全部文章的 tsv（默认全量，保留兼容）"),
     only_null: bool = typer.Option(False, "--only-null", help="仅重建 tsv IS NULL 的文章（增量快速模式，fix #39 之前默认漏掉仅含摘要段的存量）"),
+    wiki: bool = typer.Option(False, "--wiki", help="同时回填 wiki_pages.tsv（fix #57，默认 --all 时亦回填 wiki）"),
     batch_size: int = typer.Option(500, "--batch-size", "-b", help="每批处理条数"),
 ):
-    """重建 articles.tsv（纯本地 jieba + UPDATE，无 LLM 调用，fix #34，fix #39 默认全量）。"""
+    """重建 articles.tsv + wiki_pages.tsv（纯本地 jieba + UPDATE，fix #34/#39/#57）。"""
     # fix #39：默认全量，避免漏掉 PR #1 前已 summarize（tsv 仅含摘要段非 NULL）的存量
     effective_all = not only_null
     # 兼容：显式 --no-all 视为 only_null（typer 自动提供 --no-all 取反）
     if not all_articles and not only_null:
         effective_all = False
-    _run_async(_reindex(effective_all, batch_size))
+    # fix #57：默认 --all 同时回填 wiki（显式 --wiki 亦触发）
+    do_wiki = wiki or effective_all
+    _run_async(_reindex(effective_all, batch_size, do_wiki))
 
 
-async def _reindex(all_articles: bool, batch_size: int):
-    """遍历文章调用 update_article_tsv（自动补齐 title/content/summary 段）。"""
-    from app.db.fts import update_article_tsv
+async def _reindex(all_articles: bool, batch_size: int, do_wiki: bool = True):
+    """遍历文章/词条调用 update_*_tsv（自动补齐段）。"""
+    from app.db.fts import update_article_tsv, update_wiki_tsv
 
     settings = load_settings()
     factory = get_session_factory(settings)
 
+    # ── articles ──
     async with factory() as session:
-        # 选 id 列表：默认仅 tsv IS NULL（存量未建索引的），--all 则全量
         where_clause = "" if all_articles else "WHERE tsv IS NULL"
-        result = await session.execute(
-            text(f"SELECT id FROM articles {where_clause} ORDER BY id")
-        )
+        result = await session.execute(text(f"SELECT id FROM articles {where_clause} ORDER BY id"))
         ids = [r[0] for r in result.fetchall()]
 
     if not ids:
-        console.print("[green]无需重建：没有匹配的文章[/green]")
+        console.print("[green]无需重建 articles：没有匹配的文章[/green]")
+    else:
+        console.print(f"🔄 重建 articles tsv：共 {len(ids)} 篇 (batch={batch_size})")
+        for i in range(0, len(ids), batch_size):
+            batch = ids[i : i + batch_size]
+            async with factory() as session:
+                for aid in batch:
+                    await update_article_tsv(session, aid, "", "")
+                await session.commit()
+            console.print(f"  ✓ articles {min(i+batch_size, len(ids))}/{len(ids)}")
+        console.print(f"[green]✅ articles tsv 重建完成：{len(ids)} 篇[/green]")
+
+    # ── wiki_pages ──（fix #57）
+    if not do_wiki:
         return
-
-    console.print(f"🔄 重建 tsv：共 {len(ids)} 篇 (batch={batch_size})")
-
-    # 分批重建，避免单事务过大
-    for i in range(0, len(ids), batch_size):
-        batch = ids[i : i + batch_size]
+    async with factory() as session:
+        where_clause = "" if all_articles else "WHERE tsv IS NULL"
+        try:
+            result = await session.execute(text(f"SELECT id FROM wiki_pages {where_clause} ORDER BY id"))
+            wiki_ids = [r[0] for r in result.fetchall()]
+        except Exception:
+            console.print("[yellow]wiki_pages 表不存在或 tsv 列未就绪，跳过 wiki 回填[/yellow]")
+            return
+    if not wiki_ids:
+        console.print("[green]无需重建 wiki：没有匹配的词条[/green]")
+        return
+    console.print(f"🔄 重建 wiki_pages tsv：共 {len(wiki_ids)} 篇 (batch={batch_size})")
+    for i in range(0, len(wiki_ids), batch_size):
+        batch = wiki_ids[i : i + batch_size]
         async with factory() as session:
-            for aid in batch:
-                await update_article_tsv(session, aid, "", "")
+            for wid in batch:
+                await update_wiki_tsv(session, wid)
             await session.commit()
-        console.print(f"  ✓ {min(i+batch_size, len(ids))}/{len(ids)}")
-
-    console.print(f"[green]✅ tsv 重建完成：{len(ids)} 篇[/green]")
+        console.print(f"  ✓ wiki {min(i+batch_size, len(wiki_ids))}/{len(wiki_ids)}")
+    console.print(f"[green]✅ wiki_pages tsv 重建完成：{len(wiki_ids)} 篇[/green]")
 
 
 if __name__ == "__main__":
