@@ -57,19 +57,41 @@ async def feeds_create(
     type: str = Form("rss"),
     enabled: bool = Form(True),
     env: str = Form("dev"),
+    config_json: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ):
+    import json as _json
     import os
+    from fastapi.responses import JSONResponse
 
     # 优先取表单 env，否则按当前 TC_APP_ENV
     env = env or os.environ.get("TC_APP_ENV", "dev")
+    # config_json 校验（API/scrape 类型）
+    cfg = None
+    if config_json and config_json.strip():
+        try:
+            cfg = _json.loads(config_json)
+        except Exception as e:
+            return HTMLResponse(f"config_json 非法 JSON: {e}", status_code=422)
+    cfg_str = _json.dumps(cfg, ensure_ascii=False) if cfg is not None else None
     try:
         await session.execute(
-            text("INSERT INTO feeds (type, name, url, enabled, env) VALUES (:type, :name, :url, :enabled, :env) ON CONFLICT (url, env) DO UPDATE SET enabled=EXCLUDED.enabled"),
-            {"type": type, "name": name, "url": url, "enabled": enabled, "env": env},
+            text(
+                "INSERT INTO feeds (type, name, url, enabled, env, config_json) "
+                "VALUES (:type, :name, :url, :enabled, :env, CAST(:cfg AS jsonb)) "
+                "ON CONFLICT (url, env) DO UPDATE SET name=EXCLUDED.name, type=EXCLUDED.type, enabled=EXCLUDED.enabled, config_json=EXCLUDED.config_json"
+            ),
+            {"type": type, "name": name, "url": url, "enabled": enabled, "env": env, "cfg": cfg_str},
         )
     except Exception:
-        await session.execute(text("INSERT INTO feeds (type, name, url, enabled) VALUES (:type, :name, :url, :enabled) ON CONFLICT DO NOTHING"), {"type": type, "name": name, "url": url, "enabled": enabled})
+        # 旧库无 env/config_json 列回退
+        try:
+            await session.execute(
+                text("INSERT INTO feeds (type, name, url, enabled, config_json) VALUES (:type, :name, :url, :enabled, CAST(:cfg AS jsonb)) ON CONFLICT DO NOTHING"),
+                {"type": type, "name": name, "url": url, "enabled": enabled, "cfg": cfg_str},
+            )
+        except Exception:
+            await session.execute(text("INSERT INTO feeds (type, name, url, enabled) VALUES (:type, :name, :url, :enabled) ON CONFLICT DO NOTHING"), {"type": type, "name": name, "url": url, "enabled": enabled})
     await session.commit()
     return RedirectResponse(url="/feeds", status_code=303)
 
@@ -91,9 +113,29 @@ async def feeds_update(
     url: str = Form(...),
     type: str = Form("rss"),
     enabled: bool = Form(True),
+    env: str = Form("dev"),
+    config_json: str = Form(""),
     session: AsyncSession = Depends(get_session),
 ):
-    await session.execute(text("UPDATE feeds SET name=:name, url=:url, type=:type, enabled=:enabled WHERE id=:id"), {"name": name, "url": url, "type": type, "enabled": enabled, "id": feed_id})
+    import json as _json
+
+    cfg = None
+    if config_json and config_json.strip():
+        try:
+            cfg = _json.loads(config_json)
+        except Exception as e:
+            return HTMLResponse(f"config_json 非法 JSON: {e}", status_code=422)
+    cfg_str = _json.dumps(cfg, ensure_ascii=False) if cfg is not None else None
+    try:
+        await session.execute(
+            text("UPDATE feeds SET name=:name, url=:url, type=:type, enabled=:enabled, env=:env, config_json=CAST(:cfg AS jsonb) WHERE id=:id"),
+            {"name": name, "url": url, "type": type, "enabled": enabled, "env": env, "cfg": cfg_str, "id": feed_id},
+        )
+    except Exception:
+        try:
+            await session.execute(text("UPDATE feeds SET name=:name, url=:url, type=:type, enabled=:enabled, config_json=CAST(:cfg AS jsonb) WHERE id=:id"), {"name": name, "url": url, "type": type, "enabled": enabled, "cfg": cfg_str, "id": feed_id})
+        except Exception:
+            await session.execute(text("UPDATE feeds SET name=:name, url=:url, type=:type, enabled=:enabled WHERE id=:id"), {"name": name, "url": url, "type": type, "enabled": enabled, "id": feed_id})
     await session.commit()
     return RedirectResponse(url=f"/feeds/{feed_id}/edit", status_code=303)
 

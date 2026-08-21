@@ -1,1 +1,30 @@
-{% extends "base.html" %}{% block content %}<h1>编辑订阅源</h1><form method="post"><input name="name"><input name="url"><button>保存</button></form>{% endblock %}
+{% extends "base.html" %}
+{% block content %}
+<h1>{% if feed %}编辑订阅源{% else %}新增订阅源{% endif %}</h1>
+<form method="post" action="{% if feed %}/feeds/{{ feed.id }}{% else %}/feeds{% endif %}">
+  <label>名称 <input name="name" value="{{ feed.name if feed else '' }}" required></label><br>
+  <label>URL <input name="url" value="{{ feed.url if feed else '' }}" required></label><br>
+  <label>类型
+    <select name="type" id="feed-type" onchange="document.getElementById('config-area').style.display=this.value==='api' || this.value==='scrape' ? 'block':'none'">
+      <option value="rss" {% if feed and feed.type=='rss' or not feed %}selected{% endif %}>rss</option>
+      <option value="api" {% if feed and feed.type=='api' %}selected{% endif %}>api</option>
+      <option value="scrape" {% if feed and feed.type=='scrape' %}selected{% endif %}>scrape</option>
+    </select>
+  </label><br>
+  <label>环境
+    <select name="env">
+      <option value="dev" {% if feed and feed.env=='dev' or not feed %}selected{% endif %}>dev</option>
+      <option value="prod" {% if feed and feed.env=='prod' %}selected{% endif %}>prod</option>
+    </select>
+  </label><br>
+  <label>启用 <input type="checkbox" name="enabled" value="true" {% if feed is none or feed.enabled %}checked{% endif %}></label><br>
+  <div id="config-area" style="display:{% if feed and (feed.type=='api' or feed.type=='scrape') %}block{% else %}none{% endif %}">
+    <label>config_json (API/scrape 专用，JSON)
+      <textarea name="config_json" rows="12" cols="80" placeholder='{"endpoint":"https://hacker-news.firebaseio.com/v0/topstories.json","method":"GET","items_path":"$","mapper":{"title":"title","url":"url"}}'>{{ feed.config_json | tojson if feed and feed.config_json else '' }}</textarea>
+    </label>
+    <small>API 示例：HN / GitHub Trending / arXiv（见 DESIGN §9 / feeds.dev.yaml）；需含 endpoint/method/params/headers/rate_limit_per_hour/items_path/mapper</small><br>
+    <small>scrape 示例：{"endpoint":"https://example.com/list","method":"GET","mapper":{"title":"h1","content":".article"}}</small>
+  </div>
+  <button type="submit">保存</button>
+</form>
+{% endblock %}
