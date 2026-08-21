@@ -168,13 +168,13 @@ async def complete_extract(
             {"s": sid, "p": rel.get("predicate"), "o": oid, "aid": article_id, "c": rel.get("confidence", 0.5)},
         )
 
-    # 5. wiki 入队
+    # 5. wiki 入队（fix #80：把 new_ids 经 enqueue_entity_wiki 真正写入 payload_json，
+    #    #46 的 payload 合并策略才有意义；否则 payload 恒 NULL、handler 无 entity_ids 可遍历）
     new_ids = await _detect_new_or_changed_entities(session, article_id, list(eid_map.values()))
     if new_ids:
-        from app.pipeline import enqueue_jobs
+        from app.pipeline import enqueue_entity_wiki
 
-        # 简化：直接入队 generate_entity_wiki（payload 合并策略在 Phase 2 后续细化，此处直接入队）
-        await enqueue_jobs(session, article_id, ["generate_entity_wiki"], content_hash)
+        await enqueue_entity_wiki(session, article_id, new_ids, content_hash)
 
     await check_and_set_done(session, article_id)
 

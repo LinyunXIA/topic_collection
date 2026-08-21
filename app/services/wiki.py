@@ -213,6 +213,170 @@ async def generate_article_wiki(
     return wiki_id
 
 
+async def _entity_related(session: AsyncSession, entity_id: int) -> list[dict]:
+    """共现该实体的文章（related_json 用，DESIGN §6.Y）。"""
+    try:
+        r = await session.execute(
+            text(
+                "SELECT a.id, a.title, a.source_url, COUNT(*) FILTER (WHERE ae.entity_id = :eid) AS cnt "
+                "FROM article_entities ae "
+                "JOIN articles a ON a.id = ae.article_id "
+                "WHERE a.dedupe_of IS NULL "
+                "AND a.id IN (SELECT article_id FROM article_entities WHERE entity_id = :eid2) "
+                "GROUP BY a.id, a.title, a.source_url "
+                "ORDER BY cnt DESC, a.published_at DESC LIMIT 10"
+            ),
+            {"eid": entity_id, "eid2": entity_id},
+        )
+        return [dict(x) for x in r.mappings().all()]
+    except Exception:
+        return []
+
+
+async def generate_entity_wiki(
+    session: AsyncSession,
+    entity_id: int,
+    settings,
+) -> int | None:
+    """为实体生成 wiki 词条（DESIGN §6.Y，kind='entity'，slug=entity-<name>-<id>）。
+
+    fix #80：此前该函数不存在，handler 忽略 entity_ids 循环调 generate_article_wiki，
+    重复生成文章词条。现按实体描述 + 共现文章生成独立实体页。
+    返回 wiki_page id。
+    """
+    result = await session.execute(
+        text("SELECT canonical_name_zh, description FROM entities WHERE id=:eid"),
+        {"eid": entity_id},
+    )
+    row = result.mappings().first()
+    if not row or not row["canonical_name_zh"]:
+        return None
+
+    title = row["canonical_name_zh"]
+    desc = row["description"] or ""
+    related = await _entity_related(session, entity_id)
+
+    md_parts = [f"# {title}\n"]
+    if desc:
+        md_parts.append(f"{desc}\n")
+    if related:
+        md_parts.append("## 相关文章\n")
+        for r in related:
+            href = r.get("source_url") or "#"
+            md_parts.append(f"- [{r.get('title') or r['id']}]({href})")
+        md_parts.append("")
+    content_md = "\n".join(md_parts)
+
+    slug = _slugify(title, entity_id, "entity")
+    related_json = [
+        {"id": r["id"], "title": r.get("title"), "src": "entity", "score": 0.0}
+        for r in related
+    ]
+    await session.execute(
+        text(
+            "INSERT INTO wiki_pages (kind, ref_id, title, slug, content_md, related_json) "
+            "VALUES ('entity', :ref_id, :title, :slug, :content, :related) "
+            "ON CONFLICT (slug) DO UPDATE "
+            "SET ref_id = EXCLUDED.ref_id, title = EXCLUDED.title, "
+            "    content_md = EXCLUDED.content_md, "
+            "    related_json = EXCLUDED.related_json, updated_at = now()"
+        ),
+        {
+            "ref_id": entity_id,
+            "title": title,
+            "slug": slug,
+            "content": content_md,
+            "related": json.dumps(related_json, ensure_ascii=False),
+        },
+    )
+    r2 = await session.execute(text("SELECT id FROM wiki_pages WHERE slug=:slug"), {"slug": slug})
+    row2 = r2.first()
+    wiki_id = row2[0] if row2 else None
+    if wiki_id is not None:
+        await update_wiki_tsv(session, wiki_id)
+    logger.info("generate_entity_wiki: entity=%d → wiki=%s", entity_id, wiki_id)
+    return wiki_id
+
+
+async def generate_topic_wiki(
+    session: AsyncSession,
+    topic_id: int,
+    settings,
+) -> int | None:
+    """为主题生成 wiki 词条（DESIGN §6.Y，kind='topic'，slug=topic-<name>-<id>）。
+
+    fix #80：此前该函数不存在，handler 忽略 topic_ids 循环调 generate_article_wiki。
+    返回 wiki_page id。
+    """
+    result = await session.execute(
+        text("SELECT name, description FROM topics WHERE id=:tid"),
+        {"tid": topic_id},
+    )
+    row = result.mappings().first()
+    if not row or not row["name"]:
+        return None
+
+    title = row["name"]
+    desc = row["description"] or ""
+
+    # 主题下文章（经 article_topics）
+    related = []
+    try:
+        r = await session.execute(
+            text(
+                "SELECT a.id, a.title, a.source_url FROM article_topics at "
+                "JOIN articles a ON a.id = at.article_id "
+                "WHERE at.topic_id = :tid AND a.dedupe_of IS NULL "
+                "ORDER BY at.score DESC, a.published_at DESC LIMIT 10"
+            ),
+            {"tid": topic_id},
+        )
+        related = [dict(x) for x in r.mappings().all()]
+    except Exception:
+        pass
+
+    md_parts = [f"# {title}\n"]
+    if desc:
+        md_parts.append(f"{desc}\n")
+    if related:
+        md_parts.append("## 相关文章\n")
+        for a in related:
+            href = a.get("source_url") or "#"
+            md_parts.append(f"- [{a.get('title') or a['id']}]({href})")
+        md_parts.append("")
+    content_md = "\n".join(md_parts)
+
+    slug = _slugify(title, topic_id, "topic")
+    related_json = [
+        {"id": a["id"], "title": a.get("title"), "src": "topic", "score": 0.0}
+        for a in related
+    ]
+    await session.execute(
+        text(
+            "INSERT INTO wiki_pages (kind, ref_id, title, slug, content_md, related_json) "
+            "VALUES ('topic', :ref_id, :title, :slug, :content, :related) "
+            "ON CONFLICT (slug) DO UPDATE "
+            "SET ref_id = EXCLUDED.ref_id, title = EXCLUDED.title, "
+            "    content_md = EXCLUDED.content_md, "
+            "    related_json = EXCLUDED.related_json, updated_at = now()"
+        ),
+        {
+            "ref_id": topic_id,
+            "title": title,
+            "slug": slug,
+            "content": content_md,
+            "related": json.dumps(related_json, ensure_ascii=False),
+        },
+    )
+    r2 = await session.execute(text("SELECT id FROM wiki_pages WHERE slug=:slug"), {"slug": slug})
+    row2 = r2.first()
+    wiki_id = row2[0] if row2 else None
+    if wiki_id is not None:
+        await update_wiki_tsv(session, wiki_id)
+    logger.info("generate_topic_wiki: topic=%d → wiki=%s", topic_id, wiki_id)
+    return wiki_id
+
+
 async def search_wiki(
     session: AsyncSession,
     query: str,
