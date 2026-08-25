@@ -430,3 +430,40 @@ DDL 新增 `meta(key,value)` 表（CREATE IF NOT EXISTS，对存量库透明）�
 2. 页面跨源去重 + via 标注正确；16:00 班重写含全天内容
 3. 发布失败 → 无按钮卡照发；连败 3 次群内收到纯文本求救
 4. `TC_SITE_ENABLED=0` 回退 v0.1 行为
+
+---
+
+## 16. v0.3 设计 — 飞书多维表格归档（2026-08-25）
+
+### 16.1 形式决策
+
+单数据表「文章」+ 默认视图按「来源」分组、组内发布时间倒序——对应原 git page 的
+"每 feed 一个分类区块"，同时保留跨源搜索/统计能力。否决按源分多表（碎片化）。
+
+字段：标题(主键 text)/链接(url)/来源(text)/摘要(text)/发布时间(datetime)/推送时间(datetime)
+
+### 16.2 feedkicker/bitable.py
+
+- 基于 `lark-cli base` 子命令封装（subprocess；二进制解析同 publish.gh_bin 模式）
+- `ensure_initialized`：config 有 token 则跳过；否则 title-resolve 找同名 Base，
+  找不到才创建（Base「AI 资讯归档」+ 表「文章」全字段 schema）
+- `sync_records`：写入前拉取表内已有链接集合（record-list 分页），
+  `canonicalize` 后过滤已存在 + 批内去重（修复跨源重复入表）；≤200 条/批；
+  全部批次成功才返回 True
+- 时间单元格：ISO UTC → 本地时区 "%Y-%m-%d %H:%M"
+- 权限：`permission.public patch --yes`——external_access=false +
+  link_share_entity=tenant_readable（仅组织内获得链接者可读）
+
+### 16.3 存储与编排
+
+- articles 加列 `bitable_synced_at TEXT`（connect 时 PRAGMA 检查自动补列）
+- push.py：发送成功且 bitable.enabled → select_unsynced → sync → mark_synced；
+  任一环节失败仅 WARNING，不影响推送主流程；dry-run 不触发
+- 独立运维入口：`python -m feedkicker.bitable --env prod [--init]`
+- 配置：`bitable{enabled, app_token, table_id, url}`；prod 开启，dev/test 关闭
+
+### 16.4 事故记录
+
+首轮回填因 URL 字段不支持 {link,text} 对象形态失败一批（改纯字符串修复），
+重试导致 200 行重复 + 1 行跨源重复；已逐行清理。教训：
+batch 失败必须整批不打标（已实现），跨源去重必须在写入侧兜底（已实现）。

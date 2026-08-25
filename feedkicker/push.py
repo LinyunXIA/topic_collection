@@ -6,9 +6,9 @@ import logging
 import sys
 from datetime import datetime, timedelta, timezone
 
-from feedkicker import feishu, publish, site, store
+from feedkicker import bitable, feishu, publish, site, store
 from feedkicker.config import load_config
-from feedkicker.fetch import fetch_feed
+from feedkicker.fetch import fetch_feed, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -136,6 +136,18 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             log.info("推送恢复，清零连败计数（此前 %d 次）", streak)
         store.set_meta(conn, PUSH_FAIL_STREAK_KEY, "0")
         log.info("推送成功：%d 条新条目，失败源 %d 个", len(pending), feed_fails)
+        if cfg.bitable.enabled and cfg.bitable.app_token:
+            try:
+                unsynced = store.select_unsynced(conn)
+                log.info("Bitable 待同步 %d 条", len(unsynced))
+                if unsynced and bitable.sync_records(
+                    cfg.bitable.app_token, cfg.bitable.table_id, unsynced
+                ):
+                    store.mark_synced(conn, unsynced, utc_now_iso())
+                elif unsynced:
+                    log.warning("Bitable 同步未完全成功，保留待下次重试")
+            except Exception as e:
+                log.warning("Bitable 同步异常（不影响推送）: %s", e)
     else:
         streak = int(store.get_meta(conn, PUSH_FAIL_STREAK_KEY, "0")) + 1
         store.set_meta(conn, PUSH_FAIL_STREAK_KEY, str(streak))
