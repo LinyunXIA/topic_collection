@@ -149,6 +149,7 @@ CREATE TABLE feeds (
 
 ```yaml
 feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/<token>"
+feishu_secret: "<签名密钥>"   # 机器人开启「签名校验」时的密钥，未开启留空
 bootstrap_days: 3      # 冷启动窗口（新源首跑最多推最近 N 天）
 http:
   timeout_seconds: 20
@@ -159,7 +160,7 @@ feeds:
   - name: "某某博客"
     url: "https://example.com/feed"
 ```
-`feishu_webhook` 亦可用环境变量 `FEISHU_WEBHOOK` 覆盖（凭据不进配置文件可选）。
+`feishu_webhook` 亦可用环境变量 `FEISHU_WEBHOOK` 覆盖（凭据不进配置文件可选）；签名密钥同理走 `FEISHU_SECRET`。
 
 ---
 
@@ -206,7 +207,7 @@ feeds:
 - 每 feed 一段分组；组内每篇：`[标题](链接)` + description（原样）。
 - description「原样带上」所需的**最小让步**：做 markdown 转义，避免 `**`/`` ` ``/`[ ](`/换行破坏卡片布局（这是原样带 + 卡片渲染的唯一必要代价）。
 - 失败行仅在有失败时出现；无新条目不发空卡、无失败行。
-- 业务校验：`resp.json()` 里 `StatusCode == 0` 或 `code == 0` 才算成功；webhook 空则跳过；长文本 30000 字符截断（参考 v1 已验证经验）。
+- 业务校验：`resp.json()` 里 `StatusCode == 0` 或 `code == 0` 才算成功；webhook 空则跳过；机器人开启「签名校验」时按官方算法注入顶层 `timestamp` + `sign`；请求体 ≤20 KB（超限降级裁剪 description → 旧条目，见 DESIGN §7）。
 
 ---
 

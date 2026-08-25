@@ -62,6 +62,7 @@ topic_collection/
 
 ```yaml
 feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/<token>"
+feishu_secret: "<签名密钥>"   # 机器人开启「签名校验」安全设置时的密钥；未开启则留空
 bootstrap_days: 3      # 冷启动窗口：新源首跑最多推最近 N 天
 http:
   timeout_seconds: 20
@@ -75,9 +76,10 @@ feeds:
 
 环境变量（`feedkicker/config.py` 覆盖顺序：默认值 < config.yaml < 环境变量）：
 - `FEISHU_WEBHOOK` —— 覆盖 webhook（凭据不进文件可选）
+- `FEISHU_SECRET` —— 覆盖签名密钥（同上）
 - `TC_DB` —— sqlite 路径，默认 `data/tc.sqlite3`（相对项目根）
 
-`config.py` 用 `dataclass` 类型化：`Config{feishu_webhook, bootstrap_days, http: HttpConf{timeout_seconds,user_agent}, feeds: list[Feed{name,url}]}`。
+`config.py` 用 `dataclass` 类型化：`Config{feishu_webhook, feishu_secret, bootstrap_days, http: HttpConf{timeout_seconds,user_agent}, feeds: list[Feed{name,url}]}`。
 
 ## 5. 数据模型（DDL）
 
@@ -175,7 +177,7 @@ def escape_inline(text):
 ```
 
 ```python
-def build_card(new_items, feed_fails, http):
+def build_card(new_items, feed_fails, feed_order, max_bytes=20000):
     groups = groupby_feed(new_items)                 # 保 config 顺序
     parts = []
     for feed_name, items in groups:
@@ -186,11 +188,14 @@ def build_card(new_items, feed_fails, http):
         parts.append("")                              # feed 之间空行
     content = "\n".join(parts)
     elements = [{"tag": "div",
-                 "text": {"tag": "markdown", "content": content}}]
+                 "text": {"tag": "lark_md", "content": content}}]   # 自定义机器人旧版卡片不支持 div 内 markdown 标签
     if feed_fails:
         elements += [{"tag": "hr"},
                      {"tag": "div", "text": {"tag": "lark_md",
                                              "content": f"⚠ {feed_fails} 个源失败"}}]
+    if dropped:
+        elements += [{"tag": "div", "text": {"tag": "lark_md",
+                                             "content": f"… 已截断 {dropped} 条旧条目"}}]
     return {"msg_type": "interactive",
             "card": {"header": {"title": {"tag": "plain_text",
                                           "content": f"Feeds 汇总  {local_now():%H:%M}"},
@@ -201,25 +206,39 @@ def build_card(new_items, feed_fails, http):
 说明：
 - 每 feed 一段分组；组内每篇 `[标题](链接)` + description 原样（仅 `escape_inline` 压行 + 转义保留字，见 PRD §10"最小让步"）。
 - 标题内容为空 → 用 url 兜底；description 为空 → 不残留空行。
+- **20KB 降级裁剪**（飞书自定义机器人请求体上限，官方文档）：序列化后按 UTF-8 字节数检查；超限先剥全部 description 重排，仍超则从最旧条目起逐条丢弃直至塞下；发生丢弃时卡片 footer 追加「… 已截断 N 条」。保证发出的 payload 永远是完整合法 JSON（替代早期"30000 字符硬截断"——残缺 JSON 必被拒且条目永久 pending）。
 - 无新条目时 build_card 不会被调用（push 流程 §6 step 5 直接返回）。
 
 ## 8. 推送 / 校验（feishu.send）
 
 ```python
-def send(payload, webhook_url, http):
+def send(payload, webhook_url, timeout_seconds, user_agent, secret=""):
     if not webhook_url:
         log.warning("跳过：webhook 为空"); return False
     try:
-        body = json.dumps(payload); 
-        if len(body) > 30000: log.warning("超长截断"); body = body[:30000]  # 飞书上限，参考 v1
-        resp = httpx.post(webhook_url, content=body, timeout=http.timeout_seconds, headers={"Content-Type": "application/json", "User-Agent": http.user_agent})
+        body_payload = dict(payload)
+        if secret:                                    # 签名校验安全设置（官方算法）
+            ts = str(int(time.time()))                # 秒级时间戳，1 小时内有效
+            body_payload["timestamp"] = ts
+            body_payload["sign"] = gen_sign(ts, secret)
+        body = json.dumps(body_payload, ensure_ascii=False)
+        resp = httpx.post(webhook_url, content=body.encode("utf-8"), timeout=timeout_seconds,
+                          headers={"Content-Type": "application/json", "User-Agent": user_agent})
         if resp.status_code != 200: log.warning(...); return False
         data = resp.json()
         code = data.get("StatusCode", data.get("code", 0))   # 飞书业务码
         return code == 0
     except Exception as e:
         log.warning("推送异常: %s", e); return False
+
+def gen_sign(timestamp, secret):
+    string_to_sign = f"{timestamp}\n{secret}"         # 官方：timestamp+"\n"+密钥 作 key，
+    hmac_code = hmac.new(string_to_sign.encode(), digestmod=hashlib.sha256).digest()
+    return base64.b64encode(hmac_code).decode()       # 对空串求 HmacSHA256 再 Base64
 ```
+
+- 签名仅在配置 `feishu_secret`（yaml `feishu_secret` / env `FEISHU_SECRET`）时注入；校验失败返回业务码 19021。
+- 卡片体积由 build_card 保证 ≤20KB，send 不再做内容截断。
 
 - 发送失败仅 warning，不抛；不影响已入库/已置首跑的副作用（推送是尽力而为的一环）。
 - `ok=False` 时**不 mark_pushed** → 下次运行这些条目仍是待推（自然重试窗口）。幂等 + 重复发送由飞书 webhook 语义决定：**不能保证不重发**，但若上次发送实际成功而进程在 mark 前崩溃，下次会重发——接受该权衡，标记为 §12 待定（PRD §12 已有"发送失败重试策略"待定）。
@@ -258,6 +277,8 @@ def send(payload, webhook_url, http):
 - `test_build_card_grouping`：按 feed 分组、顺序保持、description 压单行转义、空 description 无残留。
 - `test_build_card_failure_footer`：`feed_fails>0` 时带「⚠ N 个源失败」；为 0 时不带。
 - `test_send_business_code`：mock httpx.post，断言 `StatusCode=0` 判定成功、非 0 判定失败。
+- `test_gen_sign_known_vector` / `test_send_injects_signature`：官方算法固定向量；secret 非空注入 timestamp/sign、为空不注入。
+- `test_build_card_trims_to_20kb`：超限降级裁剪后序列化 ≤20KB 且 JSON 完整带截断提示；小体量不裁剪。
 - `test_no_new_items_no_empty_card`：无待推时 snapshot 记录 `build_card` 不被调用/不发空卡。
 
 ## 12. 速率与错误分类（暂从简）

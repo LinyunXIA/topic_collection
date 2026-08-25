@@ -26,6 +26,7 @@ class Feed:
 @dataclass
 class Config:
     feishu_webhook: str = ""
+    feishu_secret: str = ""
     bootstrap_days: int = 3
     http: HttpConf = field(default_factory=HttpConf)
     feeds: list[Feed] = field(default_factory=list)
@@ -42,6 +43,7 @@ def load_config(
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     cfg = Config()
     cfg.feishu_webhook = str(raw.get("feishu_webhook") or "")
+    cfg.feishu_secret = str(raw.get("feishu_secret") or "")
     cfg.bootstrap_days = int(raw.get("bootstrap_days", cfg.bootstrap_days))
 
     http_raw = raw.get("http") or {}
@@ -63,6 +65,10 @@ def load_config(
     env_webhook = os.environ.get("FEISHU_WEBHOOK")
     if env_webhook:
         cfg.feishu_webhook = env_webhook
+
+    env_secret = os.environ.get("FEISHU_SECRET")
+    if env_secret:
+        cfg.feishu_secret = env_secret
 
     env_db = os.environ.get("TC_DB")
     if env_db:
