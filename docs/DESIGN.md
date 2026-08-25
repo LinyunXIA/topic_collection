@@ -42,12 +42,12 @@
 ```
 topic_collection/
 ├── pyproject.toml            # 依赖 + [project.scripts] tc-push
-├── config.yaml               # feed 清单 + webhook + 参数（见 §4）
-├── data/                     # 运行时生成：tc.sqlite3（gitignore）
+├── config-{dev,test,prod}.yaml  # 三环境分文件，均 gitignored（见 §4）
+├── data/                     # 运行时生成：tc-{env}.sqlite3（gitignore）
 ├── logs/                     # cron 重定向写日志（gitignore）
 ├── feedkicker/
 │   ├── __init__.py
-│   ├── config.py             # 读 config.yaml + env 覆盖
+│   ├── config.py             # 读 config-{env}.yaml + env 覆盖
 │   ├── fetch.py              # feedparser 抓取 + 归一化
 │   ├── store.py              # sqlite 打开/建表/入库/待推/标已推/首跑
 │   ├── feishu.py             # 卡片构建 + webhook 发送 + 业务码校验
@@ -61,6 +61,7 @@ topic_collection/
 **分环境文件**：`config-dev.yaml` / `config-test.yaml` / `config-prod.yaml`（均不入库，凭据本地持有）。
 未指定 `--config` 时按 `TC_APP_ENV` / `--env` 推导对应文件；dev/test 凭据留空（不推送真实群），
 仅保留量子位单源、冷启动窗口 1 天；prod 为完整源清单 + 真实凭据。以 prod 为例：
+配置选择优先级：`--config` 显式路径 > `--env` > `TC_APP_ENV` > 默认 `prod`。
 
 ```yaml
 feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/<token>"
