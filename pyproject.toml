@@ -1,0 +1,28 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "feedkicker"
+version = "0.1.0"
+description = "RSS → 飞书 转发机器人（v2 瘦身起点）"
+requires-python = ">=3.12"
+dependencies = [
+    "feedparser>=6.0",
+    "httpx>=0.27",
+    "PyYAML>=6.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+]
+
+[project.scripts]
+tc-push = "feedkicker.push:main"
+
+[tool.setuptools.packages.find]
+include = ["feedkicker*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
