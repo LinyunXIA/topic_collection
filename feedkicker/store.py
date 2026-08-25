@@ -39,6 +39,9 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
         path.parent.mkdir(parents=True, exist_ok=True)
     conn = sqlite3.connect(str(path))
     conn.executescript(_SCHEMA)
+    cols = {r[1] for r in conn.execute("PRAGMA table_info(articles)")}
+    if "bitable_synced_at" not in cols:
+        conn.execute("ALTER TABLE articles ADD COLUMN bitable_synced_at TEXT")
     conn.commit()
     return conn
 
@@ -159,6 +162,32 @@ def update_first_run_all(conn: sqlite3.Connection, feeds: list, now_iso: str) ->
 def get_meta(conn: sqlite3.Connection, key: str, default: str = "") -> str:
     row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
     return row[0] if row else default
+
+
+def select_unsynced(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT feed_id, entry_key, title, url, description, published_at, pushed_at"
+        " FROM articles WHERE bitable_synced_at IS NULL"
+        " ORDER BY pushed_at, feed_id"
+    ).fetchall()
+    keys = (
+        "feed_id",
+        "entry_key",
+        "title",
+        "url",
+        "description",
+        "published_at",
+        "pushed_at",
+    )
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def mark_synced(conn: sqlite3.Connection, items: list[dict], now_iso: str) -> None:
+    conn.executemany(
+        "UPDATE articles SET bitable_synced_at = ? WHERE feed_id = ? AND entry_key = ?",
+        [(now_iso, it["feed_id"], it["entry_key"]) for it in items],
+    )
+    conn.commit()
 
 
 def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:

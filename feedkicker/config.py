@@ -42,6 +42,14 @@ class SiteConf:
 
 
 @dataclass
+class BitableConf:
+    enabled: bool = False
+    app_token: str = ""
+    table_id: str = ""
+    url: str = ""
+
+
+@dataclass
 class Config:
     app_env: str = "prod"
     feishu_webhook: str = ""
@@ -51,6 +59,7 @@ class Config:
     feeds: list[Feed] = field(default_factory=list)
     db_path: Path = DEFAULT_DB_PATH
     site: SiteConf = field(default_factory=SiteConf)
+    bitable: BitableConf = field(default_factory=BitableConf)
 
 
 def load_config(
@@ -97,6 +106,14 @@ def load_config(
         repo=str(site_raw.get("repo") or cfg.site.repo),
         branch=str(site_raw.get("branch") or cfg.site.branch),
         top_n=max(1, int(site_raw.get("top_n", cfg.site.top_n))),
+    )
+
+    bt_raw = raw.get("bitable") or {}
+    cfg.bitable = BitableConf(
+        enabled=bool(bt_raw.get("enabled", cfg.bitable.enabled)),
+        app_token=str(bt_raw.get("app_token") or ""),
+        table_id=str(bt_raw.get("table_id") or ""),
+        url=str(bt_raw.get("url") or ""),
     )
 
     env_webhook = os.environ.get("FEISHU_WEBHOOK")

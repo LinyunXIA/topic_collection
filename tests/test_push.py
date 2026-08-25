@@ -722,3 +722,99 @@ def test_config_per_env_files(tmp_path, monkeypatch):
     import pytest as _pytest
     with _pytest.raises(FileNotFoundError, match="config-test.yaml"):
         load_config(app_env="test")
+
+
+# ── v0.3：Bitable 同步 ──
+
+
+def test_bitable_cell_datetime_format():
+    from feedkicker import bitable
+
+    cell = bitable._cell({
+        "feed_id": "F", "title": "t", "url": "https://e.com/1",
+        "description": "", "published_at": "2026-08-25T01:30:00Z",
+        "pushed_at": "2026-08-25T09:59:53Z",
+    })
+    assert cell["发布时间"].endswith(" 09:30") or cell["发布时间"].endswith(" 09:30".replace("09", str(9)))
+    assert len(cell["发布时间"]) == 16 and len(cell["推送时间"]) == 16
+    assert cell["链接"] == "https://e.com/1"
+    none_cell = bitable._cell({"feed_id": "F", "title": "", "url": "",
+                               "description": "", "published_at": None,
+                               "pushed_at": None})
+    assert none_cell["发布时间"] is None and none_cell["标题"] == ""
+
+
+def test_bitable_sync_chunks_and_dedup(monkeypatch):
+    from feedkicker import bitable
+
+    monkeypatch.setattr(bitable, "existing_links", lambda a, t: {"https://old.com/1"})
+    calls = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+record-batch-create" in args:
+            payload = json.loads(args[args.index("--json") + 1])
+            calls.append(len(payload["create_records"]))
+            return FakeProc(0, stdout="{}")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+
+    items = (
+        [{"feed_id": f"F{i}", "entry_key": f"k{i}", "title": f"t{i}",
+          "url": f"https://e.com/{i}", "description": "", "published_at": None,
+          "pushed_at": None} for i in range(250)]
+        + [{"feed_id": "F", "entry_key": "dup", "title": "dup",
+            "url": "HTTPS://E.COM/1#x", "description": "", "published_at": None,
+            "pushed_at": None}]
+        + [{"feed_id": "F", "entry_key": "old", "title": "old",
+            "url": "https://old.com/1", "description": "", "published_at": None,
+            "pushed_at": None}]
+    )
+    assert bitable.sync_records("app", "tbl", items) is True
+    assert calls == [200, 50]
+
+
+def test_bitable_sync_failure_returns_false(monkeypatch):
+    from feedkicker import bitable
+
+    monkeypatch.setattr(bitable, "existing_links", lambda a, t: set())
+    monkeypatch.setattr(
+        bitable, "_run",
+        lambda args, stdin_text=None, timeout=120: FakeProc(1, stderr="boom"),
+    )
+    items = [{"feed_id": "F", "entry_key": "k", "title": "t", "url": "https://e.com/9",
+              "description": "", "published_at": None, "pushed_at": None}]
+    assert bitable.sync_records("app", "tbl", items) is False
+
+
+def test_store_sync_roundtrip():
+    conn = make_conn()
+    store.download(conn, "F", SAMPLE_ENTRIES, "2026-08-25T00:00:00Z")
+    assert len(store.select_unsynced(conn)) == 2
+    store.mark_synced(conn, store.select_unsynced(conn), "2026-08-25T01:00:00Z")
+    assert store.select_unsynced(conn) == []
+    conn.close()
+
+
+def test_push_bitable_gating(monkeypatch):
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    entries = [_norm("bt item", "https://e.com/bt1")]
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
+
+    sync_called = []
+    monkeypatch.setattr(push.bitable, "sync_records",
+                        lambda *a, **kw: sync_called.append(a) or True)
+
+    rc = push.run(cfg, conn)
+    assert rc == 0 and not sync_called
+
+    cfg.bitable.enabled = True
+    cfg.bitable.app_token = "app-x"
+    cfg.bitable.table_id = "tbl-x"
+    entries2 = [_norm("bt item2", "https://e.com/bt2")]
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries2)
+    rc = push.run(cfg, conn)
+    assert rc == 0 and len(sync_called) == 1
+    conn.close()
