@@ -58,20 +58,22 @@ topic_collection/
 
 ## 4. 配置
 
-`config.yaml`（凭据可用环境变量覆盖，不进文件可选）：
+**分环境文件**：`config-dev.yaml` / `config-test.yaml` / `config-prod.yaml`（均不入库，凭据本地持有）。
+未指定 `--config` 时按 `TC_APP_ENV` / `--env` 推导对应文件；dev/test 凭据留空（不推送真实群），
+仅保留量子位单源、冷启动窗口 1 天；prod 为完整源清单 + 真实凭据。以 prod 为例：
 
 ```yaml
 feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/<token>"
 feishu_secret: "<签名密钥>"   # 机器人开启「签名校验」安全设置时的密钥；未开启则留空
 bootstrap_days: 3      # 冷启动窗口：新源首跑最多推最近 N 天
+site:
+  enabled: false       # GitHub Pages 详情页流程暂停（2026-08-25）
 http:
   timeout_seconds: 20
-  user_agent: "rss2feishu/0.1 (+local cron; private)"
+  user_agent: "rss2feishu/0.2 (+local cron; private)"
 feeds:
   - name: "HN 热榜"
     url: "https://news.ycombinator.com/rss"
-  - name: "某某博客"
-    url: "https://example.com/feed"
 ```
 
 环境变量（`feedkicker/config.py` 覆盖顺序：默认值 < config.yaml < 环境变量）：
