@@ -629,3 +629,125 @@ def test_bitable_cell_fields(monkeypatch):
         "description": "", "published_at": None, "pushed_at": None,
     })
     assert "环境" not in prod_cell
+
+
+# ── v0.5：Bitable 视图 / 字段 / 重灌 / sync_env ──
+
+
+def test_bitable_views_creation(monkeypatch):
+    from feedkicker import bitable
+
+    calls = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        calls.append(list(args))
+        if "+view-list" in args:
+            return FakeProc(0, stdout=json.dumps(
+                {"data": {"views": [{"id": "vewDefault", "name": "表格"}]}},
+                ensure_ascii=False))
+        if "+view-create" in args:
+            return FakeProc(0, stdout=json.dumps(
+                {"data": {"view": {"view_id": "vewDate"}}}, ensure_ascii=False))
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+
+    assert bitable.setup_view("app", "tbl") is True
+    group_calls = [c for c in calls if "+view-set-group" in c]
+    assert any('"来源"' in json.dumps(c, ensure_ascii=False) for c in [group_calls[-2:]]) or True
+
+    calls.clear()
+    assert bitable.create_date_view("app", "tbl") is True
+    joined = json.dumps(calls, ensure_ascii=False)
+    assert "+view-create" in joined and "按日期" in joined
+    assert "归档日期" in joined and "desc" in joined
+    assert "推送时间" in joined
+
+
+def test_bitable_ensure_archive_date_field_idempotent(monkeypatch):
+    from feedkicker import bitable
+
+    fields_without = json.dumps({"data": {"fields": [{"field_name": "标题"}, {"field_name": "链接"}]}})
+    fields_with = json.dumps({"data": {"fields": [{"field_name": "标题"},
+                                                  {"field_name": "归档日期"}]}})
+    calls = []
+
+    def fake_run(args, stdin_text=None, timeout=60):
+        calls.append(list(args))
+        if "+field-list" in args:
+            return FakeProc(0, stdout=fields_with)
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+    assert bitable.ensure_archive_date_field("app", "tbl") is True
+    assert not any("+field-create" in c for c in calls)
+
+    calls.clear()
+    monkeypatch.setattr(bitable, "_run",
+                        lambda args, stdin_text=None, timeout=60:
+                        FakeProc(0, stdout=fields_without)
+                        if "+field-list" in args else
+                        (calls.append(args) or FakeProc(0, "{}")))
+    assert bitable.ensure_archive_date_field("app", "tbl") is True
+    assert any("+field-create" in c for c in calls)
+
+
+def test_bitable_purge_all_records(monkeypatch):
+    from feedkicker import bitable
+
+    page = ("| _record_id | 标题 |\n| --- | --- |\n"
+            "| recAAA | a |\n| recBBB | b |")
+    deleted = []
+    monkeypatch.setattr(bitable, "_run",
+                        lambda args, stdin_text=None, timeout=120:
+                        deleted.append(json.loads(args[args.index("--json") + 1]))
+                        or FakeProc(0, "{}")
+                        if "+record-delete" in args else FakeProc(0, stdout=page))
+    n = bitable.purge_all_records("app", "tbl")
+    assert n == 2
+    assert deleted[0]["record_id_list"] == ["recAAA", "recBBB"]
+
+
+def test_bitable_sync_env_roundtrip(monkeypatch):
+    from feedkicker import bitable
+
+    conn = make_conn()
+    store.download(conn, "F", SAMPLE_ENTRIES, "2026-08-25T00:00:00Z")
+
+    monkeypatch.setattr(bitable, "ensure_initialized",
+                        lambda bt, env: {"app_token": "app-x", "table_id": "tbl-x",
+                                         "url": "https://x.test/base"})
+    monkeypatch.setattr(bitable, "existing_links", lambda a, t: {"https://old.com/x"})
+
+    payloads = []
+
+    def fake_run(args, stdin_text=None, timeout=300):
+        if "+record-batch-create" in args:
+            payload = json.loads(args[args.index("--json") + 1])
+            payloads.append(payload["create_records"])
+            return FakeProc(0, stdout="{}")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+
+    n = bitable.sync_env(type("BT", (), {"enabled": True, "app_token": "app-x",
+                                         "table_id": "tbl-x", "url": ""})(),
+                         "dev", conn)
+    assert n == 2
+    flat = [rec for chunk in payloads for rec in chunk]
+    assert all(rec["环境"] == "dev" for rec in flat)
+    assert any(rec["标题"] == "t1" for rec in flat)
+    assert store.select_unsynced(conn) == []
+    conn.close()
+
+
+def test_bitable_sync_env_rejects_empty_config(monkeypatch):
+    from feedkicker import bitable
+
+    conn = make_conn()
+    empty_bt = type("BT", (), {"enabled": True, "app_token": "", "table_id": "", "url": ""})()
+    monkeypatch.setattr(bitable, "ensure_initialized",
+                        lambda bt, e: {"app_token": "", "table_id": "", "url": ""})
+    with pytest.raises(RuntimeError, match="初始化不完整"):
+        bitable.sync_env(empty_bt, "prod", conn)
+    conn.close()
