@@ -458,13 +458,16 @@ DDL 新增 `meta(key,value)` 表（CREATE IF NOT EXISTS，对存量库透明）�
 - 权限：`permission.public patch --yes`——external_access=false +
   link_share_entity=tenant_readable（仅组织内获得链接者可读）
 
+> v0.5 增强（「环境」列 / 归档日期字段 / 按日期视图 / existing_links 幂等去重 /
+> purge_all_records 重灌）见 §18。
+
 ### 16.3 存储与编排
 
 - articles 加列 `bitable_synced_at TEXT`（connect 时 PRAGMA 检查自动补列）
 - push.py：发送成功且 bitable.enabled → select_unsynced → sync → mark_synced；
   任一环节失败仅 WARNING，不影响推送主流程；dry-run 不触发
 - 独立运维入口：`python -m feedkicker.bitable --env prod [--init]`
-- 配置：`bitable{enabled, app_token, table_id, url}`；prod 开启，dev/test 关闭
+- 配置：`bitable{enabled, app_token, table_id, url}`；三环境均开启（dev/test 共享 Base）
 
 ### 16.4 事故记录
 
