@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
@@ -254,6 +256,64 @@ def test_escape_inline():
     assert feishu.escape_inline(None) == ""
 
 
+def test_gen_sign_known_vector():
+    assert (
+        feishu.gen_sign("1599360473", "demo")
+        == "l1N0gAcBjdwBvGm1xMjOF0XSyaLRpR7tuO5dHfhAYc8="
+    )
+    sign = feishu.gen_sign("1600000000", "s")
+    assert len(sign) == 44
+    base64.b64decode(sign)
+
+
+def test_send_injects_signature(monkeypatch):
+    captured = []
+
+    def fake_post(url, content=None, **kw):
+        captured.append(json.loads(content.decode("utf-8")))
+        return FakeResp({"code": 0})
+
+    monkeypatch.setattr(feishu.httpx, "post", fake_post)
+    payload = {"msg_type": "text"}
+    assert feishu.send(payload, "https://hook.test/x", 5, "ua", secret="topsecret")
+    assert len(captured) == 1
+    sent = captured[0]
+    assert sent["timestamp"].isdigit() and len(sent["timestamp"]) == 10
+    assert sent["sign"] == feishu.gen_sign(sent["timestamp"], "topsecret")
+
+    payload2 = {"msg_type": "text"}
+    assert feishu.send(payload2, "https://hook.test/x", 5, "ua", secret="")
+    assert "sign" not in captured[1] and "timestamp" not in captured[1]
+
+
+def test_build_card_trims_to_20kb():
+    big_items = [
+        {
+            "feed_id": "F",
+            "entry_key": f"k{i}",
+            "title": f"标题 {i} " + "很长的摘要" * 60,
+            "url": f"https://e.com/{i}",
+            "description": "描述行 " * 120,
+        }
+        for i in range(40)
+    ]
+    card = feishu.build_card(big_items, 0, ["F"])
+    raw = json.dumps(card, ensure_ascii=False)
+    assert len(raw.encode("utf-8")) <= 20000
+    assert card["msg_type"] == "interactive"
+    texts = [el.get("text", {}).get("content", "") for el in card["card"]["elements"]]
+    assert any("已截断" in t for t in texts)
+
+    small = big_items[:2]
+    card_small = feishu.build_card(small, 0, ["F"])
+    small_texts = [
+        el.get("text", {}).get("content", "") for el in card_small["card"]["elements"]
+    ]
+    assert not any("已截断" in t for t in small_texts)
+    assert "描述行" in small_texts[0]
+    assert len(json.dumps(card_small, ensure_ascii=False).encode("utf-8")) < 20000
+
+
 class FakeResp:
     def __init__(self, payload, status_code=200):
         self._payload = payload
@@ -321,7 +381,7 @@ def test_run_pushes_marks_and_dedupes(monkeypatch):
     monkeypatch.setattr(
         feishu,
         "send",
-        lambda payload, hook, timeout, ua: sent.append(payload) or (hook == "hook-x"),
+        lambda payload, hook, timeout, ua, **kw: sent.append(payload) or (hook == "hook-x"),
     )
 
     cfg.feishu_webhook = "hook-x"
@@ -369,7 +429,7 @@ def test_run_one_source_fails_others_push(monkeypatch):
         ]
     )
     monkeypatch.setattr(push, "fetch_feed", fake_fetch)
-    monkeypatch.setattr(feishu, "send", lambda *a: True)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
 
     rc = push.run(cfg, conn)
     assert rc == 0

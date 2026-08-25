@@ -47,7 +47,13 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         log.info("dry-run：共 %d 条待推，已打印 payload 未发送", len(pending))
         return 0
 
-    ok = feishu.send(payload, cfg.feishu_webhook, cfg.http.timeout_seconds, cfg.http.user_agent)
+    ok = feishu.send(
+        payload,
+        cfg.feishu_webhook,
+        cfg.http.timeout_seconds,
+        cfg.http.user_agent,
+        secret=cfg.feishu_secret,
+    )
     if ok:
         store.mark_pushed(conn, pending, now)
         for name in ok_feeds:
