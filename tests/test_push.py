@@ -8,8 +8,8 @@ from email.utils import format_datetime
 
 import pytest
 
-from feedkicker import feishu, push, store
-from feedkicker.config import Config, Feed, HttpConf
+from feedkicker import feishu, publish, push, site, store
+from feedkicker.config import Config, Feed, HttpConf, SiteConf
 from feedkicker.fetch import canonicalize, entry_key_of, parse_content
 
 
@@ -48,12 +48,13 @@ def make_conn() -> sqlite3.Connection:
     return store.connect(":memory:")
 
 
-def make_cfg(feeds: list[Feed]) -> Config:
+def make_cfg(feeds: list[Feed], **site_kwargs) -> Config:
     return Config(
         feishu_webhook="",
         bootstrap_days=3,
         http=HttpConf(timeout_seconds=5),
         feeds=feeds,
+        site=SiteConf(enabled=False, **site_kwargs),
     )
 
 
@@ -454,3 +455,199 @@ def test_entry_key_of_takes_guid():
         pass
 
     assert entry_key_of({"id": " g1 ", "link": "https://x.com/a"}) == "g1"
+
+
+# ── v0.2：site 渲染 ──
+
+
+def test_site_render_dedup_and_via():
+    items = [
+        {"feed_id": "A", "entry_key": "a1", "title": "同一篇", "url": "https://e.com/x",
+         "description": "", "published_at": None},
+        {"feed_id": "B", "entry_key": "b1", "title": "同一篇（B）", "url": "https://E.com/x",
+         "description": "", "published_at": None},
+        {"feed_id": "A", "entry_key": "a2", "title": "独立文章", "url": "https://e.com/y",
+         "description": "", "published_at": None},
+    ]
+    html_out = site.render_daily(items, datetime.now().date(), ["A", "B"])
+    assert html_out.count("https://e.com/y") == 1
+    assert "亦见 B" in html_out or "亦见 A" in html_out
+    assert "去重后 2 条" in html_out and "原始 3 条" in html_out
+
+
+def test_site_escapes_html():
+    items = [
+        {"feed_id": "F", "entry_key": "k", "title": "<script>alert(1)</script>",
+         "url": "https://e.com/z?a=1&b=2", "description": "<b>粗体</b> 文本",
+         "published_at": None},
+    ]
+    html_out = site.render_daily(items, datetime.now().date(), ["F"])
+    assert "<script>" not in html_out.replace('<script', '', 0) or "&lt;script&gt;" in html_out
+    assert "&lt;b&gt;粗体&lt;/b&gt;" in html_out
+    assert "a=1&amp;b=2" in html_out
+
+
+# ── v0.2：publish ──
+
+
+class FakeProc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def test_publish_sha_create_and_update(monkeypatch):
+    calls = []
+    sha_exists = {"v": False}
+
+    def fake_run(cmd, input=None, capture_output=True, text=True, timeout=60):
+        calls.append((list(cmd), input))
+        if "--jq" in cmd:
+            if sha_exists["v"]:
+                return FakeProc(0, stdout='"abc123"\n')
+            return FakeProc(1, stdout="", stderr="404 Not Found")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(publish.subprocess, "run", fake_run)
+    ok = publish.publish_file("o/r", "gh-pages", "daily/d.html", "<p>hi</p>", "msg")
+    assert ok
+    body = json.loads(calls[1][1])
+    assert "sha" not in body
+    assert base64.b64decode(body["content"]).decode() == "<p>hi</p>"
+
+    calls.clear()
+    sha_exists["v"] = True
+    ok = publish.publish_file("o/r", "gh-pages", "daily/d.html", "<p>hi2</p>", "msg")
+    assert ok
+    body = json.loads(calls[1][1])
+    assert body["sha"] == "abc123"
+
+
+def test_wait_published_polls(monkeypatch):
+    seq = [
+        FakeResp(None, status_code=404),
+        FakeResp({"t": "归档尚未生成，等待首次运行。"}, status_code=200),
+        FakeResp({"t": "ok"}, status_code=200),
+    ]
+
+    def fake_get(url, **kw):
+        class R:
+            def __init__(self, sc, txt):
+                self.status_code = sc
+                self._txt = txt
+
+            @property
+            def text(self):
+                return self._txt
+
+        r = seq.pop(0)
+        return R(r.status_code, str(r._payload.get("t")) if r._payload else "")
+
+    monkeypatch.setattr(publish.httpx, "get", fake_get)
+    monkeypatch.setattr(publish.time, "sleep", lambda s: None)
+    assert publish.wait_published("https://x.test/", timeout_s=30, interval_s=0)
+
+
+# ── v0.2：卡片 top_n / 按钮 ──
+
+
+def _many_items(feed, n):
+    return [
+        {"feed_id": feed, "entry_key": f"k{i}", "title": f"标题{i}",
+         "url": f"https://e.com/{i}", "description": f"摘要{i}", "published_at": None}
+        for i in range(n)
+    ]
+
+
+def test_build_card_top_n_and_button():
+    card = feishu.build_card(_many_items("F", 8), 0, ["F"], top_n=3,
+                             detail_url="https://linyunxia.github.io/topic_collection/daily/2026-08-25.html")
+    content = card["card"]["elements"][0]["text"]["content"]
+    assert "标题7" not in content and "标题2" in content
+    assert "还有 5 条见详情页" in content
+    actions = [el for el in card["card"]["elements"] if el["tag"] == "action"]
+    assert actions and "全部 8 条" in actions[0]["actions"][0]["text"]["content"]
+    assert actions[0]["actions"][0]["url"].endswith("2026-08-25.html")
+    stripped = feishu.strip_actions(card)
+    assert all(el["tag"] != "action" for el in stripped["card"]["elements"])
+    assert any("查看全部 8 条" in el.get("text", {}).get("content", "")
+               for el in stripped["card"]["elements"] if el.get("tag") == "div")
+
+
+def test_build_card_no_detail_no_button():
+    card = feishu.build_card(_many_items("F", 4), 0, ["F"], top_n=3)
+    assert all(el["tag"] != "action" for el in card["card"]["elements"])
+    assert not any("查看全部" in el.get("text", {}).get("content", "")
+                   for el in card["card"]["elements"] if el.get("tag") == "div")
+
+
+# ── v0.2：编排顺序与降级 ──
+
+
+def test_run_publishes_before_sends(monkeypatch):
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.site.enabled = True
+    cfg.site.base_url = "https://u.test"
+    cfg.feishu_webhook = "hook-x"
+    entries = [_norm("page item", "https://e.com/p1")]
+
+    calls = []
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    monkeypatch.setattr(push.publish, "publish_file",
+                        lambda repo, branch, path, content, msg: calls.append(("pub", path)) or True)
+    monkeypatch.setattr(push.publish, "wait_published",
+                        lambda url, **kw: calls.append(("wait", url)) or True)
+
+    sent = []
+    monkeypatch.setattr(feishu, "send",
+                        lambda p, *a, **kw: calls.append(("send",)) or sent.append(p) or True)
+
+    rc = push.run(cfg, conn)
+    assert rc == 0
+    assert [c[0] for c in calls] == ["pub", "pub", "wait", "send"]
+    assert calls[0][1].startswith("daily/")
+    assert calls[1][1] == "index.html"
+    assert any(el.get("tag") == "action" for el in sent[0]["card"]["elements"])
+    assert store.select_pending(conn) == []
+    conn.close()
+
+
+def test_run_publish_fail_degrades(monkeypatch):
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.site.enabled = True
+    cfg.feishu_webhook = "hook-x"
+    entries = [_norm("degraded", "https://e.com/d1")]
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    monkeypatch.setattr(push.publish, "publish_file", lambda *a, **k: False)
+
+    sent = []
+    monkeypatch.setattr(feishu, "send", lambda p, *a, **kw: sent.append(p) or True)
+
+    rc = push.run(cfg, conn)
+    assert rc == 0
+    assert len(sent) == 1
+    assert all(el.get("tag") != "action" for el in sent[0]["card"]["elements"])
+    conn.close()
+
+
+def test_run_sos_after_three_failures(monkeypatch):
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.feishu_webhook = "hook-x"
+    entries = [_norm("sos item", "https://e.com/s1")]
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: False)
+
+    sos_calls = []
+    monkeypatch.setattr(feishu, "send_text",
+                        lambda msg, *a, **kw: sos_calls.append(msg) or True)
+
+    store.set_meta(conn, push.PUSH_FAIL_STREAK_KEY, "2")
+    rc = push.run(cfg, conn)
+    assert rc == 1
+    assert len(sos_calls) == 1 and "连续 3 次" in sos_calls[0]
+    assert store.get_meta(conn, push.PUSH_FAIL_STREAK_KEY) == "0"
+    conn.close()

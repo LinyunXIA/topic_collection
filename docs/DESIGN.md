@@ -2,7 +2,7 @@
 
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述只在一处维护、另一处引用，避免漂移
-> 版本：v0.1 · 2026-08-24 · 已实现（部署与真实 webhook 闭环待办）
+> 版本：v0.2 · 2026-08-25 · v0.1 已上线；v0.2 增加 GitHub Pages 详情页
 
 ## 1. 架构总览
 
@@ -243,17 +243,33 @@ def gen_sign(timestamp, secret):
 - 发送失败仅 warning，不抛；不影响已入库/已置首跑的副作用（推送是尽力而为的一环）。
 - `ok=False` 时**不 mark_pushed** → 下次运行这些条目仍是待推（自然重试窗口）。幂等 + 重复发送由飞书 webhook 语义决定：**不能保证不重发**，但若上次发送实际成功而进程在 mark 前崩溃，下次会重发——接受该权衡，标记为 §12 待定（PRD §12 已有"发送失败重试策略"待定）。
 
-## 9. 调度（cron，无常驻）
+## 9. 调度（launchd，无常驻）
 
-```cron
-# 每天 8:00 与 16:00 各跑一次；每次 = 自上次以来新增的一张汇总卡
-0 8 * * * cd /path/topic_collection && .venv/bin/python -m feedkicker.push >> logs/push.log 2>&1
-0 16 * * * cd /path/topic_collection && .venv/bin/python -m feedkicker.push >> logs/push.log 2>&1
+v0.2 起 macOS 用 **launchd** 取代 cron：`StartCalendarInterval` 在机器睡眠错过触发点后，唤醒时会补跑一次（cron 直接丢弃）。
+
+```xml
+<!-- ~/Library/LaunchAgents/com.feedkicker.push.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.feedkicker.push</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/linyunxia/PycharmProjects/topic_collection/.venv/bin/python</string>
+         <string>-m</string><string>feedkicker.push</string></array>
+  <key>WorkingDirectory</key><string>/Users/linyunxia/PycharmProjects/topic_collection</string>
+  <key>StartCalendarInterval</key>
+  <array>
+    <dict><key>Hour</key><integer>8</integer><key>Minute</key><integer>30</integer></dict>
+    <dict><key>Hour</key><integer>16</integer><key>Minute</key><integer>0</integer></dict>
+  </array>
+  <key>StandardOutPath</key><string>/Users/linyunxia/PycharmProjects/topic_collection/logs/push.log</string>
+  <key>StandardErrorPath</key><string>/Users/linyunxia/PycharmProjects/topic_collection/logs/push.log</string>
+</dict></plist>
 ```
 
-- 进程由 cron 拉起，跑完退出，无后台残留、无 Web 端口监听。
-- 手动/联调：`python -m feedkicker.push --dry-run`（打 payload 不发）；`--config <路径>` 指定 config；`--db <路径>` 覆盖 `TC_DB`。
-- 编辑 schedule 只需改 crontab，不碰应用代码。
+- 加载：`launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.feedkicker.push.plist`
+- 进程由 launchd 拉起，跑完退出，无后台残留、无 Web 端口监听。
+- 手动/联调：`python -m feedkicker.push --dry-run`（打 payload 不发不发布）；`--config <路径>`；`--db <路径>`。
 
 ## 10. 日志与可观测
 
@@ -343,3 +359,68 @@ def gen_sign(timestamp, secret):
 - [ ] crontab 写入两条（8:00 / 16:00），重定向日志
 - [ ] 真实 webhook 闭环：跑一次收到卡片；再跑一次不重发（PRD §11 #7）
 - [ ] 无常驻验证：进程退出无残留、无端口监听（PRD §11 #8）（进程跑完即退已确认，端口验证随 cron 部署复核）
+---
+
+## 15. v0.2 设计 — GitHub Pages 详情页 + 摘要卡（2026-08-25）
+
+### 15.1 数据流与顺序保证
+
+```
+抓取入库 → select_pending
+ ├─ 空 → 不发卡不动网页，退出 0
+ └─ 有 → mark_pushed(先标记，页面需含本批)
+        → site.render_daily(当天全部已推) → publish gh-pages(daily/日期.html + index.html)
+        → wait_published 轮询 URL（3s×20 次）
+        → feishu 摘要卡（每源 top_n + 📰 按钮 → 详情页）→ 标已推语义见 §15.4
+```
+
+顺序保证：**发布并确认可达后才发卡**——用户点击按钮时页面必然已存在。
+轮询超时（Pages 构建慢）照发卡片，极端情况早点击几十秒 404。
+
+### 15.2 site.py 渲染
+
+- **全局去重**：`canonicalize(url)` 相同的条目合并为一条，主归属 = feed_order 中最靠前的源，
+  其余源标注「亦见 X + Y」（修复 HN 热榜 ∩ HN AI 高赞跨源重复推送问题）
+- 按 feed 分组（保 config 顺序）；description `html.escape` 后原样展示；纯 stdlib 字符串模板零依赖
+- `render_index`：按日期倒序归档目录（取最近 60 天有数据的日期）
+
+### 15.3 publish.py 发布
+
+- `gh api` Contents API：GET sha 判定新建 vs 更新 → PUT base64 单文件；幂等、无 git 工作区依赖、无冲突
+- gh 二进制解析：shutil.which → /opt/homebrew/bin/gh → /usr/local/bin/gh（launchd 环境 PATH 兜底）
+- `wait_published(url)`：httpx GET 轮询，200 且非骨架占位即认为生效
+
+### 15.4 飞书摘要卡改造
+
+- 每源最多 `site.top_n` 条（默认 5），组尾「… 还有 M 条见详情页」；详情页无 20KB 限制
+- 底部 action button「📰 查看全部 N 条」+ 同文 markdown 链接行（双保险）
+- 发送失败且带按钮时：`strip_actions` 去按钮降级重试一次（防旧版客户端/接口不兼容 action 元素）
+- 20KB 兜底保留：top_n 截断后仍超限 → 先剥 description 再从尾部丢条目
+- **语义变更**：site.enabled 时改为 mark_pushed 先于发送（页面内容完整性优先）；
+  发送失败不再自动重试本批条目（已上页面），由 §15.5 求救通道兜底可见性。site 关闭时保持 v0.1 语义
+
+### 15.5 失败求救通道
+
+- meta 表记 `push_fail_streak`：发送成功清零；失败 +1
+- 连败 ≥3 → `send_text` 往同一群发纯文本求救（msg_type=text，同签名注入）后计数清零防刷屏
+- 纯文本不受 interactive 卡片标签限制，卡片通道挂掉时仍可送达
+
+### 15.6 配置新增（config.yaml）
+
+```yaml
+site:
+  enabled: true        # TC_SITE_ENABLED=0 可整体关闭回退纯卡片模式
+  base_url: "https://linyunxia.github.io/topic_collection"
+  repo: "LinyunXIA/topic_collection"
+  branch: "gh-pages"
+  top_n: 5
+```
+
+DDL 新增 `meta(key,value)` 表（CREATE IF NOT EXISTS，对存量库透明）。
+
+### 15.7 v0.2 验收
+
+1. 卡片带按钮，点击打开当天页面，页面在卡片发出时已可达（轮询保证）
+2. 页面跨源去重 + via 标注正确；16:00 班重写含全天内容
+3. 发布失败 → 无按钮卡照发；连败 3 次群内收到纯文本求救
+4. `TC_SITE_ENABLED=0` 回退 v0.1 行为
