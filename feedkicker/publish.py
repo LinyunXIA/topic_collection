@@ -37,7 +37,7 @@ def _run_gh(args: list[str], stdin_text: str | None = None, timeout: float = 60)
 
 def get_file_sha(repo: str, branch: str, remote_path: str) -> str | None:
     proc = _run_gh(
-        [f"repos/{repo}/contents/{remote_path}", "--jq", ".sha", "-f", f"ref={branch}"],
+        [f"repos/{repo}/contents/{remote_path}?ref={branch}", "--jq", ".sha"],
         timeout=30,
     )
     if proc is None or proc.returncode != 0:
