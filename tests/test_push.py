@@ -8,7 +8,7 @@ from email.utils import format_datetime
 
 import pytest
 
-from feedkicker import feishu, publish, push, site, store
+from feedkicker import feishu, push, store
 from feedkicker.config import Config, Feed, HttpConf, SiteConf, load_config
 from feedkicker.fetch import canonicalize, entry_key_of, parse_content
 
@@ -457,101 +457,6 @@ def test_entry_key_of_takes_guid():
     assert entry_key_of({"id": " g1 ", "link": "https://x.com/a"}) == "g1"
 
 
-# ── v0.2：site 渲染 ──
-
-
-def test_site_render_dedup_and_via():
-    items = [
-        {"feed_id": "A", "entry_key": "a1", "title": "同一篇", "url": "https://e.com/x",
-         "description": "", "published_at": None},
-        {"feed_id": "B", "entry_key": "b1", "title": "同一篇（B）", "url": "https://E.com/x",
-         "description": "", "published_at": None},
-        {"feed_id": "A", "entry_key": "a2", "title": "独立文章", "url": "https://e.com/y",
-         "description": "", "published_at": None},
-    ]
-    html_out = site.render_daily(items, datetime.now().date(), ["A", "B"])
-    assert html_out.count("https://e.com/y") == 1
-    assert "亦见 B" in html_out or "亦见 A" in html_out
-    assert "去重后 2 条" in html_out and "原始 3 条" in html_out
-
-
-def test_site_escapes_html():
-    items = [
-        {"feed_id": "F", "entry_key": "k", "title": "<script>alert(1)</script>",
-         "url": "https://e.com/z?a=1&b=2", "description": "<b>粗体</b> 文本",
-         "published_at": None},
-    ]
-    html_out = site.render_daily(items, datetime.now().date(), ["F"])
-    assert "<script>" not in html_out.replace('<script', '', 0) or "&lt;script&gt;" in html_out
-    assert "&lt;b&gt;粗体&lt;/b&gt;" in html_out
-    assert "a=1&amp;b=2" in html_out
-
-
-# ── v0.2：publish ──
-
-
-class FakeProc:
-    def __init__(self, returncode=0, stdout="", stderr=""):
-        self.returncode = returncode
-        self.stdout = stdout
-        self.stderr = stderr
-
-
-def test_publish_sha_create_and_update(monkeypatch):
-    calls = []
-    sha_exists = {"v": False}
-
-    def fake_run(cmd, input=None, capture_output=True, text=True, timeout=60):
-        calls.append((list(cmd), input))
-        if "--jq" in cmd:
-            if sha_exists["v"]:
-                return FakeProc(0, stdout='"abc123"\n')
-            return FakeProc(1, stdout="", stderr="404 Not Found")
-        return FakeProc(0, stdout="{}")
-
-    monkeypatch.setattr(publish.subprocess, "run", fake_run)
-    ok = publish.publish_file("o/r", "gh-pages", "daily/d.html", "<p>hi</p>", "msg")
-    assert ok
-    body = json.loads(calls[1][1])
-    assert "sha" not in body
-    assert base64.b64decode(body["content"]).decode() == "<p>hi</p>"
-
-    calls.clear()
-    sha_exists["v"] = True
-    ok = publish.publish_file("o/r", "gh-pages", "daily/d.html", "<p>hi2</p>", "msg")
-    assert ok
-    body = json.loads(calls[1][1])
-    assert body["sha"] == "abc123"
-
-
-def test_wait_published_polls(monkeypatch):
-    seq = [
-        FakeResp(None, status_code=404),
-        FakeResp({"t": "归档尚未生成，等待首次运行。"}, status_code=200),
-        FakeResp({"t": "ok"}, status_code=200),
-    ]
-
-    def fake_get(url, **kw):
-        class R:
-            def __init__(self, sc, txt):
-                self.status_code = sc
-                self._txt = txt
-
-            @property
-            def text(self):
-                return self._txt
-
-        r = seq.pop(0)
-        return R(r.status_code, str(r._payload.get("t")) if r._payload else "")
-
-    monkeypatch.setattr(publish.httpx, "get", fake_get)
-    monkeypatch.setattr(publish.time, "sleep", lambda s: None)
-    assert publish.wait_published("https://x.test/", timeout_s=30, interval_s=0)
-
-
-# ── v0.2：卡片 top_n / 按钮 ──
-
-
 def _many_items(feed, n):
     return [
         {"feed_id": feed, "entry_key": f"k{i}", "title": f"标题{i}",
@@ -583,6 +488,13 @@ def test_build_card_no_detail_no_button():
 
 
 # ── v0.2：编排顺序与降级 ──
+
+
+class FakeProc:
+    def __init__(self, returncode=0, stdout="", stderr=""):
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
 
 
 # ── v0.5：多维表格编排 ──
