@@ -347,7 +347,7 @@ v0.2 起 macOS 用 **launchd** 取代 cron：`StartCalendarInterval` 在机器�
 ### feishu.py
 - [x] `escape_inline`：压行 + 转义 `\` `` ` `` `*` `_` `[` `]` `(` `)` `#`
 - [x] `build_card(new_items, feed_fails, ...)`：按 feed 分组 + 失败 footer（见 §7）
-- [x] `send(payload, webhook, http)`：POST + StatusCode/code 校验 + 30000 截断
+- [x] `send(payload, webhook, http)`：POST + StatusCode/code 校验；体积由 build_card 保证 ≤20KB（20000 字节）
 
 ### push.py
 - [x] `main(argv)`：argparse（--dry-run / --config / --db）；顶层 try 兜底退出码
