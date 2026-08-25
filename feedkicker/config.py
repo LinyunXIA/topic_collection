@@ -24,6 +24,15 @@ class Feed:
 
 
 @dataclass
+class SiteConf:
+    enabled: bool = True
+    base_url: str = "https://linyunxia.github.io/topic_collection"
+    repo: str = "LinyunXIA/topic_collection"
+    branch: str = "gh-pages"
+    top_n: int = 5
+
+
+@dataclass
 class Config:
     feishu_webhook: str = ""
     feishu_secret: str = ""
@@ -31,6 +40,7 @@ class Config:
     http: HttpConf = field(default_factory=HttpConf)
     feeds: list[Feed] = field(default_factory=list)
     db_path: Path = DEFAULT_DB_PATH
+    site: SiteConf = field(default_factory=SiteConf)
 
 
 def load_config(
@@ -62,6 +72,15 @@ def load_config(
         feeds.append(Feed(name=name or url, url=url))
     cfg.feeds = feeds
 
+    site_raw = raw.get("site") or {}
+    cfg.site = SiteConf(
+        enabled=bool(site_raw.get("enabled", cfg.site.enabled)),
+        base_url=str(site_raw.get("base_url") or cfg.site.base_url).rstrip("/"),
+        repo=str(site_raw.get("repo") or cfg.site.repo),
+        branch=str(site_raw.get("branch") or cfg.site.branch),
+        top_n=max(1, int(site_raw.get("top_n", cfg.site.top_n))),
+    )
+
     env_webhook = os.environ.get("FEISHU_WEBHOOK")
     if env_webhook:
         cfg.feishu_webhook = env_webhook
@@ -69,6 +88,10 @@ def load_config(
     env_secret = os.environ.get("FEISHU_SECRET")
     if env_secret:
         cfg.feishu_secret = env_secret
+
+    env_site_enabled = os.environ.get("TC_SITE_ENABLED")
+    if env_site_enabled is not None and env_site_enabled != "":
+        cfg.site.enabled = env_site_enabled.strip().lower() not in ("0", "false", "no", "off")
 
     env_db = os.environ.get("TC_DB")
     if env_db:

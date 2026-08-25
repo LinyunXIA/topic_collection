@@ -34,12 +34,35 @@ def gen_sign(timestamp: str, secret: str) -> str:
     return base64.b64encode(hmac_code).decode("utf-8")
 
 
-def _assemble(content: str, feed_fails: int, dropped: int) -> dict:
+def _assemble(
+    content: str,
+    feed_fails: int,
+    dropped: int,
+    total: int = 0,
+    detail_url: str | None = None,
+) -> dict:
     elements = [{"tag": "div", "text": {"tag": "lark_md", "content": content}}]
     if feed_fails:
         elements += [
             {"tag": "hr"},
             {"tag": "div", "text": {"tag": "lark_md", "content": f"⚠ {feed_fails} 个源失败"}},
+        ]
+    if detail_url and total:
+        elements += [
+            {
+                "tag": "action",
+                "actions": [
+                    {
+                        "tag": "button",
+                        "text": {"tag": "plain_text", "content": f"📰 查看全部 {total} 条"},
+                        "url": detail_url,
+                        "type": "default",
+                    }
+                ],
+            }
+        ]
+        elements += [
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"📰 [查看全部 {total} 条]({detail_url})"}}
         ]
     if dropped:
         elements += [
@@ -60,53 +83,92 @@ def _assemble(content: str, feed_fails: int, dropped: int) -> dict:
     }
 
 
-def build_card(new_items: list[dict], feed_fails: int, feed_order: list[str], max_bytes: int = _MAX_BODY_BYTES) -> dict:
+def strip_actions(payload: dict) -> dict:
+    card = json.loads(json.dumps(payload, ensure_ascii=False))
+    card["card"]["elements"] = [
+        el for el in card.get("card", {}).get("elements") or []
+        if el.get("tag") != "action"
+    ]
+    return card
+
+
+def build_card(
+    new_items: list[dict],
+    feed_fails: int,
+    feed_order: list[str],
+    top_n: int = 0,
+    detail_url: str | None = None,
+    max_bytes: int = _MAX_BODY_BYTES,
+) -> dict:
     by_feed: dict[str, list[dict]] = {}
     for it in new_items:
         by_feed.setdefault(it["feed_id"], []).append(it)
     ordered = [name for name in feed_order if name in by_feed]
     ordered += [name for name in by_feed if name not in set(feed_order)]
-    selected = [it for name in ordered for it in by_feed[name]]
 
-    def render(items: list[dict], with_desc: bool) -> str:
+    selected: list[tuple[str, dict]] = []
+    hidden_by_feed: dict[str, int] = {}
+    for name in ordered:
+        items = by_feed[name]
+        keep = items if top_n <= 0 else items[:top_n]
+        selected.extend((name, it) for it in keep)
+        hidden = len(items) - len(keep)
+        if hidden > 0:
+            hidden_by_feed[name] = hidden
+
+    def render(show_desc: bool) -> str:
         parts: list[str] = []
-        prev_feed: str | None = None
-        for it in items:
-            if it["feed_id"] != prev_feed:
-                if prev_feed is not None:
-                    parts.append("")
-                parts.append(f"**{escape_inline(it['feed_id'])}**")
-                prev_feed = it["feed_id"]
+        prev: str | None = None
+
+        def close_prev():
+            if prev is None:
+                return
+            h = hidden_by_feed.get(prev, 0)
+            if h and any(n == prev for n, _ in selected):
+                parts.append(escape_inline(f"… 还有 {h} 条见详情页"))
+            parts.append("")
+
+        for name, it in selected:
+            if name != prev:
+                close_prev()
+                parts.append(f"**{escape_inline(name)}**")
+                prev = name
             display = escape_inline(it["title"]) or escape_inline(it["url"])
             parts.append(f"[{display}]({it['url']})")
-            if with_desc:
+            if show_desc:
                 desc = (it.get("description") or "").strip()
                 if desc:
                     parts.append(escape_inline(desc))
-        return "\n".join(parts)
+        if selected:
+            h = hidden_by_feed.get(prev, 0)
+            if h:
+                parts.append(escape_inline(f"… 还有 {h} 条见详情页"))
+        return "\n".join(parts).rstrip("\n")
 
-    def fits(items: list[dict], with_desc: bool, dropped: int) -> bool:
+    total = sum(len(v) for v in by_feed.values())
+
+    def fits(show_desc: bool, dropped: int) -> bool:
         body = json.dumps(
-            _assemble(render(items, with_desc), feed_fails, dropped),
+            _assemble(render(show_desc), feed_fails, dropped, total, detail_url),
             ensure_ascii=False,
         )
         return len(body.encode("utf-8")) <= max_bytes
 
-    with_desc = True
+    show_desc = True
     dropped = 0
-    while not fits(selected, with_desc, dropped):
-        if with_desc:
-            with_desc = False
+    while not fits(show_desc, dropped):
+        if show_desc:
+            show_desc = False
             continue
         if not selected:
             break
         selected.pop()
         dropped += 1
 
-    return _assemble(render(selected, with_desc), feed_fails, dropped)
+    return _assemble(render(show_desc), feed_fails, dropped, total, detail_url)
 
 
-def send(
+def _post(
     payload: dict,
     webhook_url: str,
     timeout_seconds: float,
@@ -141,3 +203,24 @@ def send(
     except Exception as e:
         log.warning("推送异常: %s", e)
         return False
+
+
+def send(
+    payload: dict,
+    webhook_url: str,
+    timeout_seconds: float,
+    user_agent: str,
+    secret: str = "",
+) -> bool:
+    return _post(payload, webhook_url, timeout_seconds, user_agent, secret)
+
+
+def send_text(
+    text_msg: str,
+    webhook_url: str,
+    timeout_seconds: float,
+    user_agent: str,
+    secret: str = "",
+) -> bool:
+    payload = {"msg_type": "text", "content": {"text": text_msg}}
+    return _post(payload, webhook_url, timeout_seconds, user_agent, secret)

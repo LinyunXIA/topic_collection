@@ -25,6 +25,11 @@ CREATE TABLE IF NOT EXISTS feeds (
 
 CREATE INDEX IF NOT EXISTS idx_articles_pending ON articles (pushed_at)
   WHERE pushed_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS meta (
+  key   TEXT PRIMARY KEY,
+  value TEXT NOT NULL
+);
 """
 
 
@@ -97,6 +102,25 @@ def select_pending(conn: sqlite3.Connection) -> list[dict]:
     return [dict(zip(keys, r)) for r in rows]
 
 
+def select_pushed_since(conn: sqlite3.Connection, since_iso: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT feed_id, entry_key, title, url, description, published_at, pushed_at"
+        " FROM articles WHERE pushed_at IS NOT NULL AND pushed_at >= ?"
+        " ORDER BY pushed_at, feed_id",
+        (since_iso,),
+    ).fetchall()
+    keys = (
+        "feed_id",
+        "entry_key",
+        "title",
+        "url",
+        "description",
+        "published_at",
+        "pushed_at",
+    )
+    return [dict(zip(keys, r)) for r in rows]
+
+
 def mark_pushed(conn: sqlite3.Connection, items: list[dict], now_iso: str) -> None:
     conn.executemany(
         "UPDATE articles SET pushed_at = ? WHERE feed_id = ? AND entry_key = ?",
@@ -128,5 +152,19 @@ def update_first_run_all(conn: sqlite3.Connection, feeds: list, now_iso: str) ->
         "   first_run_at = CASE WHEN first_run_at = '' THEN excluded.first_run_at ELSE first_run_at END,"
         "   url = excluded.url",
         [(f.name, f.url, now_iso) for f in feeds],
+    )
+    conn.commit()
+
+
+def get_meta(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
+    return row[0] if row else default
+
+
+def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
+    conn.execute(
+        "INSERT INTO meta (key, value) VALUES (?, ?)"
+        " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        (key, value),
     )
     conn.commit()
