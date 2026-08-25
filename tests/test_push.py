@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import base64
-import csv
-import io
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -587,19 +585,22 @@ def test_build_card_no_detail_no_button():
 # ── v0.2：编排顺序与降级 ──
 
 
-def test_push_archive_sync_before_send(monkeypatch):
+# ── v0.5：多维表格编排 ──
+
+
+def test_push_bitable_sync_before_send(monkeypatch):
     conn = make_conn()
     cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
-    cfg.archive.enabled = True
-    cfg.archive.spreadsheet_token = "tok-x"
-    cfg.archive.url = "https://x.test/sheet"
+    cfg.bitable.enabled = True
+    cfg.bitable.app_token = "app-x"
+    cfg.bitable.url = "https://x.test/base"
     cfg.feishu_webhook = "hook-x"
-    entries = [_norm("arch item", "https://e.com/ar1")]
+    entries = [_norm("bt item", "https://e.com/ar1")]
 
     calls = []
     monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
-    monkeypatch.setattr(push.sheets_archive, "sync_env",
-                        lambda a, e, c: calls.append(("sync",)) or 1)
+    monkeypatch.setattr(push.bitable, "sync_env",
+                        lambda b, e, c: calls.append(("sync",)) or 1)
     sent = []
     monkeypatch.setattr(feishu, "send",
                         lambda p, *a, **kw: calls.append(("send",)) or sent.append(p) or True)
@@ -608,24 +609,24 @@ def test_push_archive_sync_before_send(monkeypatch):
     assert rc == 0
     assert [c[0] for c in calls] == ["sync", "send"]
     actions = [el for el in sent[0]["card"]["elements"] if el.get("tag") == "action"]
-    assert actions and "详情见在线表格" in actions[0]["actions"][0]["text"]["content"]
+    assert actions and "详情见多维表格" in actions[0]["actions"][0]["text"]["content"]
     assert store.select_pending(conn) == []
     conn.close()
 
 
-def test_push_archive_fail_still_sends(monkeypatch):
+def test_push_bitable_fail_still_sends(monkeypatch):
     conn = make_conn()
     cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
-    cfg.archive.enabled = True
-    cfg.archive.spreadsheet_token = "tok-x"
+    cfg.bitable.enabled = True
+    cfg.bitable.app_token = "app-x"
     cfg.feishu_webhook = "hook-x"
     entries = [_norm("degrade", "https://e.com/dg1")]
     monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
 
-    def boom(a, e, c):
-        raise RuntimeError("sheet 写入失败")
+    def boom(b, e, c):
+        raise RuntimeError("写入失败")
 
-    monkeypatch.setattr(push.sheets_archive, "sync_env", boom)
+    monkeypatch.setattr(push.bitable, "sync_env", boom)
 
     sent = []
     monkeypatch.setattr(feishu, "send",
@@ -634,7 +635,7 @@ def test_push_archive_fail_still_sends(monkeypatch):
     assert rc == 0
     assert len(sent) == 1
     actions = [el for el in sent[0]["card"]["elements"] if el.get("tag") == "action"]
-    assert actions and "tok-x" in actions[0]["actions"][0]["url"]
+    assert actions and "app-x" in actions[0]["actions"][0]["url"]
     assert len(store.select_unsynced(conn)) == 1
     conn.close()
 
@@ -659,56 +660,60 @@ def test_run_sos_after_three_failures(monkeypatch):
     conn.close()
 
 
-def test_sheets_select_expired():
-    from feedkicker import sheets_archive as sa
-    from datetime import date
-
-    titles = [
-        ("s1", "2024-01-01"),
-        ("s2", "2025-08-25"),
-        ("s3", "2026-08-24"),
-        ("s4", "Sheet1"),
-        ("s5", "not-a-date"),
-    ]
-    today = date(2026, 8, 25)
-    assert sa.select_expired(titles, today, keep_days=365) == ["s1"]
-    assert sa.select_expired(titles, today, keep_days=0) == ["s1", "s2", "s3"]
+def test_store_sync_roundtrip():
+    conn = make_conn()
+    store.download(conn, "F", SAMPLE_ENTRIES, "2026-08-25T00:00:00Z")
+    assert len(store.select_unsynced(conn)) == 2
+    store.mark_synced(conn, store.select_unsynced(conn), "2026-08-25T01:00:00Z")
+    assert store.select_unsynced(conn) == []
+    conn.close()
 
 
-def test_sheets_group_by_local_day():
-    from feedkicker import sheets_archive as sa
+def test_bitable_dedup_filters(monkeypatch):
+    from feedkicker import bitable
 
-    items = [
-        {"_push_local": "2026-08-25 08:30", "url": "a"},
-        {"_push_local": None, "url": "b"},
-        {"_push_local": "2026-08-24 16:00", "url": "c"},
-    ]
-    groups = sa.group_by_local_day(items)
-    today = datetime.now().astimezone().strftime("%Y-%m-%d")
-    assert set(groups) == {"2026-08-25", "2026-08-24", today}
-    assert [i["url"] for i in groups["2026-08-24"]] == ["c"]
+    monkeypatch.setattr(bitable, "existing_links",
+                        lambda a, t: {"https://old.com/1"})
+    calls = []
 
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+record-batch-create" in args:
+            payload = json.loads(args[args.index("--json") + 1])
+            calls.append(len(payload["create_records"]))
+            return FakeProc(0, stdout="{}")
+        return FakeProc(0, stdout="{}")
 
-def test_sheets_count_last_data_row(monkeypatch):
-    from feedkicker import sheets_archive as sa
+    monkeypatch.setattr(bitable, "_run", fake_run)
 
-    annotated = "[row=1] 环境\n[row=2] dev\n[row=3] \n[row=4] prod\n"
-    payload = json.dumps({"data": {"annotated_csv": annotated}}, ensure_ascii=False)
-    monkeypatch.setattr(
-        sa, "_run", lambda args, stdin_text=None, timeout=120: FakeProc(0, stdout=payload)
+    items = (
+        [{"feed_id": f"F{i}", "entry_key": f"k{i}", "title": f"t{i}",
+          "url": f"https://e.com/{i}", "description": "", "published_at": None,
+          "pushed_at": None} for i in range(250)]
+        + [{"feed_id": "F", "entry_key": "dup", "title": "dup",
+            "url": "HTTPS://E.COM/1#x", "description": "", "published_at": None,
+            "pushed_at": None}]
+        + [{"feed_id": "F", "entry_key": "old", "title": "old",
+            "url": "https://old.com/1", "description": "", "published_at": None,
+            "pushed_at": None}]
     )
-    assert sa.count_last_data_row("tok", "sid") == 4
+    assert bitable.sync_records("app", "tbl", items, env_name="dev") is True
+    assert calls == [200, 50]
 
 
-def test_sheets_build_csv_quoting():
-    from feedkicker import sheets_archive as sa
+def test_bitable_cell_fields(monkeypatch):
+    from feedkicker import bitable
 
-    items = [{
-        "feed_id": "F,含逗号", "title": '带"引号"', "url": "https://e.com/1",
-        "description": "多行\n摘要", "_pub_local": "2026-08-25 09:00",
-        "_push_local": "2026-08-25 10:00",
-    }]
-    text = sa.build_csv("dev", items)
-    rows = list(csv.reader(io.StringIO(text)))
-    assert rows[0] == ["dev", "F,含逗号", '带"引号"', "https://e.com/1", "多行\n摘要",
-                       "2026-08-25 09:00", "2026-08-25 10:00"]
+    cell = bitable._cell({
+        "feed_id": "量子位", "title": "标题", "url": "https://e.com/1",
+        "description": "", "published_at": "2026-08-25T01:30:00Z",
+        "pushed_at": "2026-08-25T09:59:53Z",
+    }, env_name="dev")
+    assert cell["归档日期"] == "2026-08-25" or len(cell["归档日期"]) == 10
+    assert cell["环境"] == "dev"
+    assert len(cell["推送时间"]) == 16
+
+    prod_cell = bitable._cell({
+        "feed_id": "量子位", "title": "t", "url": "u",
+        "description": "", "published_at": None, "pushed_at": None,
+    })
+    assert "环境" not in prod_cell
