@@ -77,7 +77,11 @@ feeds:
 环境变量（`feedkicker/config.py` 覆盖顺序：默认值 < config.yaml < 环境变量）：
 - `FEISHU_WEBHOOK` —— 覆盖 webhook（凭据不进文件可选）
 - `FEISHU_SECRET` —— 覆盖签名密钥（同上）
-- `TC_DB` —— sqlite 路径，默认 `data/tc.sqlite3`（相对项目根）
+- `TC_APP_ENV` —— 运行环境 `dev|test|prod`（默认 `prod`），决定默认 db 路径
+- `TC_DB` —— sqlite 路径，显式指定时优先级高于环境推导
+
+数据库按环境分流：默认 `data/tc-{env}.sqlite3`（dev/test/prod 各一库，互不污染；
+launchd 生产任务显式注入 `TC_APP_ENV=prod`）。CLI `--env` / `--db` 可覆盖。
 
 `config.py` 用 `dataclass` 类型化：`Config{feishu_webhook, feishu_secret, bootstrap_days, http: HttpConf{timeout_seconds,user_agent}, feeds: list[Feed{name,url}]}`。
 

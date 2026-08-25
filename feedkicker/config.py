@@ -8,7 +8,12 @@ import yaml
 
 DEFAULT_CONFIG_PATH = Path("config.yaml")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "tc.sqlite3"
+DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "tc-prod.sqlite3"
+VALID_ENVS = ("dev", "test", "prod")
+
+
+def db_path_for(app_env: str) -> Path:
+    return PROJECT_ROOT / "data" / f"tc-{app_env}.sqlite3"
 
 
 @dataclass
@@ -34,6 +39,7 @@ class SiteConf:
 
 @dataclass
 class Config:
+    app_env: str = "prod"
     feishu_webhook: str = ""
     feishu_secret: str = ""
     bootstrap_days: int = 3
@@ -44,14 +50,20 @@ class Config:
 
 
 def load_config(
-    config_path: str | Path | None = None, db_path: str | Path | None = None
+    config_path: str | Path | None = None,
+    db_path: str | Path | None = None,
+    app_env: str | None = None,
 ) -> Config:
+    env = app_env or os.environ.get("TC_APP_ENV") or "prod"
+    if env not in VALID_ENVS:
+        raise ValueError(f"未知环境: {env}（可选 {VALID_ENVS}）")
+
     path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
     if not path.exists():
         raise FileNotFoundError(f"配置文件不存在: {path}")
 
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
-    cfg = Config()
+    cfg = Config(app_env=env)
     cfg.feishu_webhook = str(raw.get("feishu_webhook") or "")
     cfg.feishu_secret = str(raw.get("feishu_secret") or "")
     cfg.bootstrap_days = int(raw.get("bootstrap_days", cfg.bootstrap_days))
@@ -98,5 +110,7 @@ def load_config(
         cfg.db_path = Path(env_db)
     if db_path:
         cfg.db_path = Path(db_path)
+    if not env_db and not db_path:
+        cfg.db_path = db_path_for(env)
 
     return cfg
