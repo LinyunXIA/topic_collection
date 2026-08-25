@@ -1,0 +1,73 @@
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from pathlib import Path
+
+import yaml
+
+DEFAULT_CONFIG_PATH = Path("config.yaml")
+PROJECT_ROOT = Path(__file__).resolve().parent.parent
+DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "tc.sqlite3"
+
+
+@dataclass
+class HttpConf:
+    timeout_seconds: float = 20.0
+    user_agent: str = "rss2feishu/0.1 (+local cron; private)"
+
+
+@dataclass
+class Feed:
+    name: str
+    url: str
+
+
+@dataclass
+class Config:
+    feishu_webhook: str = ""
+    bootstrap_days: int = 3
+    http: HttpConf = field(default_factory=HttpConf)
+    feeds: list[Feed] = field(default_factory=list)
+    db_path: Path = DEFAULT_DB_PATH
+
+
+def load_config(
+    config_path: str | Path | None = None, db_path: str | Path | None = None
+) -> Config:
+    path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+    if not path.exists():
+        raise FileNotFoundError(f"配置文件不存在: {path}")
+
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    cfg = Config()
+    cfg.feishu_webhook = str(raw.get("feishu_webhook") or "")
+    cfg.bootstrap_days = int(raw.get("bootstrap_days", cfg.bootstrap_days))
+
+    http_raw = raw.get("http") or {}
+    cfg.http = HttpConf(
+        timeout_seconds=float(http_raw.get("timeout_seconds", cfg.http.timeout_seconds)),
+        user_agent=str(http_raw.get("user_agent") or cfg.http.user_agent),
+    )
+
+    feeds: list[Feed] = []
+    for i, item in enumerate(raw.get("feeds") or []):
+        item = item or {}
+        url = str(item.get("url") or "").strip()
+        name = str(item.get("name") or "").strip()
+        if not url:
+            raise ValueError(f"feeds[{i}] 缺少 url")
+        feeds.append(Feed(name=name or url, url=url))
+    cfg.feeds = feeds
+
+    env_webhook = os.environ.get("FEISHU_WEBHOOK")
+    if env_webhook:
+        cfg.feishu_webhook = env_webhook
+
+    env_db = os.environ.get("TC_DB")
+    if env_db:
+        cfg.db_path = Path(env_db)
+    if db_path:
+        cfg.db_path = Path(db_path)
+
+    return cfg
