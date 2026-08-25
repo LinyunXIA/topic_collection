@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import base64
+import csv
+import io
 import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
@@ -565,71 +567,75 @@ def test_build_card_top_n_and_button():
                              detail_url="https://linyunxia.github.io/topic_collection/daily/2026-08-25.html")
     content = card["card"]["elements"][0]["text"]["content"]
     assert "标题7" not in content and "标题2" in content
-    assert "还有 5 条见详情页" in content
+    assert "还有 5 条，详情见在线表格" in content
     actions = [el for el in card["card"]["elements"] if el["tag"] == "action"]
-    assert actions and "全部 8 条" in actions[0]["actions"][0]["text"]["content"]
+    assert actions and actions[0]["actions"][0]["text"]["content"] == "📰 详情见在线表格"
     assert actions[0]["actions"][0]["url"].endswith("2026-08-25.html")
     stripped = feishu.strip_actions(card)
     assert all(el["tag"] != "action" for el in stripped["card"]["elements"])
-    assert any("查看全部 8 条" in el.get("text", {}).get("content", "")
+    assert any("详情见在线表格" in el.get("text", {}).get("content", "")
                for el in stripped["card"]["elements"] if el.get("tag") == "div")
 
 
 def test_build_card_no_detail_no_button():
     card = feishu.build_card(_many_items("F", 4), 0, ["F"], top_n=3)
     assert all(el["tag"] != "action" for el in card["card"]["elements"])
-    assert not any("查看全部" in el.get("text", {}).get("content", "")
+    assert not any("[详情见在线表格](" in el.get("text", {}).get("content", "")
                    for el in card["card"]["elements"] if el.get("tag") == "div")
 
 
 # ── v0.2：编排顺序与降级 ──
 
 
-def test_run_publishes_before_sends(monkeypatch):
+def test_push_archive_sync_before_send(monkeypatch):
     conn = make_conn()
     cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
-    cfg.site.enabled = True
-    cfg.site.base_url = "https://u.test"
+    cfg.archive.enabled = True
+    cfg.archive.spreadsheet_token = "tok-x"
+    cfg.archive.url = "https://x.test/sheet"
     cfg.feishu_webhook = "hook-x"
-    entries = [_norm("page item", "https://e.com/p1")]
+    entries = [_norm("arch item", "https://e.com/ar1")]
 
     calls = []
     monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
-    monkeypatch.setattr(push.publish, "publish_file",
-                        lambda repo, branch, path, content, msg: calls.append(("pub", path)) or True)
-    monkeypatch.setattr(push.publish, "wait_published",
-                        lambda url, **kw: calls.append(("wait", url)) or True)
-
+    monkeypatch.setattr(push.sheets_archive, "sync_env",
+                        lambda a, e, c: calls.append(("sync",)) or 1)
     sent = []
     monkeypatch.setattr(feishu, "send",
                         lambda p, *a, **kw: calls.append(("send",)) or sent.append(p) or True)
 
     rc = push.run(cfg, conn)
     assert rc == 0
-    assert [c[0] for c in calls] == ["pub", "pub", "wait", "send"]
-    assert calls[0][1].startswith("daily/")
-    assert calls[1][1] == "index.html"
-    assert any(el.get("tag") == "action" for el in sent[0]["card"]["elements"])
+    assert [c[0] for c in calls] == ["sync", "send"]
+    actions = [el for el in sent[0]["card"]["elements"] if el.get("tag") == "action"]
+    assert actions and "详情见在线表格" in actions[0]["actions"][0]["text"]["content"]
     assert store.select_pending(conn) == []
     conn.close()
 
 
-def test_run_publish_fail_degrades(monkeypatch):
+def test_push_archive_fail_still_sends(monkeypatch):
     conn = make_conn()
     cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
-    cfg.site.enabled = True
+    cfg.archive.enabled = True
+    cfg.archive.spreadsheet_token = "tok-x"
     cfg.feishu_webhook = "hook-x"
-    entries = [_norm("degraded", "https://e.com/d1")]
+    entries = [_norm("degrade", "https://e.com/dg1")]
     monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
-    monkeypatch.setattr(push.publish, "publish_file", lambda *a, **k: False)
+
+    def boom(a, e, c):
+        raise RuntimeError("sheet 写入失败")
+
+    monkeypatch.setattr(push.sheets_archive, "sync_env", boom)
 
     sent = []
-    monkeypatch.setattr(feishu, "send", lambda p, *a, **kw: sent.append(p) or True)
-
+    monkeypatch.setattr(feishu, "send",
+                        lambda p, *a, **kw: sent.append(p) or True)
     rc = push.run(cfg, conn)
     assert rc == 0
     assert len(sent) == 1
-    assert all(el.get("tag") != "action" for el in sent[0]["card"]["elements"])
+    actions = [el for el in sent[0]["card"]["elements"] if el.get("tag") == "action"]
+    assert actions and "tok-x" in actions[0]["actions"][0]["url"]
+    assert len(store.select_unsynced(conn)) == 1
     conn.close()
 
 
@@ -653,168 +659,56 @@ def test_run_sos_after_three_failures(monkeypatch):
     conn.close()
 
 
-# ── v0.2：多环境数据库 ──
+def test_sheets_select_expired():
+    from feedkicker import sheets_archive as sa
+    from datetime import date
+
+    titles = [
+        ("s1", "2024-01-01"),
+        ("s2", "2025-08-25"),
+        ("s3", "2026-08-24"),
+        ("s4", "Sheet1"),
+        ("s5", "not-a-date"),
+    ]
+    today = date(2026, 8, 25)
+    assert sa.select_expired(titles, today, keep_days=365) == ["s1"]
+    assert sa.select_expired(titles, today, keep_days=0) == ["s1", "s2", "s3"]
 
 
-def _write_cfg(tmp_path):
-    p = tmp_path / "config.yaml"
-    p.write_text("feishu_webhook: ''\nfeeds: []\n", encoding="utf-8")
-    return p
+def test_sheets_group_by_local_day():
+    from feedkicker import sheets_archive as sa
+
+    items = [
+        {"_push_local": "2026-08-25 08:30", "url": "a"},
+        {"_push_local": None, "url": "b"},
+        {"_push_local": "2026-08-24 16:00", "url": "c"},
+    ]
+    groups = sa.group_by_local_day(items)
+    today = datetime.now().astimezone().strftime("%Y-%m-%d")
+    assert set(groups) == {"2026-08-25", "2026-08-24", today}
+    assert [i["url"] for i in groups["2026-08-24"]] == ["c"]
 
 
-def test_config_env_db_paths(tmp_path, monkeypatch):
-    monkeypatch.delenv("TC_DB", raising=False)
-    monkeypatch.delenv("TC_APP_ENV", raising=False)
-    cfg_path = _write_cfg(tmp_path)
+def test_sheets_count_last_data_row(monkeypatch):
+    from feedkicker import sheets_archive as sa
 
-    cfg = load_config(cfg_path)
-    assert cfg.app_env == "prod"
-    assert cfg.db_path.name == "tc-prod.sqlite3"
-
-    for env in ("dev", "test"):
-        cfg = load_config(cfg_path, app_env=env)
-        assert cfg.app_env == env
-        assert cfg.db_path.name == f"tc-{env}.sqlite3"
-
-
-def test_config_env_precedence(tmp_path, monkeypatch):
-    cfg_path = _write_cfg(tmp_path)
-
-    monkeypatch.setenv("TC_APP_ENV", "test")
-    monkeypatch.delenv("TC_DB", raising=False)
-    assert load_config(cfg_path).db_path.name == "tc-test.sqlite3"
-
-    assert load_config(cfg_path, app_env="dev").db_path.name == "tc-dev.sqlite3"
-
-    monkeypatch.setenv("TC_DB", "/tmp/explicit.sqlite3")
-    assert str(load_config(cfg_path).db_path) == "/tmp/explicit.sqlite3"
-    assert str(load_config(cfg_path, app_env="dev").db_path) == "/tmp/explicit.sqlite3"
-
-
-def test_config_invalid_env(tmp_path, monkeypatch):
-    monkeypatch.delenv("TC_DB", raising=False)
-    monkeypatch.delenv("TC_APP_ENV", raising=False)
-    with pytest.raises(ValueError, match="未知环境"):
-        load_config(_write_cfg(tmp_path), app_env="staging")
-
-
-def test_main_env_flag_db_override(monkeypatch, tmp_path):
-    db_file = tmp_path / "custom.sqlite3"
-    rc = push.main(["--db", str(db_file), "--config", "/nonexistent"])
-    assert rc == 2
-
-
-# ── v0.2：分环境配置文件 ──
-
-
-def test_config_per_env_files(tmp_path, monkeypatch):
-    monkeypatch.chdir(tmp_path)
-    monkeypatch.delenv("TC_APP_ENV", raising=False)
-    monkeypatch.delenv("TC_DB", raising=False)
-
-    (tmp_path / "config-dev.yaml").write_text(
-        "feishu_webhook: ''\nbootstrap_days: 1\n", encoding="utf-8"
-    )
-    cfg = load_config(app_env="dev")
-    assert cfg.app_env == "dev"
-    assert cfg.bootstrap_days == 1
-
-    import pytest as _pytest
-    with _pytest.raises(FileNotFoundError, match="config-test.yaml"):
-        load_config(app_env="test")
-
-
-# ── v0.3：Bitable 同步 ──
-
-
-def test_bitable_cell_datetime_format():
-    from feedkicker import bitable
-
-    cell = bitable._cell({
-        "feed_id": "F", "title": "t", "url": "https://e.com/1",
-        "description": "", "published_at": "2026-08-25T01:30:00Z",
-        "pushed_at": "2026-08-25T09:59:53Z",
-    })
-    assert cell["发布时间"].endswith(" 09:30") or cell["发布时间"].endswith(" 09:30".replace("09", str(9)))
-    assert len(cell["发布时间"]) == 16 and len(cell["推送时间"]) == 16
-    assert cell["链接"] == "https://e.com/1"
-    none_cell = bitable._cell({"feed_id": "F", "title": "", "url": "",
-                               "description": "", "published_at": None,
-                               "pushed_at": None})
-    assert none_cell["发布时间"] is None and none_cell["标题"] == ""
-
-
-def test_bitable_sync_chunks_and_dedup(monkeypatch):
-    from feedkicker import bitable
-
-    monkeypatch.setattr(bitable, "existing_links", lambda a, t: {"https://old.com/1"})
-    calls = []
-
-    def fake_run(args, stdin_text=None, timeout=120):
-        if "+record-batch-create" in args:
-            payload = json.loads(args[args.index("--json") + 1])
-            calls.append(len(payload["create_records"]))
-            return FakeProc(0, stdout="{}")
-        return FakeProc(0, stdout="{}")
-
-    monkeypatch.setattr(bitable, "_run", fake_run)
-
-    items = (
-        [{"feed_id": f"F{i}", "entry_key": f"k{i}", "title": f"t{i}",
-          "url": f"https://e.com/{i}", "description": "", "published_at": None,
-          "pushed_at": None} for i in range(250)]
-        + [{"feed_id": "F", "entry_key": "dup", "title": "dup",
-            "url": "HTTPS://E.COM/1#x", "description": "", "published_at": None,
-            "pushed_at": None}]
-        + [{"feed_id": "F", "entry_key": "old", "title": "old",
-            "url": "https://old.com/1", "description": "", "published_at": None,
-            "pushed_at": None}]
-    )
-    assert bitable.sync_records("app", "tbl", items) is True
-    assert calls == [200, 50]
-
-
-def test_bitable_sync_failure_returns_false(monkeypatch):
-    from feedkicker import bitable
-
-    monkeypatch.setattr(bitable, "existing_links", lambda a, t: set())
+    annotated = "[row=1] 环境\n[row=2] dev\n[row=3] \n[row=4] prod\n"
+    payload = json.dumps({"data": {"annotated_csv": annotated}}, ensure_ascii=False)
     monkeypatch.setattr(
-        bitable, "_run",
-        lambda args, stdin_text=None, timeout=120: FakeProc(1, stderr="boom"),
+        sa, "_run", lambda args, stdin_text=None, timeout=120: FakeProc(0, stdout=payload)
     )
-    items = [{"feed_id": "F", "entry_key": "k", "title": "t", "url": "https://e.com/9",
-              "description": "", "published_at": None, "pushed_at": None}]
-    assert bitable.sync_records("app", "tbl", items) is False
+    assert sa.count_last_data_row("tok", "sid") == 4
 
 
-def test_store_sync_roundtrip():
-    conn = make_conn()
-    store.download(conn, "F", SAMPLE_ENTRIES, "2026-08-25T00:00:00Z")
-    assert len(store.select_unsynced(conn)) == 2
-    store.mark_synced(conn, store.select_unsynced(conn), "2026-08-25T01:00:00Z")
-    assert store.select_unsynced(conn) == []
-    conn.close()
+def test_sheets_build_csv_quoting():
+    from feedkicker import sheets_archive as sa
 
-
-def test_push_bitable_gating(monkeypatch):
-    conn = make_conn()
-    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
-    entries = [_norm("bt item", "https://e.com/bt1")]
-    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
-    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
-
-    sync_called = []
-    monkeypatch.setattr(push.bitable, "sync_records",
-                        lambda *a, **kw: sync_called.append(a) or True)
-
-    rc = push.run(cfg, conn)
-    assert rc == 0 and not sync_called
-
-    cfg.bitable.enabled = True
-    cfg.bitable.app_token = "app-x"
-    cfg.bitable.table_id = "tbl-x"
-    entries2 = [_norm("bt item2", "https://e.com/bt2")]
-    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries2)
-    rc = push.run(cfg, conn)
-    assert rc == 0 and len(sync_called) == 1
-    conn.close()
+    items = [{
+        "feed_id": "F,含逗号", "title": '带"引号"', "url": "https://e.com/1",
+        "description": "多行\n摘要", "_pub_local": "2026-08-25 09:00",
+        "_push_local": "2026-08-25 10:00",
+    }]
+    text = sa.build_csv("dev", items)
+    rows = list(csv.reader(io.StringIO(text)))
+    assert rows[0] == ["dev", "F,含逗号", '带"引号"', "https://e.com/1", "多行\n摘要",
+                       "2026-08-25 09:00", "2026-08-25 10:00"]

@@ -433,7 +433,12 @@ DDL 新增 `meta(key,value)` 表（CREATE IF NOT EXISTS，对存量库透明）�
 
 ---
 
-## 16. v0.3 设计 — 飞书多维表格归档（2026-08-25）
+## 16. v0.3 设计 — 飞书多维表格归档【已废弃，被 §17 取代】
+
+> 2026-08-25 晚些时候整体切换为电子表格按日期分表形态（§17）。本节保留作历史记录。
+> 已建的多维表格「AI 资讯归档」不再更新，留作静态快照，可手动删除。
+
+## 16-A. （原 §16 内容存档）
 
 ### 16.1 形式决策
 
@@ -467,3 +472,52 @@ DDL 新增 `meta(key,value)` 表（CREATE IF NOT EXISTS，对存量库透明）�
 首轮回填因 URL 字段不支持 {link,text} 对象形态失败一批（改纯字符串修复），
 重试导致 200 行重复 + 1 行跨源重复；已逐行清理。教训：
 batch 失败必须整批不打标（已实现），跨源去重必须在写入侧兜底（已实现）。
+
+---
+
+## 17. v0.4 设计 — 飞书电子表格归档 · 按日期分表（2026-08-25）
+
+### 17.1 形式
+
+三环境统一写入飞书电子表格；**每个日期一个工作表 tab**（如 `2026-08-25`），滚动保留 365 天，
+更早的 tab 每次写入后自动删除。
+
+| 文件 | 使用环境 | 标题 |
+|---|---|---|
+| prod 专用 | prod | AI 资讯归档 |
+| 共享 | dev + test | AI 资讯归档 · dev-test |
+
+列结构：`环境 | 来源 | 标题 | 链接 | 摘要 | 发布时间 | 推送时间`（首行表头自动写入）。
+
+### 17.2 feedkicker/sheets_archive.py
+
+基于 `lark-cli sheets` 子命令封装：
+- `ensure_initialized`：config 无 token 时创建文件并把 token/url **回写本地 config-{env}.yaml**
+- `ensure_day_sheet`：当日 tab 不存在则创建并写表头
+- `append_rows`：`count_last_data_row`（解析 csv-get 的 annotated_csv `[row=N]` 前缀）自愈定位追加行号；
+  `+csv-put --csv -` 走 stdin 批量写入
+- `sync_env`：select_unsynced → annotate → **批内 canonicalize(url) 跨源去重** →
+  按日分组 → 断点续传（meta 键 `arch_done_{env}_{day}` 记已写行数，重试只补增量）→
+  mark_synced → prune_old_tabs
+- 权限：组织内链接只读（external_access=false / link_share_entity=tenant_readable）
+
+### 17.3 编排顺序（v0.4 最终版）
+
+```
+抓取入库 → 待推队列
+  └─ 有 → sync_env 写在线表格（先档案后推送）
+        ├─ 成功 → 打标；卡片附「📰 详情见在线表格」按钮
+        └─ 失败 → WARNING；卡片仍发仍带链接（表格常驻，仅缺最新几条）
+        → 发送成功才 mark_pushed（失败下次重试卡片）
+```
+
+- top_n 摘要形态随 archive.enabled 恢复（每源 top 5，20KB 兜底保留）
+- dry-run 不写表格、不发送
+- 配置段：`archive{enabled, spreadsheet_token, url}`（三环境均已启用；dev/test 共享同一文件，
+  以「环境」列区分行）
+
+### 17.4 运维入口
+
+```bash
+python -m feedkicker.sheets_archive --env prod [--init]   # [--init] 设置组织内只读分享
+```

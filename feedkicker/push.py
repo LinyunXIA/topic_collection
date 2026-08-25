@@ -6,7 +6,7 @@ import logging
 import sys
 from datetime import datetime, timedelta, timezone
 
-from feedkicker import bitable, feishu, publish, site, store
+from feedkicker import feishu, sheets_archive, store
 from feedkicker.config import load_config
 from feedkicker.fetch import fetch_feed, utc_now_iso
 
@@ -14,17 +14,6 @@ log = logging.getLogger(__name__)
 
 PUSH_FAIL_STREAK_KEY = "push_fail_streak"
 SOS_THRESHOLD = 3
-
-
-def _local_day_bounds_utc() -> tuple[str, str]:
-    now_local = datetime.now().astimezone()
-    start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
-    return (
-        start.astimezone(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
-        (start + timedelta(days=1)).astimezone(timezone.utc).strftime(
-            "%Y-%m-%dT%H:%M:%SZ"
-        ),
-    )
 
 
 def run(cfg, conn, dry_run: bool = False) -> int:
@@ -55,61 +44,36 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         return 0
 
     detail_url: str | None = None
-    day_path: str | None = None
-    if cfg.site.enabled and not dry_run:
-        local_today = datetime.now().astimezone()
-        day_str = local_today.strftime("%Y-%m-%d")
-        day_path = f"daily/{day_str}.html"
-
-    if day_path:
-        store.mark_pushed(conn, pending, now)
-        marked_now = True
-    else:
-        marked_now = False
-
-    if day_path:
-        since_iso, until_iso = _local_day_bounds_utc()
-        day_items = [
-            it for it in store.select_pushed_since(conn, since_iso)
-            if it["pushed_at"] < until_iso
-        ]
-        html_page = site.render_daily(day_items, local_today.date(), [f.name for f in cfg.feeds])
-        ok_daily = publish.publish_file(
-            cfg.site.repo,
-            cfg.site.branch,
-            day_path,
-            html_page,
-            f"feeds: {day_str} 汇总页更新",
+    if cfg.archive.enabled and (cfg.archive.url or cfg.archive.spreadsheet_token):
+        detail_url = cfg.archive.url or sheets_archive.base_url(
+            cfg.archive.spreadsheet_token
         )
-        archives = _collect_archives(conn)
-        ok_index = publish.publish_file(
-            cfg.site.repo,
-            cfg.site.branch,
-            "index.html",
-            site.render_index(archives),
-            f"feeds: 归档目录更新 {day_str}",
-        )
-        if ok_daily and ok_index:
-            detail_url = f"{cfg.site.base_url}/{day_path}"
-            publish.wait_published(detail_url)
-        else:
-            log.error("GitHub Pages 发布失败，摘要卡将不带详情链接")
 
+    if cfg.archive.enabled and not dry_run:
+        try:
+            synced_n = sheets_archive.sync_env(cfg.archive, cfg.app_env, conn)
+            if synced_n:
+                detail_url = cfg.archive.url or sheets_archive.base_url(
+                    cfg.archive.spreadsheet_token
+                )
+                log.info("归档已写入 %d 条", synced_n)
+        except Exception as e:
+            log.warning("归档同步未完成（不影响推送，保留待重试）: %s", e)
+
+    top_n = cfg.site.top_n if (cfg.site.enabled or cfg.archive.enabled) else 0
     payload = feishu.build_card(
         pending,
         feed_fails,
         [f.name for f in cfg.feeds],
-        top_n=cfg.site.top_n if cfg.site.enabled else 0,
+        top_n=top_n,
         detail_url=detail_url,
+        detail_label="📰 详情见在线表格",
     )
 
     if dry_run:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         log.info("dry-run：共 %d 条待推，已打印 payload 未发送", len(pending))
         return 0
-
-    if not marked_now:
-        store.mark_pushed(conn, pending, now)
 
     ok = feishu.send(
         payload,
@@ -129,6 +93,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         )
 
     if ok:
+        store.mark_pushed(conn, pending, now)
         for name in ok_feeds:
             store.clear_fail(conn, name)
         streak = int(store.get_meta(conn, PUSH_FAIL_STREAK_KEY, "0"))
@@ -136,18 +101,6 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             log.info("推送恢复，清零连败计数（此前 %d 次）", streak)
         store.set_meta(conn, PUSH_FAIL_STREAK_KEY, "0")
         log.info("推送成功：%d 条新条目，失败源 %d 个", len(pending), feed_fails)
-        if cfg.bitable.enabled and cfg.bitable.app_token:
-            try:
-                unsynced = store.select_unsynced(conn)
-                log.info("Bitable 待同步 %d 条", len(unsynced))
-                if unsynced and bitable.sync_records(
-                    cfg.bitable.app_token, cfg.bitable.table_id, unsynced
-                ):
-                    store.mark_synced(conn, unsynced, utc_now_iso())
-                elif unsynced:
-                    log.warning("Bitable 同步未完全成功，保留待下次重试")
-            except Exception as e:
-                log.warning("Bitable 同步异常（不影响推送）: %s", e)
     else:
         streak = int(store.get_meta(conn, PUSH_FAIL_STREAK_KEY, "0")) + 1
         store.set_meta(conn, PUSH_FAIL_STREAK_KEY, str(streak))
@@ -155,8 +108,8 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         if streak >= SOS_THRESHOLD and cfg.feishu_webhook:
             sos = (
                 f"⚠️ feedkicker 连续 {streak} 次推送失败，请检查机器人状态/网络。"
-                f"最近一班 {len(pending)} 条已入档：{cfg.site.base_url}/index.html"
-                if cfg.site.enabled
+                f"最近一班 {len(pending)} 条已入档，详情见在线表格。"
+                if detail_url
                 else f"⚠️ feedkicker 连续 {streak} 次推送失败，请检查机器人状态。最近一班 {len(pending)} 条已入档。"
             )
             feishu.send_text(
@@ -172,27 +125,19 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     return 0 if ok else 1
 
 
-def _collect_archives(conn) -> list[dict]:
-    rows = conn.execute(
-        "SELECT DISTINCT substr(pushed_at, 1, 10) AS d, COUNT(*) AS c"
-        " FROM articles WHERE pushed_at IS NOT NULL GROUP BY d ORDER BY d DESC LIMIT 60"
-    ).fetchall()
-    return [{"date": r[0], "count": r[1], "path": f"daily/{r[0]}.html"} for r in rows]
-
-
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="tc-push",
-        description="抓取 RSS 订阅源，发布汇总页并把摘要卡推送到飞书",
+        description="抓取 RSS 订阅源，写入在线表格归档并把摘要卡推送到飞书",
     )
-    parser.add_argument("--dry-run", action="store_true", help="只打印卡片 payload 不发布不发送")
-    parser.add_argument("--config", default=None, help="指定 config.yaml 路径")
+    parser.add_argument("--dry-run", action="store_true", help="只打印卡片 payload 不发送")
+    parser.add_argument("--config", default=None, help="指定 config-{env}.yaml 路径")
     parser.add_argument("--db", default=None, help="sqlite 路径（覆盖 TC_DB 与 --env 推导）")
     parser.add_argument(
         "--env",
         default=None,
         choices=["dev", "test", "prod"],
-        help="运行环境，决定默认 db 路径 data/tc-{env}.sqlite3（覆盖 TC_APP_ENV）",
+        help="运行环境，决定默认配置文件与 db 路径（覆盖 TC_APP_ENV）",
     )
     args = parser.parse_args(argv)
 

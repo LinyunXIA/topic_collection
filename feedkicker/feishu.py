@@ -40,6 +40,7 @@ def _assemble(
     dropped: int,
     total: int = 0,
     detail_url: str | None = None,
+    detail_label: str = "📰 详情见在线表格",
 ) -> dict:
     elements = [{"tag": "div", "text": {"tag": "lark_md", "content": content}}]
     if feed_fails:
@@ -54,7 +55,7 @@ def _assemble(
                 "actions": [
                     {
                         "tag": "button",
-                        "text": {"tag": "plain_text", "content": f"📰 查看全部 {total} 条"},
+                        "text": {"tag": "plain_text", "content": detail_label},
                         "url": detail_url,
                         "type": "default",
                     }
@@ -62,7 +63,7 @@ def _assemble(
             }
         ]
         elements += [
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"📰 [查看全部 {total} 条]({detail_url})"}}
+            {"tag": "div", "text": {"tag": "lark_md", "content": f"[{detail_label}]({detail_url})"}}
         ]
     if dropped:
         elements += [
@@ -99,6 +100,7 @@ def build_card(
     top_n: int = 0,
     detail_url: str | None = None,
     max_bytes: int = _MAX_BODY_BYTES,
+    detail_label: str = "📰 详情见在线表格",
 ) -> dict:
     by_feed: dict[str, list[dict]] = {}
     for it in new_items:
@@ -125,7 +127,7 @@ def build_card(
                 return
             h = hidden_by_feed.get(prev, 0)
             if h and any(n == prev for n, _ in selected):
-                parts.append(escape_inline(f"… 还有 {h} 条见详情页"))
+                parts.append(escape_inline(f"… 还有 {h} 条，详情见在线表格"))
             parts.append("")
 
         for name, it in selected:
@@ -142,14 +144,14 @@ def build_card(
         if selected:
             h = hidden_by_feed.get(prev, 0)
             if h:
-                parts.append(escape_inline(f"… 还有 {h} 条见详情页"))
+                parts.append(escape_inline(f"… 还有 {h} 条，详情见在线表格"))
         return "\n".join(parts).rstrip("\n")
 
     total = sum(len(v) for v in by_feed.values())
 
     def fits(show_desc: bool, dropped: int) -> bool:
         body = json.dumps(
-            _assemble(render(show_desc), feed_fails, dropped, total, detail_url),
+            _assemble(render(show_desc), feed_fails, dropped, total, detail_url, detail_label),
             ensure_ascii=False,
         )
         return len(body.encode("utf-8")) <= max_bytes
@@ -165,7 +167,7 @@ def build_card(
         selected.pop()
         dropped += 1
 
-    return _assemble(render(show_desc), feed_fails, dropped, total, detail_url)
+    return _assemble(render(show_desc), feed_fails, dropped, total, detail_url, detail_label)
 
 
 def _post(
