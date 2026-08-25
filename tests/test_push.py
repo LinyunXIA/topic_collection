@@ -9,7 +9,7 @@ from email.utils import format_datetime
 import pytest
 
 from feedkicker import feishu, publish, push, site, store
-from feedkicker.config import Config, Feed, HttpConf, SiteConf
+from feedkicker.config import Config, Feed, HttpConf, SiteConf, load_config
 from feedkicker.fetch import canonicalize, entry_key_of, parse_content
 
 
@@ -651,3 +651,54 @@ def test_run_sos_after_three_failures(monkeypatch):
     assert len(sos_calls) == 1 and "连续 3 次" in sos_calls[0]
     assert store.get_meta(conn, push.PUSH_FAIL_STREAK_KEY) == "0"
     conn.close()
+
+
+# ── v0.2：多环境数据库 ──
+
+
+def _write_cfg(tmp_path):
+    p = tmp_path / "config.yaml"
+    p.write_text("feishu_webhook: ''\nfeeds: []\n", encoding="utf-8")
+    return p
+
+
+def test_config_env_db_paths(tmp_path, monkeypatch):
+    monkeypatch.delenv("TC_DB", raising=False)
+    monkeypatch.delenv("TC_APP_ENV", raising=False)
+    cfg_path = _write_cfg(tmp_path)
+
+    cfg = load_config(cfg_path)
+    assert cfg.app_env == "prod"
+    assert cfg.db_path.name == "tc-prod.sqlite3"
+
+    for env in ("dev", "test"):
+        cfg = load_config(cfg_path, app_env=env)
+        assert cfg.app_env == env
+        assert cfg.db_path.name == f"tc-{env}.sqlite3"
+
+
+def test_config_env_precedence(tmp_path, monkeypatch):
+    cfg_path = _write_cfg(tmp_path)
+
+    monkeypatch.setenv("TC_APP_ENV", "test")
+    monkeypatch.delenv("TC_DB", raising=False)
+    assert load_config(cfg_path).db_path.name == "tc-test.sqlite3"
+
+    assert load_config(cfg_path, app_env="dev").db_path.name == "tc-dev.sqlite3"
+
+    monkeypatch.setenv("TC_DB", "/tmp/explicit.sqlite3")
+    assert str(load_config(cfg_path).db_path) == "/tmp/explicit.sqlite3"
+    assert str(load_config(cfg_path, app_env="dev").db_path) == "/tmp/explicit.sqlite3"
+
+
+def test_config_invalid_env(tmp_path, monkeypatch):
+    monkeypatch.delenv("TC_DB", raising=False)
+    monkeypatch.delenv("TC_APP_ENV", raising=False)
+    with pytest.raises(ValueError, match="未知环境"):
+        load_config(_write_cfg(tmp_path), app_env="staging")
+
+
+def test_main_env_flag_db_override(monkeypatch, tmp_path):
+    db_file = tmp_path / "custom.sqlite3"
+    rc = push.main(["--db", str(db_file), "--config", "/nonexistent"])
+    assert rc == 2

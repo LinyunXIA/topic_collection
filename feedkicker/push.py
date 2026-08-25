@@ -175,19 +175,26 @@ def main(argv=None) -> int:
     )
     parser.add_argument("--dry-run", action="store_true", help="只打印卡片 payload 不发布不发送")
     parser.add_argument("--config", default=None, help="指定 config.yaml 路径")
-    parser.add_argument("--db", default=None, help="sqlite 路径（覆盖 TC_DB）")
+    parser.add_argument("--db", default=None, help="sqlite 路径（覆盖 TC_DB 与 --env 推导）")
+    parser.add_argument(
+        "--env",
+        default=None,
+        choices=["dev", "test", "prod"],
+        help="运行环境，决定默认 db 路径 data/tc-{env}.sqlite3（覆盖 TC_APP_ENV）",
+    )
     args = parser.parse_args(argv)
 
     logging.basicConfig(
         level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
     )
     try:
-        cfg = load_config(args.config, args.db)
+        cfg = load_config(args.config, args.db, app_env=args.env)
     except Exception as e:
         log.error("%s", e)
         return 2
 
     conn = store.connect(cfg.db_path)
+    log.info("运行开始：环境=%s，db=%s", cfg.app_env, cfg.db_path)
     try:
         return run(cfg, conn, dry_run=args.dry_run)
     except Exception:
