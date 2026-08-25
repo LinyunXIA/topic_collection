@@ -42,9 +42,10 @@ class SiteConf:
 
 
 @dataclass
-class ArchiveConf:
+class BitableConf:
     enabled: bool = False
-    spreadsheet_token: str = ""
+    app_token: str = ""
+    table_id: str = ""
     url: str = ""
 
 
@@ -58,7 +59,7 @@ class Config:
     feeds: list[Feed] = field(default_factory=list)
     db_path: Path = DEFAULT_DB_PATH
     site: SiteConf = field(default_factory=SiteConf)
-    archive: ArchiveConf = field(default_factory=ArchiveConf)
+    bitable: BitableConf = field(default_factory=BitableConf)
 
 
 def load_config(
@@ -107,10 +108,11 @@ def load_config(
         top_n=max(1, int(site_raw.get("top_n", cfg.site.top_n))),
     )
 
-    bt_raw = raw.get("archive") or {}
-    cfg.archive = ArchiveConf(
-        enabled=bool(bt_raw.get("enabled", cfg.archive.enabled)),
-        spreadsheet_token=str(bt_raw.get("spreadsheet_token") or ""),
+    bt_raw = raw.get("bitable") or {}
+    cfg.bitable = BitableConf(
+        enabled=bool(bt_raw.get("enabled", cfg.bitable.enabled)),
+        app_token=str(bt_raw.get("app_token") or ""),
+        table_id=str(bt_raw.get("table_id") or ""),
         url=str(bt_raw.get("url") or ""),
     )
 

@@ -6,7 +6,7 @@ import logging
 import sys
 from datetime import datetime, timedelta, timezone
 
-from feedkicker import feishu, sheets_archive, store
+from feedkicker import bitable, feishu, store
 from feedkicker.config import load_config
 from feedkicker.fetch import fetch_feed, utc_now_iso
 
@@ -44,30 +44,26 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         return 0
 
     detail_url: str | None = None
-    if cfg.archive.enabled and (cfg.archive.url or cfg.archive.spreadsheet_token):
-        detail_url = cfg.archive.url or sheets_archive.base_url(
-            cfg.archive.spreadsheet_token
-        )
+    if cfg.bitable.enabled and (cfg.bitable.url or cfg.bitable.app_token):
+        detail_url = cfg.bitable.url or bitable.base_url(cfg.bitable.app_token)
 
-    if cfg.archive.enabled and not dry_run:
+    if cfg.bitable.enabled and not dry_run:
         try:
-            synced_n = sheets_archive.sync_env(cfg.archive, cfg.app_env, conn)
+            synced_n = bitable.sync_env(cfg.bitable, cfg.app_env, conn)
             if synced_n:
-                detail_url = cfg.archive.url or sheets_archive.base_url(
-                    cfg.archive.spreadsheet_token
-                )
-                log.info("归档已写入 %d 条", synced_n)
+                detail_url = cfg.bitable.url or bitable.base_url(cfg.bitable.app_token)
+                log.info("多维表格已写入 %d 条", synced_n)
         except Exception as e:
-            log.warning("归档同步未完成（不影响推送，保留待重试）: %s", e)
+            log.warning("多维表格同步未完成（不影响推送，保留待重试）: %s", e)
 
-    top_n = cfg.site.top_n if (cfg.site.enabled or cfg.archive.enabled) else 0
+    top_n = cfg.site.top_n if (cfg.site.enabled or cfg.bitable.enabled) else 0
     payload = feishu.build_card(
         pending,
         feed_fails,
         [f.name for f in cfg.feeds],
         top_n=top_n,
         detail_url=detail_url,
-        detail_label="📰 详情见在线表格",
+        detail_label="📰 详情见多维表格",
     )
 
     if dry_run:
