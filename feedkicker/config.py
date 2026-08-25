@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-DEFAULT_CONFIG_PATH = Path("config.yaml")
+DEFAULT_CONFIG_PATH = Path("config-prod.yaml")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "tc-prod.sqlite3"
 VALID_ENVS = ("dev", "test", "prod")
@@ -14,6 +14,10 @@ VALID_ENVS = ("dev", "test", "prod")
 
 def db_path_for(app_env: str) -> Path:
     return PROJECT_ROOT / "data" / f"tc-{app_env}.sqlite3"
+
+
+def config_path_for(app_env: str) -> Path:
+    return Path(f"config-{app_env}.yaml")
 
 
 @dataclass
@@ -58,9 +62,11 @@ def load_config(
     if env not in VALID_ENVS:
         raise ValueError(f"未知环境: {env}（可选 {VALID_ENVS}）")
 
-    path = Path(config_path) if config_path else DEFAULT_CONFIG_PATH
+    path = Path(config_path) if config_path else config_path_for(env)
     if not path.exists():
-        raise FileNotFoundError(f"配置文件不存在: {path}")
+        raise FileNotFoundError(
+            f"配置文件不存在: {path}（未指定 --config 时默认查找 config-{env}.yaml）"
+        )
 
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
     cfg = Config(app_env=env)

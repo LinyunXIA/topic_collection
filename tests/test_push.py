@@ -702,3 +702,23 @@ def test_main_env_flag_db_override(monkeypatch, tmp_path):
     db_file = tmp_path / "custom.sqlite3"
     rc = push.main(["--db", str(db_file), "--config", "/nonexistent"])
     assert rc == 2
+
+
+# ── v0.2：分环境配置文件 ──
+
+
+def test_config_per_env_files(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TC_APP_ENV", raising=False)
+    monkeypatch.delenv("TC_DB", raising=False)
+
+    (tmp_path / "config-dev.yaml").write_text(
+        "feishu_webhook: ''\nbootstrap_days: 1\n", encoding="utf-8"
+    )
+    cfg = load_config(app_env="dev")
+    assert cfg.app_env == "dev"
+    assert cfg.bootstrap_days == 1
+
+    import pytest as _pytest
+    with _pytest.raises(FileNotFoundError, match="config-test.yaml"):
+        load_config(app_env="test")

@@ -40,6 +40,8 @@ project.md
 .env.local
 *.local.yaml
 config.yaml
+config-*.yaml
 
 # ───────── OS ─────────
 Thumbs.db
+.agents/
