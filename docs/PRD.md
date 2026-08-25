@@ -190,7 +190,7 @@ feeds:
       {
         "tag": "div",
         "text": {
-          "tag": "markdown",
+          "tag": "lark_md",
           "content": "**HN 热榜**\n[标题1](https://…)\n原文自带摘要第一行\n\n[标题2](https://…)\n原文自带摘要"
         }
       },
