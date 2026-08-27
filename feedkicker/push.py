@@ -4,11 +4,11 @@ import argparse
 import json
 import logging
 import sys
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 from feedkicker import bitable, feishu, store
 from feedkicker.config import load_config
-from feedkicker.fetch import fetch_feed, utc_now_iso
+from feedkicker.fetch import fetch_feed
 
 log = logging.getLogger(__name__)
 
@@ -17,7 +17,7 @@ SOS_THRESHOLD = 3
 
 
 def run(cfg, conn, dry_run: bool = False) -> int:
-    now_dt = datetime.now(timezone.utc)
+    now_dt = datetime.now(UTC)
     now = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     feed_fails = 0
     ok_feeds: list[str] = []
@@ -49,7 +49,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
 
     if cfg.bitable.enabled and not dry_run:
         try:
-            synced_n = bitable.sync_env(cfg.bitable, cfg.app_env, conn)
+            synced_n = bitable.sync_env(cfg.bitable, cfg.app_env, conn, now)
             if synced_n:
                 detail_url = cfg.bitable.url or bitable.base_url(cfg.bitable.app_token)
                 log.info("多维表格已写入 %d 条", synced_n)

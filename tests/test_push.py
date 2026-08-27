@@ -512,7 +512,7 @@ def test_push_bitable_sync_before_send(monkeypatch):
     calls = []
     monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
     monkeypatch.setattr(push.bitable, "sync_env",
-                        lambda b, e, c: calls.append(("sync",)) or 1)
+                        lambda b, e, c, now_iso=None: calls.append(("sync",)) or 1)
     sent = []
     monkeypatch.setattr(feishu, "send",
                         lambda p, *a, **kw: calls.append(("send",)) or sent.append(p) or True)
@@ -535,7 +535,7 @@ def test_push_bitable_fail_still_sends(monkeypatch):
     entries = [_norm("degrade", "https://e.com/dg1")]
     monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
 
-    def boom(b, e, c):
+    def boom(b, e, c, now_iso=None):
         raise RuntimeError("写入失败")
 
     monkeypatch.setattr(push.bitable, "sync_env", boom)
@@ -629,6 +629,150 @@ def test_bitable_cell_fields(monkeypatch):
         "description": "", "published_at": None, "pushed_at": None,
     })
     assert "环境" not in prod_cell
+
+
+def test_bitable_cell_archive_date_fallback_cross_midnight(monkeypatch):
+    from feedkicker import bitable
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    import inspect
+    item = {"feed_id": "F", "title": "t", "url": "https://e.com/1", "description": "", "published_at": None, "pushed_at": None}
+    now_iso = "2026-08-26T16:00:00Z"
+    expected = datetime.fromisoformat(now_iso.replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+    assert expected == "2026-08-27"
+    sig = inspect.signature(bitable._cell)
+    if "now_iso" in sig.parameters:
+        cell = bitable._cell(item, env_name="dev", now_iso=now_iso)
+    else:
+        cell = bitable._cell(item, env_name="dev")
+    assert cell["归档日期"] == "2026-08-27"
+    assert cell["归档日期"] == expected
+    assert len(cell["归档日期"]) == 10
+
+
+def test_bitable_cell_archive_date_fallback_pushed_at_priority(monkeypatch):
+    from feedkicker import bitable
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    import inspect
+    item = {"feed_id": "F", "title": "t", "url": "https://e.com/1", "description": "", "published_at": "2026-08-25T01:30:00Z", "pushed_at": "2026-08-25T01:30:00Z"}
+    now_iso = "2026-08-27T00:00:00Z"
+    expected = datetime.fromisoformat("2026-08-25T01:30:00Z".replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+    assert expected == "2026-08-25"
+    sig = inspect.signature(bitable._cell)
+    assert "now_iso" in sig.parameters
+    cell = bitable._cell(item, env_name="dev", now_iso=now_iso)
+    assert cell["归档日期"] == "2026-08-25"
+    assert cell["归档日期"] == expected
+    assert len(cell["归档日期"]) == 10
+
+
+def test_bitable_cell_archive_date_fallback_first_seen_chain(monkeypatch):
+    from feedkicker import bitable
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    import inspect
+    item = {"feed_id": "F", "title": "t", "url": "https://e.com/2", "description": "", "published_at": None, "pushed_at": None, "first_seen": "2026-08-25T23:59:00Z"}
+    expected = datetime.fromisoformat("2026-08-25T23:59:00Z".replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+    assert expected == "2026-08-26"
+    sig = inspect.signature(bitable._cell)
+    if "now_iso" in sig.parameters:
+        cell = bitable._cell(item, env_name="dev", now_iso=None)
+    else:
+        cell = bitable._cell(item, env_name="dev")
+    assert cell["归档日期"] == "2026-08-26"
+    assert cell["归档日期"] == expected
+    assert len(cell["归档日期"]) == 10
+
+
+def test_bitable_cell_archive_date_fallback_dedup_batch(monkeypatch):
+    from feedkicker import bitable
+    import json
+    monkeypatch.setattr(bitable, "existing_links", lambda a, t: {"https://old.com/1"})
+    payloads = []
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+record-batch-create" in args:
+            payload = json.loads(args[args.index("--json") + 1])
+            payloads.append(payload["create_records"])
+            return FakeProc(0, stdout="{}")
+        return FakeProc(0, stdout="{}")
+    monkeypatch.setattr(bitable, "_run", fake_run)
+    items = (
+        [{"feed_id": f"F{i}", "entry_key": f"k{i}", "title": f"t{i}", "url": f"https://e.com/{i}", "description": "", "published_at": None, "pushed_at": None} for i in range(250)]
+        + [{"feed_id": "F", "entry_key": "dup", "title": "dup", "url": "HTTPS://E.COM/1#x", "description": "", "published_at": None, "pushed_at": None}]
+        + [{"feed_id": "F", "entry_key": "old", "title": "old", "url": "https://old.com/1", "description": "", "published_at": None, "pushed_at": None}]
+    )
+    assert bitable.sync_records("app", "tbl", items, env_name="dev") is True
+    flat = [rec for chunk in payloads for rec in chunk]
+    assert len(flat) == 250
+    assert all(rec["归档日期"] != "" for rec in flat)
+    assert all(len(rec["归档日期"]) == 10 for rec in flat)
+    assert all(rec["归档日期"] == rec["归档日期"][:10] for rec in flat)
+
+
+@pytest.mark.parametrize("scenario", ["cross_midnight", "pushed_at_priority", "first_seen_chain", "dedup_batch"])
+def test_bitable_cell_archive_date_fallback(monkeypatch, scenario):
+    from feedkicker import bitable
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+    import inspect
+    import json
+    if scenario == "cross_midnight":
+        item = {"feed_id": "F", "title": "t", "url": "https://e.com/1", "description": "", "published_at": None, "pushed_at": None}
+        now_iso = "2026-08-26T16:00:00Z"
+        expected = datetime.fromisoformat(now_iso.replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+        assert expected == "2026-08-27"
+        sig = inspect.signature(bitable._cell)
+        if "now_iso" in sig.parameters:
+            cell = bitable._cell(item, env_name="dev", now_iso=now_iso)
+        else:
+            cell = bitable._cell(item, env_name="dev")
+        assert cell["归档日期"] == "2026-08-27"
+        assert cell["归档日期"] == expected
+        assert len(cell["归档日期"]) == 10
+    elif scenario == "pushed_at_priority":
+        item = {"feed_id": "F", "title": "t", "url": "https://e.com/1", "description": "", "published_at": "2026-08-25T01:30:00Z", "pushed_at": "2026-08-25T01:30:00Z"}
+        now_iso = "2026-08-27T00:00:00Z"
+        expected = datetime.fromisoformat("2026-08-25T01:30:00Z".replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+        assert expected == "2026-08-25"
+        sig = inspect.signature(bitable._cell)
+        assert "now_iso" in sig.parameters
+        cell = bitable._cell(item, env_name="dev", now_iso=now_iso)
+        assert cell["归档日期"] == "2026-08-25"
+        assert cell["归档日期"] == expected
+        assert len(cell["归档日期"]) == 10
+    elif scenario == "first_seen_chain":
+        item = {"feed_id": "F", "title": "t", "url": "https://e.com/2", "description": "", "published_at": None, "pushed_at": None, "first_seen": "2026-08-25T23:59:00Z"}
+        expected = datetime.fromisoformat("2026-08-25T23:59:00Z".replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+        assert expected == "2026-08-26"
+        sig = inspect.signature(bitable._cell)
+        if "now_iso" in sig.parameters:
+            cell = bitable._cell(item, env_name="dev", now_iso=None)
+        else:
+            cell = bitable._cell(item, env_name="dev")
+        assert cell["归档日期"] == "2026-08-26"
+        assert cell["归档日期"] == expected
+        assert len(cell["归档日期"]) == 10
+    elif scenario == "dedup_batch":
+        monkeypatch.setattr(bitable, "existing_links", lambda a, t: {"https://old.com/1"})
+        payloads = []
+        def fake_run(args, stdin_text=None, timeout=120):
+            if "+record-batch-create" in args:
+                payload = json.loads(args[args.index("--json") + 1])
+                payloads.append(payload["create_records"])
+                return FakeProc(0, stdout="{}")
+            return FakeProc(0, stdout="{}")
+        monkeypatch.setattr(bitable, "_run", fake_run)
+        items = (
+            [{"feed_id": f"F{i}", "entry_key": f"k{i}", "title": f"t{i}", "url": f"https://e.com/{i}", "description": "", "published_at": None, "pushed_at": None} for i in range(250)]
+            + [{"feed_id": "F", "entry_key": "dup", "title": "dup", "url": "HTTPS://E.COM/1#x", "description": "", "published_at": None, "pushed_at": None}]
+            + [{"feed_id": "F", "entry_key": "old", "title": "old", "url": "https://old.com/1", "description": "", "published_at": None, "pushed_at": None}]
+        )
+        assert bitable.sync_records("app", "tbl", items, env_name="dev") is True
+        flat = [rec for chunk in payloads for rec in chunk]
+        assert len(flat) == 250
+        assert all(rec["归档日期"] != "" for rec in flat)
+        assert all(len(rec["归档日期"]) == 10 for rec in flat)
 
 
 # ── v0.5：Bitable 视图 / 字段 / 重灌 / sync_env ──
@@ -751,3 +895,142 @@ def test_bitable_sync_env_rejects_empty_config(monkeypatch):
     with pytest.raises(RuntimeError, match="初始化不完整"):
         bitable.sync_env(empty_bt, "prod", conn)
     conn.close()
+
+
+def test_bitable_views_grouping_not_empty(monkeypatch):
+    from feedkicker import bitable
+
+    group_payloads = []
+    sort_payloads = []
+    batch_records = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+view-create" in args:
+            return FakeProc(0, stdout=json.dumps({"data": {"view": {"view_id": "vewDate"}}}))
+        if "+view-set-group" in args:
+            payload = json.loads(args[args.index("--json") + 1])
+            group_payloads.append(payload)
+            return FakeProc(0, stdout="{}")
+        if "+view-set-sort" in args:
+            payload = json.loads(args[args.index("--json") + 1])
+            sort_payloads.append(payload)
+            return FakeProc(0, stdout="{}")
+        if "+record-batch-create" in args:
+            payload = json.loads(args[args.index("--json") + 1])
+            batch_records.extend(payload.get("create_records") or [])
+            return FakeProc(0, stdout="{}")
+        if "+view-list" in args:
+            return FakeProc(0, stdout=json.dumps({"data": {"views": [{"id": "vewX", "name": "表格"}]}}))
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable, "existing_links", lambda a, t: set())
+
+    assert bitable.create_date_view("app", "tbl") is True
+    assert any(
+        any(g.get("field") == "归档日期" and g.get("desc") is True for g in p.get("group_config") or [])
+        for p in group_payloads
+    )
+    assert any(
+        any(s.get("field") == "推送时间" and s.get("desc") is True for s in p.get("sort_config") or [])
+        for p in sort_payloads
+    )
+    raw_group = json.dumps(group_payloads, ensure_ascii=False)
+    assert "归档日期" in raw_group and '"desc": true' in raw_group
+
+    items = [
+        {
+            "feed_id": "F",
+            "entry_key": "k1",
+            "title": "t",
+            "url": "https://e.com/1",
+            "description": "",
+            "published_at": None,
+            "pushed_at": "2026-08-25T01:30:00Z",
+        },
+        {
+            "feed_id": "F",
+            "entry_key": "k2",
+            "title": "t2",
+            "url": "https://e.com/2",
+            "description": "",
+            "published_at": None,
+            "pushed_at": None,
+        },
+    ]
+    assert bitable.sync_records("app", "tbl", items, now_iso="2026-08-26T16:00:00Z") is True
+    assert len(batch_records) == 2
+    assert all(r.get("归档日期") != "" for r in batch_records)
+    assert all(len(r.get("归档日期", "")) == 10 for r in batch_records)
+
+
+def test_bitable_backfill_empty_archive_dates(monkeypatch):
+    from feedkicker import bitable
+    from zoneinfo import ZoneInfo
+    from datetime import datetime
+
+    def shanghai_date(iso):
+        return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+
+    captured = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "--help" in args:
+            return FakeProc(0, stdout="Available Commands:\n  +record-batch-update\n  +record-list")
+        if "+record-list" in args:
+            payload = {
+                "data": {
+                    "fields": ["归档日期", "推送时间", "链接"],
+                    "records": [
+                        {"record_id": "rec1", "fields": {"归档日期": "", "推送时间": "2026-08-25T01:00:00Z", "链接": "https://e.com/1"}},
+                        {"record_id": "rec2", "fields": {"归档日期": "2026-08-25", "推送时间": "2026-08-25T01:00:00Z", "链接": "https://e.com/2"}},
+                        {"record_id": "rec3", "fields": {"归档日期": "", "推送时间": "2026-08-26T16:00:00Z", "链接": "https://e.com/3"}},
+                    ],
+                }
+            }
+            return FakeProc(0, stdout=json.dumps(payload, ensure_ascii=False))
+        if "+record-batch-update" in args:
+            j = args[args.index("--json") + 1]
+            captured.append(json.loads(j))
+            return FakeProc(0, stdout="{}")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+    n = bitable.backfill_empty_archive_dates("app", "tbl", env_name="dev", dry_run=False)
+    assert n == 2
+    assert len(captured) == 1
+    upd = captured[0].get("update_records") or {}
+    assert "rec1" in upd and "rec3" in upd and "rec2" not in upd
+    assert upd["rec1"]["归档日期"] == shanghai_date("2026-08-25T01:00:00Z")
+    assert upd["rec1"]["归档日期"] == "2026-08-25"
+    assert upd["rec3"]["归档日期"] == shanghai_date("2026-08-26T16:00:00Z")
+    assert upd["rec3"]["归档日期"] == "2026-08-27"
+    for v in upd.values():
+        assert len(v["归档日期"]) == 10
+
+    captured.clear()
+
+    def fake_run_dry(args, stdin_text=None, timeout=120):
+        if "--help" in args:
+            return FakeProc(0, stdout="+record-batch-update")
+        if "+record-list" in args:
+            payload = {
+                "data": {
+                    "fields": ["归档日期", "推送时间"],
+                    "records": [
+                        {"record_id": "rec1", "fields": {"归档日期": "", "推送时间": "2026-08-25T01:00:00Z"}},
+                        {"record_id": "rec2", "fields": {"归档日期": "", "推送时间": "2026-08-25T01:00:00Z"}},
+                        {"record_id": "rec3", "fields": {"归档日期": "2026-08-25", "推送时间": "2026-08-25T01:00:00Z"}},
+                    ],
+                }
+            }
+            return FakeProc(0, stdout=json.dumps(payload, ensure_ascii=False))
+        if "+record-batch-update" in args:
+            captured.append(1)
+            return FakeProc(0, stdout="{}")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable, "_run", fake_run_dry)
+    n2 = bitable.backfill_empty_archive_dates("app", "tbl", dry_run=True)
+    assert n2 == 2
+    assert captured == []

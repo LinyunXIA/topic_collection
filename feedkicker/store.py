@@ -166,9 +166,9 @@ def get_meta(conn: sqlite3.Connection, key: str, default: str = "") -> str:
 
 def select_unsynced(conn: sqlite3.Connection) -> list[dict]:
     rows = conn.execute(
-        "SELECT feed_id, entry_key, title, url, description, published_at, pushed_at"
+        "SELECT feed_id, entry_key, title, url, description, published_at, pushed_at, first_seen, bitable_synced_at"
         " FROM articles WHERE bitable_synced_at IS NULL"
-        " ORDER BY pushed_at, feed_id"
+        " ORDER BY first_seen, feed_id"
     ).fetchall()
     keys = (
         "feed_id",
@@ -178,11 +178,14 @@ def select_unsynced(conn: sqlite3.Connection) -> list[dict]:
         "description",
         "published_at",
         "pushed_at",
+        "first_seen",
+        "bitable_synced_at",
     )
     return [dict(zip(keys, r)) for r in rows]
 
 
 def mark_synced(conn: sqlite3.Connection, items: list[dict], now_iso: str) -> None:
+    # 复用 select_unsynced 返回列表，不二次查询
     conn.executemany(
         "UPDATE articles SET bitable_synced_at = ? WHERE feed_id = ? AND entry_key = ?",
         [(now_iso, it["feed_id"], it["entry_key"]) for it in items],
