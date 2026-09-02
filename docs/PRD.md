@@ -281,3 +281,20 @@ feeds:
 
 - §15 的电子表格方案废弃；F13/F14 中"在线表格"表述统一改为"多维表格"
 - 365 天滚动策略延续：定期清理推送时间超期记录（后续版本实现自动化）
+
+---
+
+## 17. v0.6 增量（2026-09-03）— AI 沙龙每周大纲（salon_flow）
+
+每周五 10:00 自动把「AI 沙龙换题管理」多维表（Base `TikpbwV0oaFAnYsoMCxchMRyncr` / 表 `tblNPcbupKIBzLAx`）中新增的已选题，分别生成工具类与原理类两份大纲（自适应 5–8 页），以 Markdown 写入飞书 Wiki，并用同一机器人推一张带 Wiki 链接的卡片通知。
+
+| # | 特性 | 验收要点 | 优先级 |
+|---|---|---|---|
+| F17 | 周五定时 + 手动 CLI | `com.feedkicker.salon.plist` Weekday=5 10:00 + `python -m feedkicker.salon_flow [--dry-run/--env/--config/--db]` | P0 |
+| F18 | 已选题增量读取 | 按「讨论状态=intersects 已选题」服务端过滤，仅新增/翻转重生成 | P0 |
+| F19 | 双大纲生成 | MiniMax M3 function-calling 自适应 5–8 页，工具类/原理类各一 | P0 |
+| F20 | Wiki 归档 | 单话题单 Wiki doc（含双大纲 MD 代码块），返回 wiki_url | P0 |
+| F21 | 机器人通知 | 同一 webhook，卡片含双 Wiki 链接，20KB 降级 + strip_actions + SOS 复用 | P1 |
+
+- 配置可配：`config.salon.trigger_weekday/trigger_hour/trigger_minute`（默认 4/10/0 = 周五 10:00），MiniMax Key 走 `MiniMax_Key` 环境变量覆盖
+- 不产 PPTX，不混入 `push.py` 主流程，去重列 `ppt_synced_at` + `ppt_last_status_{rid}` 翻转检测，失败单条 WARNING 不阻断他条

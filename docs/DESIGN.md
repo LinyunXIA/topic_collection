@@ -573,3 +573,66 @@ python -m feedkicker.sheets_archive --env prod [--init]   # [--init] 设置组�
 - dev/test 共享 Base 重灌各 10 行
 - 两 Base「按来源」「按日期」双视图就绪；组织内只读复核通过
 - 真实发卡：按钮指向对应 Base URL；二跑无新条目不重发
+
+---
+
+## 19. v0.6 — AI 沙龙每周大纲 · 定时与配置（2026-09-03）
+
+### 19.1 目标与边界
+
+- 每周五 10:00（可配置）自动将 Tikp 多维表「AI 沙龙换题管理」(`TikpbwV0oaFAnYsoMCxchMRyncr` / `tblNPcbupKIBzLAx`) 中新增的「已选题」增量生成双大纲并入 Wiki
+- 仅产 Markdown 大纲（自适应 5–8 页），不产 PPTX；独立进程 `feedkicker.salon_flow`，不混入 `push.py` 编排；配置与调度可验证（`--help` / `launchctl print`）
+
+### 19.2 配置（config.yaml 新增段）
+
+```yaml
+salon:
+  enabled: true
+  app_token: "TikpbwV0oaFAnYsoMCxchMRyncr"
+  table_id: "tblNPcbupKIBzLAx"
+  wiki_space_id: "<wiki-space>"
+  wiki_parent_token: "<wiki-parent>"
+  trigger_weekday: 4        # 0=周日 … 5=周五，默认 4
+  trigger_hour: 10
+  trigger_minute: 0
+minimax:
+  api_key: "<via MiniMax_Key env>"
+  model: "MiniMax-M3"
+  base_url: "https://api.minimaxi.com"
+wiki:
+  space_id: "<wiki-space>"
+  parent_token: "<wiki-parent>"
+  app_token: "<wiki-app-token>"
+```
+
+- `config-{dev,test,prod}.yaml.example` 已补充 salon/minimax/wiki 段（dev/test/prod 各一，见仓库根）
+- 加载优先级：`--config` 显式路径 > `--env` > `TC_APP_ENV` > 默认 `prod`；`MiniMax_Key` / `TC_SALON_TOKEN` / `FEISHU_WEBHOOK` 环境变量覆盖文件
+- CLI 与 `push.py` 一致：`--dry-run` / `--env {dev,test,prod}` / `--config <path>` / `--db <path>`（`feedkicker/salon_flow.py:248` argparse 与 `push.py:127` 对齐）
+
+### 19.3 调度（launchd，周五 10:00）
+
+```xml
+<!-- ~/Library/LaunchAgents/com.feedkicker.salon.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.feedkicker.salon</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/linyunxia/PycharmProjects/topic_collection/.venv/bin/python</string>
+         <string>-m</string><string>feedkicker.salon_flow</string></array>
+  <key>WorkingDirectory</key><string>/Users/linyunxia/PycharmProjects/topic_collection</string>
+  <key>StartCalendarInterval</key>
+  <dict><key>Weekday</key><integer>5</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>0</integer></dict>
+  <key>StandardOutPath</key><string>/Users/linyunxia/PycharmProjects/topic_collection/logs/salon.log</string>
+  <key>StandardErrorPath</key><string>/Users/linyunxia/PycharmProjects/topic_collection/logs/salon.log</string>
+</dict></plist>
+```
+
+- 注意：launchd `Weekday` 为 1..7（1=周日 … 5=周五），与 `config.salon.trigger_weekday`（0=周日）相差 1；文档以 launchd 实际值 `Weekday=5` 为准，代码内 trigger_* 仅作可配置记录与后续动态生成预留
+- 加载/校验：`launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.feedkicker.salon.plist`；`launchctl print gui/$UID/com.feedkicker.salon` 应含 `Weekday 5 10:00`
+- 日志：`logs/salon.log`（与 `push.log` 分流）；手动：`python -m feedkicker.salon_flow --dry-run --env test` 打印双大纲 JSON + wiki_url stub 不写库
+
+### 19.4 入口
+
+- `pyproject.toml [project.scripts] tc-salon = "feedkicker.salon_flow:main"`（与 `tc-push` 并列）
+- 现有 `com.feedkicker.push.plist`（8:30/16:00）保持不变，新增 plist 独立运行
