@@ -27,6 +27,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             entries = fetch_feed(feed.url, cfg.http)
             store.download(conn, feed.name, entries, now)
             ok_feeds.append(feed.name)
+            store.clear_fail(conn, feed.name)
             if store.is_first_run(conn, feed.name):
                 cutoff = (now_dt - timedelta(days=cfg.bootstrap_days)).strftime(
                     "%Y-%m-%dT%H:%M:%SZ"
@@ -94,8 +95,6 @@ def run(cfg, conn, dry_run: bool = False) -> int:
 
     if ok:
         store.mark_pushed(conn, pending, now)
-        for name in ok_feeds:
-            store.clear_fail(conn, name)
         streak = int(store.get_meta(conn, PUSH_FAIL_STREAK_KEY, "0"))
         if streak:
             log.info("推送恢复，清零连败计数（此前 %d 次）", streak)

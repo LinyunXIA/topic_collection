@@ -58,10 +58,16 @@ def lark_bin() -> str:
 
 
 def _run(args: list[str], stdin_text: str | None = None, timeout: float = 120):
-    cmd = [lark_bin()] + args
+    bin_path = lark_bin()
+    cmd = [bin_path] + args
+    # launchd 的 PATH 只有 /usr/bin:/bin，lark-cli 是 env node 脚本会以 rc=127 失败；
+    # 显式增补 homebrew 与二进制所在目录（#123）
+    env = os.environ.copy()
+    extra = [os.path.dirname(bin_path), "/opt/homebrew/bin", "/usr/local/bin"]
+    env["PATH"] = os.pathsep.join([p for p in extra if p] + [env.get("PATH", "")])
     try:
         proc = subprocess.run(
-            cmd, input=stdin_text, capture_output=True, text=True, timeout=timeout
+            cmd, input=stdin_text, capture_output=True, text=True, timeout=timeout, env=env
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         log.warning("lark-cli 执行异常: %s", e)

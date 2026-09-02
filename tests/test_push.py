@@ -906,6 +906,41 @@ def test_bitable_sync_env_rejects_empty_config(monkeypatch):
     conn.close()
 
 
+def test_run_augments_path_for_launchd(monkeypatch):
+    # #123：launchd 的最小 PATH 下 lark-cli(env node) 会 rc=127，_run 必须注入 homebrew 路径
+    from feedkicker import bitable
+
+    captured = {}
+
+    def fake_subprocess_run(cmd, **kw):
+        captured["env"] = kw.get("env")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(bitable.os, "environ", {"PATH": "/usr/bin:/bin"})
+    bitable._run(["base", "--help"])
+    path = captured["env"]["PATH"]
+    assert "/opt/homebrew/bin" in path
+    assert path.rstrip(":").endswith("/usr/bin:/bin") or "/usr/bin:/bin" in path
+
+
+def test_fail_streak_cleared_on_success_even_without_pending(monkeypatch):
+    # #124：源恢复成功时即使无新条目早退也要清零 fail_streak
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    store.bump_fail(conn, "F", "https://e.com/rss")
+    entries = [_norm("seen", "https://e.com/seen")]
+    store.download(conn, "F", entries, "2026-08-25T00:00:00Z")
+    store.mark_pushed(conn, store.select_pending(conn), "2026-08-25T00:00:00Z")
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+
+    rc = push.run(cfg, conn)
+    assert rc == 0
+    row = conn.execute("SELECT fail_streak FROM feeds WHERE feed_id = 'F'").fetchone()
+    assert row[0] == 0
+    conn.close()
+
+
 def test_bitable_sync_aborts_when_existing_links_fail(monkeypatch):
     # #114：record-list 拉取已有链接失败（rc=0 + ok:false）必须中止，不得拿空集合继续写
     from feedkicker import bitable
