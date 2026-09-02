@@ -57,13 +57,13 @@ def _json_from_args(args: list[str]):
     return json.loads(raw)
 
 
-def make_cfg(feeds: list[Feed], **site_kwargs) -> Config:
+def make_cfg(feeds: list[Feed]) -> Config:
     return Config(
         feishu_webhook="",
         bootstrap_days=3,
         http=HttpConf(timeout_seconds=5),
         feeds=feeds,
-        site=SiteConf(enabled=False, **site_kwargs),
+        site=SiteConf(),
     )
 
 

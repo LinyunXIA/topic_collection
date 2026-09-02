@@ -107,7 +107,8 @@ v2 **重开 = 瘦身**。真正的起点比 v1 小一个数量级：**不是一�
 | `feedkicker/fetch.py` | `feedparser` 抓取 + 归一化 `{key,title,url,description,published_at}` + 每源错误捕获 |
 | `feedkicker/store.py` | sqlite 打开/建表/下载入库（ON CONFLICT DO NOTHING）/查待推/标已推/首跑判定 |
 | `feedkicker/feishu.py` | 构建 interactive 汇总卡片 + POST webhook + 业务码校验 |
-| `feedkicker/push.py` | 编排主流程；`--dry-run` 只打印不发 |
+| `feedkicker/bitable.py` | 多维表格归档（lark-cli 封装、跨源去重、双分组视图，见 §14–§16） |
+| `feedkicker/push.py` | 编排主流程（先档案后推送）；`--dry-run` 只打印不发 |
 
 ---
 
@@ -165,6 +166,9 @@ feeds:
 ---
 
 ## 9. 定时（crontab，无常驻）
+
+> **更新（v0.2 F10，见 §13）**：macOS 实际已改用 **launchd**（每天 8:30 / 16:00，
+> 睡眠唤醒补跑；plist 见 DESIGN §9）。以下 cron 片段为 v0.1 最初设计记录。
 
 ```cron
 # 每天 8:00 与 16:00 各跑一次；每次 = 自上次以来新增的一张汇总卡

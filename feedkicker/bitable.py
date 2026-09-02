@@ -188,8 +188,10 @@ def create_table(app_token: str, app_env: str = "prod") -> str:
     )
     if not _ok(proc):
         raise RuntimeError("创建数据表失败")
-    table_id = (_data(proc).get("table_id"))
-    return table_id or TABLE_NAME
+    table_id = _data(proc).get("table_id")
+    if not table_id:
+        raise RuntimeError(f"创建数据表响应缺少 table_id: {(proc.stdout or '')[:200]}")
+    return table_id
 
 
 def _view_id(app_token: str, table_id: str) -> str | None:

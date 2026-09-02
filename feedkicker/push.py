@@ -60,7 +60,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         except Exception as e:
             log.warning("多维表格同步未完成（不影响推送，保留待重试）: %s", e)
 
-    top_n = cfg.site.top_n if (cfg.site.enabled or cfg.bitable.enabled) else 0
+    top_n = cfg.site.top_n if cfg.bitable.enabled else 0
     payload = feishu.build_card(
         pending,
         feed_fails,
