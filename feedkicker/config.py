@@ -6,7 +6,6 @@ from pathlib import Path
 
 import yaml
 
-DEFAULT_CONFIG_PATH = Path("config-prod.yaml")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "tc-prod.sqlite3"
 VALID_ENVS = ("dev", "test", "prod")

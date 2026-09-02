@@ -479,6 +479,8 @@ DDL 新增 `meta(key,value)` 表（CREATE IF NOT EXISTS，对存量库透明）�
   先 select_unsynced → sync → mark_synced，成功后再推卡片（按钮指向的归档在发卡时已可达）；
   归档任一环节失败仅 WARNING，卡片照发，失败批次保留待重试；dry-run 不触发
 - 独立运维入口：`python -m feedkicker.bitable --env prod [--init]`
+- 推送链路自动新建（config 无 token 且同名 Base 不存在）的 Base 是**裸表**：分组视图与
+  组织内只读需补跑一次 `--init`；既有 Base 的 token/table_id 写在本地 config 中时不涉及
 - 配置：`bitable{enabled, app_token, table_id, url}`；三环境均开启（dev/test 共享 Base）
 
 ### 16.4 事故记录

@@ -345,10 +345,6 @@ def ensure_initialized(bt, app_env: str = "prod") -> dict:
 
 
 def _cell(item: dict, now_iso: str | None = None, env_name: str | None = None) -> dict:
-    if env_name is None and now_iso in ("dev", "test"):
-        env_name = now_iso
-        now_iso = None
-
     def fmt_dt(iso: str | None) -> str | None:
         if not iso:
             return None
@@ -554,13 +550,7 @@ def backfill_empty_archive_dates(app_token: str, table_id: str, env_name: str | 
                 arch = _cell_str(fds.get("归档日期"))
                 if arch.strip():
                     continue
-                cand = ""
-                for key in ("推送时间", "bitable_synced_at", "first_seen"):
-                    v = fds.get(key)
-                    if v is not None:
-                        cand = _cell_str(v)
-                        if cand.strip():
-                            break
+                cand = _cell_str(fds.get("推送时间"))
                 d = _shanghai_date(cand) if cand else None
                 if not d:
                     continue
@@ -574,8 +564,6 @@ def backfill_empty_archive_dates(app_token: str, table_id: str, env_name: str | 
             break
         idx_arch = fields.index("归档日期") if "归档日期" in fields else -1
         idx_push = fields.index("推送时间") if "推送时间" in fields else -1
-        idx_synced = fields.index("bitable_synced_at") if "bitable_synced_at" in fields else -1
-        idx_first = fields.index("first_seen") if "first_seen" in fields else -1
         rids = data.get("record_ids") or data.get("recordIds") or data.get("ids") or []
         for i, r in enumerate(rows):
             total_scanned += 1
@@ -586,24 +574,16 @@ def backfill_empty_archive_dates(app_token: str, table_id: str, env_name: str | 
                     arch = _cell_str(vals.get("归档日期"))
                     if arch.strip():
                         continue
-                    cand = ""
-                    for key in ("推送时间", "bitable_synced_at", "first_seen"):
-                        vv = vals.get(key)
-                        if vv is not None:
-                            cand = _cell_str(vv)
-                            if cand.strip():
-                                break
+                    cand = _cell_str(vals.get("推送时间"))
                 else:
                     arch = _cell_str(r[idx_arch]) if idx_arch >= 0 and idx_arch < len(r) else ""
                     if arch.strip():
                         continue
-                    cand = ""
-                    for idx in (idx_push, idx_synced, idx_first):
-                        if idx >= 0 and idx < len(r):
-                            cc = _cell_str(r[idx])
-                            if cc.strip():
-                                cand = cc
-                                break
+                    cand = (
+                        _cell_str(r[idx_push])
+                        if idx_push >= 0 and idx_push < len(r)
+                        else ""
+                    )
                 d = _shanghai_date(cand) if cand else None
                 if not d or not rid:
                     continue
@@ -617,13 +597,11 @@ def backfill_empty_archive_dates(app_token: str, table_id: str, env_name: str | 
             arch = _cell_str(r[idx_arch]) if idx_arch >= 0 and idx_arch < len(r) else ""
             if arch.strip():
                 continue
-            cand = ""
-            for idx in (idx_push, idx_synced, idx_first):
-                if idx >= 0 and idx < len(r):
-                    cc = _cell_str(r[idx])
-                    if cc.strip():
-                        cand = cc
-                        break
+            cand = (
+                _cell_str(r[idx_push])
+                if idx_push >= 0 and idx_push < len(r)
+                else ""
+            )
             d = _shanghai_date(cand) if cand else None
             if not d or not rid:
                 continue

@@ -250,6 +250,15 @@ def test_build_card_grouping():
     assert content == expected
 
 
+def test_build_card_link_paren_escaped():
+    # #118：URL 含 ) 会提前闭合 markdown 链接，百分号编码为 %29
+    items = [{"feed_id": "F", "entry_key": "k", "title": "t",
+              "url": "https://e.com/a_(b)", "description": ""}]
+    card = feishu.build_card(items, 0, ["F"])
+    content = card["card"]["elements"][0]["text"]["content"]
+    assert "[t](https://e.com/a_(b%29)" in content
+
+
 def test_build_card_failure_footer():
     card_ok = feishu.build_card(CARD_ITEMS, 0, ["A 源"])
     assert all(el.get("tag") != "hr" for el in card_ok["card"]["elements"])
@@ -708,85 +717,6 @@ def test_bitable_cell_fields(monkeypatch):
         "description": "", "published_at": None, "pushed_at": None,
     })
     assert "环境" not in prod_cell
-
-
-def test_bitable_cell_archive_date_fallback_cross_midnight(monkeypatch):
-    from feedkicker import bitable
-    from zoneinfo import ZoneInfo
-    from datetime import datetime
-    import inspect
-    item = {"feed_id": "F", "title": "t", "url": "https://e.com/1", "description": "", "published_at": None, "pushed_at": None}
-    now_iso = "2026-08-26T16:00:00Z"
-    expected = datetime.fromisoformat(now_iso.replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
-    assert expected == "2026-08-27"
-    sig = inspect.signature(bitable._cell)
-    if "now_iso" in sig.parameters:
-        cell = bitable._cell(item, env_name="dev", now_iso=now_iso)
-    else:
-        cell = bitable._cell(item, env_name="dev")
-    assert cell["归档日期"] == "2026-08-27"
-    assert cell["归档日期"] == expected
-    assert len(cell["归档日期"]) == 10
-
-
-def test_bitable_cell_archive_date_fallback_pushed_at_priority(monkeypatch):
-    from feedkicker import bitable
-    from zoneinfo import ZoneInfo
-    from datetime import datetime
-    import inspect
-    item = {"feed_id": "F", "title": "t", "url": "https://e.com/1", "description": "", "published_at": "2026-08-25T01:30:00Z", "pushed_at": "2026-08-25T01:30:00Z"}
-    now_iso = "2026-08-27T00:00:00Z"
-    expected = datetime.fromisoformat("2026-08-25T01:30:00Z".replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
-    assert expected == "2026-08-25"
-    sig = inspect.signature(bitable._cell)
-    assert "now_iso" in sig.parameters
-    cell = bitable._cell(item, env_name="dev", now_iso=now_iso)
-    assert cell["归档日期"] == "2026-08-25"
-    assert cell["归档日期"] == expected
-    assert len(cell["归档日期"]) == 10
-
-
-def test_bitable_cell_archive_date_fallback_first_seen_chain(monkeypatch):
-    from feedkicker import bitable
-    from zoneinfo import ZoneInfo
-    from datetime import datetime
-    import inspect
-    item = {"feed_id": "F", "title": "t", "url": "https://e.com/2", "description": "", "published_at": None, "pushed_at": None, "first_seen": "2026-08-25T23:59:00Z"}
-    expected = datetime.fromisoformat("2026-08-25T23:59:00Z".replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
-    assert expected == "2026-08-26"
-    sig = inspect.signature(bitable._cell)
-    if "now_iso" in sig.parameters:
-        cell = bitable._cell(item, env_name="dev", now_iso=None)
-    else:
-        cell = bitable._cell(item, env_name="dev")
-    assert cell["归档日期"] == "2026-08-26"
-    assert cell["归档日期"] == expected
-    assert len(cell["归档日期"]) == 10
-
-
-def test_bitable_cell_archive_date_fallback_dedup_batch(monkeypatch):
-    from feedkicker import bitable
-    import json
-    monkeypatch.setattr(bitable, "existing_links", lambda a, t: {"https://old.com/1"})
-    payloads = []
-    def fake_run(args, stdin_text=None, timeout=120):
-        if "+record-batch-create" in args:
-            payload = _json_from_args(args)
-            payloads.append(payload["create_records"])
-            return FakeProc(0, stdout="{}")
-        return FakeProc(0, stdout="{}")
-    monkeypatch.setattr(bitable, "_run", fake_run)
-    items = (
-        [{"feed_id": f"F{i}", "entry_key": f"k{i}", "title": f"t{i}", "url": f"https://e.com/{i}", "description": "", "published_at": None, "pushed_at": None} for i in range(250)]
-        + [{"feed_id": "F", "entry_key": "dup", "title": "dup", "url": "HTTPS://E.COM/1#x", "description": "", "published_at": None, "pushed_at": None}]
-        + [{"feed_id": "F", "entry_key": "old", "title": "old", "url": "https://old.com/1", "description": "", "published_at": None, "pushed_at": None}]
-    )
-    assert bitable.sync_records("app", "tbl", items, env_name="dev") is True
-    flat = [rec for chunk in payloads for rec in chunk]
-    assert len(flat) == 250
-    assert all(rec["归档日期"] != "" for rec in flat)
-    assert all(len(rec["归档日期"]) == 10 for rec in flat)
-    assert all(rec["归档日期"] == rec["归档日期"][:10] for rec in flat)
 
 
 @pytest.mark.parametrize("scenario", ["cross_midnight", "pushed_at_priority", "first_seen_chain", "dedup_batch"])

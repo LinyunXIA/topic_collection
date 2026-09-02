@@ -9,7 +9,7 @@
 ## 命令
 
 ```bash
-.venv/bin/python -m pytest -q                 # 33 用例全离线，<1s；变慢=打真网了，必须修
+.venv/bin/python -m pytest -q                 # 44 用例全离线，<1s；变慢=打真网了，必须修
 .venv/bin/tc-push [--env dev|test|prod] [--dry-run]
 .venv/bin/python -m feedkicker.bitable --env prod [--init|--reseed]   # 归档运维
 ```
