@@ -5,6 +5,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
+from pathlib import Path
 
 import pytest
 
@@ -48,13 +49,21 @@ def make_conn() -> sqlite3.Connection:
     return store.connect(":memory:")
 
 
-def make_cfg(feeds: list[Feed], **site_kwargs) -> Config:
+def _json_from_args(args: list[str]):
+    raw = args[args.index("--json") + 1]
+    if raw.startswith("@"):
+        with open(raw[1:], encoding="utf-8") as f:
+            return json.load(f)
+    return json.loads(raw)
+
+
+def make_cfg(feeds: list[Feed]) -> Config:
     return Config(
         feishu_webhook="",
         bootstrap_days=3,
         http=HttpConf(timeout_seconds=5),
         feeds=feeds,
-        site=SiteConf(enabled=False, **site_kwargs),
+        site=SiteConf(),
     )
 
 
@@ -239,6 +248,15 @@ def test_build_card_grouping():
         "第一行 第二行"
     )
     assert content == expected
+
+
+def test_build_card_link_paren_escaped():
+    # #118：URL 含 ) 会提前闭合 markdown 链接，百分号编码为 %29
+    items = [{"feed_id": "F", "entry_key": "k", "title": "t",
+              "url": "https://e.com/a_(b)", "description": ""}]
+    card = feishu.build_card(items, 0, ["F"])
+    content = card["card"]["elements"][0]["text"]["content"]
+    assert "[t](https://e.com/a_(b%29)" in content
 
 
 def test_build_card_failure_footer():
@@ -572,6 +590,42 @@ def test_run_sos_after_three_failures(monkeypatch):
     conn.close()
 
 
+def test_first_run_failure_then_recovery_applies_window(monkeypatch):
+    # #113：新源首跑抓取失败不得盖 first_run_at；恢复后仍开冷启动窗口
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+
+    def boom(url, http):
+        raise ValueError("源挂了")
+
+    monkeypatch.setattr(push, "fetch_feed", boom)
+    rc = push.run(cfg, conn)
+    assert rc == 0
+    assert store.is_first_run(conn, "F")  # 失败不盖戳
+
+    entries = parse_content(
+        rss(
+            item("old", "https://e.com/old", pubdate=days_ago(10)),
+            item("new", "https://e.com/new", pubdate=days_ago(1)),
+        )
+    )
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    sent = []
+    monkeypatch.setattr(feishu, "send", lambda p, *a, **kw: sent.append(p) or True)
+
+    rc = push.run(cfg, conn)
+    assert rc == 0
+    assert not store.is_first_run(conn, "F")  # 成功首跑后盖戳
+    content = sent[0]["card"]["elements"][0]["text"]["content"]
+    assert "https://e.com/new" in content
+    assert "https://e.com/old" not in content  # 窗口生效，旧文不推
+    old_row = conn.execute(
+        "SELECT pushed_at FROM articles WHERE url = 'https://e.com/old'"
+    ).fetchone()
+    assert old_row and old_row[0]  # 旧文入档但标记不推
+    conn.close()
+
+
 def test_store_sync_roundtrip():
     conn = make_conn()
     store.download(conn, "F", SAMPLE_ENTRIES, "2026-08-25T00:00:00Z")
@@ -590,7 +644,7 @@ def test_bitable_dedup_filters(monkeypatch):
 
     def fake_run(args, stdin_text=None, timeout=120):
         if "+record-batch-create" in args:
-            payload = json.loads(args[args.index("--json") + 1])
+            payload = _json_from_args(args)
             calls.append(len(payload["create_records"]))
             return FakeProc(0, stdout="{}")
         return FakeProc(0, stdout="{}")
@@ -612,6 +666,40 @@ def test_bitable_dedup_filters(monkeypatch):
     assert calls == [200, 50]
 
 
+def test_bitable_large_payload_uses_file_not_argv(monkeypatch, tmp_path):
+    # #112：200 条大摘要走 argv 会超 ARG_MAX（Argument list too long），必须走 @临时文件
+    from feedkicker import bitable
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(bitable, "existing_links", lambda a, t: set())
+    argv_sizes = []
+    file_seen = {}
+
+    def fake_run(args, stdin_text=None, timeout=300):
+        if "+record-batch-create" in args:
+            ref = args[args.index("--json") + 1]
+            assert ref.startswith("@./"), "大 payload 必须走 @文件 引用"
+            file_seen["exists_during_call"] = Path(ref[1:]).exists()
+            argv_sizes.append(sum(len(a) for a in args))
+            payload = _json_from_args(args)
+            assert len(payload["create_records"]) <= 200
+            return FakeProc(0, stdout="{}")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+
+    items = [
+        {"feed_id": "F", "entry_key": f"k{i}", "title": "t" * 50,
+         "url": f"https://e.com/{i}", "description": "长摘要" * 2000,
+         "published_at": None, "pushed_at": None}
+        for i in range(250)
+    ]
+    assert bitable.sync_records("app", "tbl", items) is True
+    assert file_seen.get("exists_during_call") is True
+    assert argv_sizes and max(argv_sizes) < 50_000  # argv 远低于 ARG_MAX，payload 在文件里
+    assert not list(Path().glob(".lark-json-*.json"))  # 临时文件已清理
+
+
 def test_bitable_cell_fields(monkeypatch):
     from feedkicker import bitable
 
@@ -629,85 +717,6 @@ def test_bitable_cell_fields(monkeypatch):
         "description": "", "published_at": None, "pushed_at": None,
     })
     assert "环境" not in prod_cell
-
-
-def test_bitable_cell_archive_date_fallback_cross_midnight(monkeypatch):
-    from feedkicker import bitable
-    from zoneinfo import ZoneInfo
-    from datetime import datetime
-    import inspect
-    item = {"feed_id": "F", "title": "t", "url": "https://e.com/1", "description": "", "published_at": None, "pushed_at": None}
-    now_iso = "2026-08-26T16:00:00Z"
-    expected = datetime.fromisoformat(now_iso.replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
-    assert expected == "2026-08-27"
-    sig = inspect.signature(bitable._cell)
-    if "now_iso" in sig.parameters:
-        cell = bitable._cell(item, env_name="dev", now_iso=now_iso)
-    else:
-        cell = bitable._cell(item, env_name="dev")
-    assert cell["归档日期"] == "2026-08-27"
-    assert cell["归档日期"] == expected
-    assert len(cell["归档日期"]) == 10
-
-
-def test_bitable_cell_archive_date_fallback_pushed_at_priority(monkeypatch):
-    from feedkicker import bitable
-    from zoneinfo import ZoneInfo
-    from datetime import datetime
-    import inspect
-    item = {"feed_id": "F", "title": "t", "url": "https://e.com/1", "description": "", "published_at": "2026-08-25T01:30:00Z", "pushed_at": "2026-08-25T01:30:00Z"}
-    now_iso = "2026-08-27T00:00:00Z"
-    expected = datetime.fromisoformat("2026-08-25T01:30:00Z".replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
-    assert expected == "2026-08-25"
-    sig = inspect.signature(bitable._cell)
-    assert "now_iso" in sig.parameters
-    cell = bitable._cell(item, env_name="dev", now_iso=now_iso)
-    assert cell["归档日期"] == "2026-08-25"
-    assert cell["归档日期"] == expected
-    assert len(cell["归档日期"]) == 10
-
-
-def test_bitable_cell_archive_date_fallback_first_seen_chain(monkeypatch):
-    from feedkicker import bitable
-    from zoneinfo import ZoneInfo
-    from datetime import datetime
-    import inspect
-    item = {"feed_id": "F", "title": "t", "url": "https://e.com/2", "description": "", "published_at": None, "pushed_at": None, "first_seen": "2026-08-25T23:59:00Z"}
-    expected = datetime.fromisoformat("2026-08-25T23:59:00Z".replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
-    assert expected == "2026-08-26"
-    sig = inspect.signature(bitable._cell)
-    if "now_iso" in sig.parameters:
-        cell = bitable._cell(item, env_name="dev", now_iso=None)
-    else:
-        cell = bitable._cell(item, env_name="dev")
-    assert cell["归档日期"] == "2026-08-26"
-    assert cell["归档日期"] == expected
-    assert len(cell["归档日期"]) == 10
-
-
-def test_bitable_cell_archive_date_fallback_dedup_batch(monkeypatch):
-    from feedkicker import bitable
-    import json
-    monkeypatch.setattr(bitable, "existing_links", lambda a, t: {"https://old.com/1"})
-    payloads = []
-    def fake_run(args, stdin_text=None, timeout=120):
-        if "+record-batch-create" in args:
-            payload = json.loads(args[args.index("--json") + 1])
-            payloads.append(payload["create_records"])
-            return FakeProc(0, stdout="{}")
-        return FakeProc(0, stdout="{}")
-    monkeypatch.setattr(bitable, "_run", fake_run)
-    items = (
-        [{"feed_id": f"F{i}", "entry_key": f"k{i}", "title": f"t{i}", "url": f"https://e.com/{i}", "description": "", "published_at": None, "pushed_at": None} for i in range(250)]
-        + [{"feed_id": "F", "entry_key": "dup", "title": "dup", "url": "HTTPS://E.COM/1#x", "description": "", "published_at": None, "pushed_at": None}]
-        + [{"feed_id": "F", "entry_key": "old", "title": "old", "url": "https://old.com/1", "description": "", "published_at": None, "pushed_at": None}]
-    )
-    assert bitable.sync_records("app", "tbl", items, env_name="dev") is True
-    flat = [rec for chunk in payloads for rec in chunk]
-    assert len(flat) == 250
-    assert all(rec["归档日期"] != "" for rec in flat)
-    assert all(len(rec["归档日期"]) == 10 for rec in flat)
-    assert all(rec["归档日期"] == rec["归档日期"][:10] for rec in flat)
 
 
 @pytest.mark.parametrize("scenario", ["cross_midnight", "pushed_at_priority", "first_seen_chain", "dedup_batch"])
@@ -758,7 +767,7 @@ def test_bitable_cell_archive_date_fallback(monkeypatch, scenario):
         payloads = []
         def fake_run(args, stdin_text=None, timeout=120):
             if "+record-batch-create" in args:
-                payload = json.loads(args[args.index("--json") + 1])
+                payload = _json_from_args(args)
                 payloads.append(payload["create_records"])
                 return FakeProc(0, stdout="{}")
             return FakeProc(0, stdout="{}")
@@ -867,7 +876,7 @@ def test_bitable_sync_env_roundtrip(monkeypatch):
 
     def fake_run(args, stdin_text=None, timeout=300):
         if "+record-batch-create" in args:
-            payload = json.loads(args[args.index("--json") + 1])
+            payload = _json_from_args(args)
             payloads.append(payload["create_records"])
             return FakeProc(0, stdout="{}")
         return FakeProc(0, stdout="{}")
@@ -897,6 +906,88 @@ def test_bitable_sync_env_rejects_empty_config(monkeypatch):
     conn.close()
 
 
+def test_run_augments_path_for_launchd(monkeypatch):
+    # #123：launchd 的最小 PATH 下 lark-cli(env node) 会 rc=127，_run 必须注入 homebrew 路径
+    from feedkicker import bitable
+
+    captured = {}
+
+    def fake_subprocess_run(cmd, **kw):
+        captured["env"] = kw.get("env")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(bitable.os, "environ", {"PATH": "/usr/bin:/bin"})
+    bitable._run(["base", "--help"])
+    path = captured["env"]["PATH"]
+    assert "/opt/homebrew/bin" in path
+    assert path.rstrip(":").endswith("/usr/bin:/bin") or "/usr/bin:/bin" in path
+
+
+def test_fail_streak_cleared_on_success_even_without_pending(monkeypatch):
+    # #124：源恢复成功时即使无新条目早退也要清零 fail_streak
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    store.bump_fail(conn, "F", "https://e.com/rss")
+    entries = [_norm("seen", "https://e.com/seen")]
+    store.download(conn, "F", entries, "2026-08-25T00:00:00Z")
+    store.mark_pushed(conn, store.select_pending(conn), "2026-08-25T00:00:00Z")
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+
+    rc = push.run(cfg, conn)
+    assert rc == 0
+    row = conn.execute("SELECT fail_streak FROM feeds WHERE feed_id = 'F'").fetchone()
+    assert row[0] == 0
+    conn.close()
+
+
+def test_bitable_sync_aborts_when_existing_links_fail(monkeypatch):
+    # #114：record-list 拉取已有链接失败（rc=0 + ok:false）必须中止，不得拿空集合继续写
+    from feedkicker import bitable
+
+    created = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+record-list" in args:
+            return FakeProc(0, stdout=json.dumps(
+                {"ok": False, "error": {"type": "api", "message": "api boom"}}))
+        if "+record-batch-create" in args:
+            created.append(_json_from_args(args))
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+    items = [{"feed_id": "F", "entry_key": "k", "title": "t", "url": "https://e.com/1",
+              "description": "", "published_at": None, "pushed_at": None}]
+    with pytest.raises(RuntimeError, match="已有链接"):
+        bitable.sync_records("app", "tbl", items)
+    assert created == []
+
+
+def test_bitable_sync_env_ok_false_not_marked(monkeypatch):
+    # #114：批量写入 API 报错（rc=0 + ok:false）视为失败：sync_env 抛错且不打同步标
+    from feedkicker import bitable
+
+    conn = make_conn()
+    store.download(conn, "F", SAMPLE_ENTRIES, "2026-08-25T00:00:00Z")
+    monkeypatch.setattr(bitable, "ensure_initialized",
+                        lambda bt, env: {"app_token": "app-x", "table_id": "tbl-x",
+                                         "url": "https://x.test/base"})
+
+    def fake_run(args, stdin_text=None, timeout=300):
+        if "+record-batch-create" in args:
+            return FakeProc(0, stdout=json.dumps(
+                {"ok": False, "error": {"type": "api", "message": "denied"}}))
+        return FakeProc(0, stdout=json.dumps({"data": {"fields": ["链接"], "data": []}}))
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+    bt = type("BT", (), {"enabled": True, "app_token": "app-x",
+                         "table_id": "tbl-x", "url": ""})()
+    with pytest.raises(RuntimeError):
+        bitable.sync_env(bt, "prod", conn)
+    assert len(store.select_unsynced(conn)) == 2
+    conn.close()
+
+
 def test_bitable_views_grouping_not_empty(monkeypatch):
     from feedkicker import bitable
 
@@ -916,7 +1007,7 @@ def test_bitable_views_grouping_not_empty(monkeypatch):
             sort_payloads.append(payload)
             return FakeProc(0, stdout="{}")
         if "+record-batch-create" in args:
-            payload = json.loads(args[args.index("--json") + 1])
+            payload = _json_from_args(args)
             batch_records.extend(payload.get("create_records") or [])
             return FakeProc(0, stdout="{}")
         if "+view-list" in args:

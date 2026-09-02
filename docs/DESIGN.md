@@ -2,7 +2,7 @@
 
 > 关联文档：[PRD.md](PRD.md)（产品需求——产品范围/验收的权威；本文件为工程实现权威）
 > 共享的结构性描述只在一处维护、另一处引用，避免漂移
-> 版本：v0.2 · 2026-08-25 · v0.1 已上线；v0.2 增加 GitHub Pages 详情页
+> 版本：v0.5 · 2026-09-02 · v0.1 卡片推送、v0.2 GitHub Pages（已废弃，§15）、v0.3–v0.5 多维表格归档定稿（§16/§18）
 
 ## 1. 架构总览
 
@@ -49,8 +49,9 @@ topic_collection/
 │   ├── __init__.py
 │   ├── config.py             # 读 config-{env}.yaml + env 覆盖
 │   ├── fetch.py              # feedparser 抓取 + 归一化
-│   ├── store.py              # sqlite 打开/建表/入库/待推/标已推/首跑
+│   ├── store.py              # sqlite 打开/建表/入库/待推/标已推/首跑/归档同步标
 │   ├── feishu.py             # 卡片构建 + webhook 发送 + 业务码校验
+│   ├── bitable.py            # 多维表格归档（subprocess 调 lark-cli，见 §16/§18）
 │   └── push.py               # 编排主流程 + --dry-run
 └── tests/
     └── test_push.py
@@ -170,7 +171,7 @@ published_at   = iso_utc(entry.published_parsed) 若存在，否则 None
 - `cutoff = now - timedelta(days=config.bootstrap_days)`
 - `promise_skip_old`: `UPDATE articles SET pushed_at=COALESCE(pushed_at, now) WHERE feed_id=? AND published_at IS NOT NULL AND published_at < cutoff AND pushed_at IS NULL`
 - 效果：窗口外（>N 天前发布）条目**入库但不推**；`published_at` 为 NULL 的条目**不会**被窗口排除（当作新增推，避免丢新条目）。
-- `update_first_run_all`：把本次实际抓到的 feed 记 `first_run_at`（无论成败都记一次，防止反复触发窗口把牌子"欠推"越卷越多）。
+- `update_first_run_all`：**仅对本轮成功抓到内容的 feed** 记 `first_run_at`（#113）。首跑即失败的源保留未首跑状态（`bump_fail` 插入的空戳行不被升级），恢复后仍按窗口过滤历史，避免全量历史当新条目推送（F4）；失败连击由 `fail_streak` 记录。
 
 ## 7. 飞书卡片构建（feishu.build_card）
 
@@ -304,6 +305,10 @@ v0.2 起 macOS 用 **launchd** 取代 cron：`StartCalendarInterval` 在机器�
 - `test_build_card_trims_to_20kb`：超限降级裁剪后序列化 ≤20KB 且 JSON 完整带截断提示；小体量不裁剪。
 - `test_no_new_items_no_empty_card`：无待推时 snapshot 记录 `build_card` 不被调用/不发空卡。
 
+> v0.3–v0.5 起新增 bitable 系列测试（`_cell` 字段/归档日期跨零点、跨源去重、双视图、
+> 重灌、backfill、sync_env、ok:false 业务失败、@文件传参、existing_links 失败中止）与
+> 首跑失败恢复窗口测试；用例总数以 AGENTS.md 命令一节为准（测试全离线，subprocess/httpx 一律 mock）。
+
 ## 12. 速率与错误分类（暂从简）
 
 - HTTP 抓 feed：httpx 默认跟随重定向；>30 个 feed 时建议手动加每源间隔（现阶段串行 + timeout 足够）。
@@ -369,6 +374,10 @@ v0.2 起 macOS 用 **launchd** 取代 cron：`StartCalendarInterval` 在机器�
 ---
 
 ## 15. v0.2 设计 — GitHub Pages 详情页 + 摘要卡（2026-08-25）
+
+> **【已废弃 · 2026-08-26 起】** site.py / publish.py 已从代码库移除，`site.enabled` 全环境
+> false（AGENTS.md：不要复活）；摘要卡 top_n/详情按钮语义由多维表格承接（§16/§18）。
+> 本节仅保留设计记录，勿据此实现。
 
 ### 15.1 数据流与顺序保证
 
@@ -448,7 +457,9 @@ DDL 新增 `meta(key,value)` 表（CREATE IF NOT EXISTS，对存量库透明）�
 
 ### 16.2 feedkicker/bitable.py
 
-- 基于 `lark-cli base` 子命令封装（subprocess；二进制解析同 publish.gh_bin 模式）
+- 基于 `lark-cli base` 子命令封装（subprocess；`shutil.which` + `/opt/homebrew/bin` 兜底）
+- lark-cli 业务失败时**退出码仍为 0**，失败信号在 stdout JSON 顶层 `ok:false`（#114）；
+  大 payload（200 条/批）走 `--json @./临时文件` 传参绕开 ARG_MAX（#112，stdin/绝对路径均不支持）
 - `ensure_initialized`：config 有 token 则跳过；否则 title-resolve 找同名 Base，
   找不到才创建（Base「AI 资讯归档」+ 表「文章」全字段 schema）
 - `sync_records`：写入前拉取表内已有链接集合（record-list 分页），
@@ -464,9 +475,12 @@ DDL 新增 `meta(key,value)` 表（CREATE IF NOT EXISTS，对存量库透明）�
 ### 16.3 存储与编排
 
 - articles 加列 `bitable_synced_at TEXT`（connect 时 PRAGMA 检查自动补列）
-- push.py：发送成功且 bitable.enabled → select_unsynced → sync → mark_synced；
-  任一环节失败仅 WARNING，不影响推送主流程；dry-run 不触发
+- push.py 编排顺序为**先档案后推送**（与 AGENTS.md 一致）：bitable.enabled 且非 dry-run 时
+  先 select_unsynced → sync → mark_synced，成功后再推卡片（按钮指向的归档在发卡时已可达）；
+  归档任一环节失败仅 WARNING，卡片照发，失败批次保留待重试；dry-run 不触发
 - 独立运维入口：`python -m feedkicker.bitable --env prod [--init]`
+- 推送链路自动新建（config 无 token 且同名 Base 不存在）的 Base 是**裸表**：分组视图与
+  组织内只读需补跑一次 `--init`；既有 Base 的 token/table_id 写在本地 config 中时不涉及
 - 配置：`bitable{enabled, app_token, table_id, url}`；三环境均开启（dev/test 共享 Base）
 
 ### 16.4 事故记录

@@ -42,6 +42,11 @@ project.md
 config.yaml
 config-*.yaml
 
+# ───────── lark-cli 运行工件 ─────────
+.lark-json-*.json
+*.manifest.json
+*.ndjson
+
 # ───────── OS ─────────
 Thumbs.db
 .agents/

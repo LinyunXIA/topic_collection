@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from datetime import UTC, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -55,10 +58,16 @@ def lark_bin() -> str:
 
 
 def _run(args: list[str], stdin_text: str | None = None, timeout: float = 120):
-    cmd = [lark_bin()] + args
+    bin_path = lark_bin()
+    cmd = [bin_path] + args
+    # launchd 的 PATH 只有 /usr/bin:/bin，lark-cli 是 env node 脚本会以 rc=127 失败；
+    # 显式增补 homebrew 与二进制所在目录（#123）
+    env = os.environ.copy()
+    extra = [os.path.dirname(bin_path), "/opt/homebrew/bin", "/usr/local/bin"]
+    env["PATH"] = os.pathsep.join([p for p in extra if p] + [env.get("PATH", "")])
     try:
         proc = subprocess.run(
-            cmd, input=stdin_text, capture_output=True, text=True, timeout=timeout
+            cmd, input=stdin_text, capture_output=True, text=True, timeout=timeout, env=env
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         log.warning("lark-cli 执行异常: %s", e)
@@ -68,16 +77,45 @@ def _run(args: list[str], stdin_text: str | None = None, timeout: float = 120):
     return proc
 
 
+def _parse(proc) -> tuple[bool, dict]:
+    # lark-cli 业务失败时退出码仍为 0，失败信号在 stdout JSON 顶层 ok:false；
+    # 非 JSON 输出（markdown/help）以 returncode 判定
+    if proc is None or proc.returncode != 0:
+        return False, {}
+    raw = (proc.stdout or "").strip()
+    if not raw or raw[0] not in "{[":
+        return True, {}
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return True, {}
+    if isinstance(obj, dict) and obj.get("ok") is False:
+        err = obj.get("error") or {}
+        log.warning("lark-cli 业务失败: %s", str(err.get("message") or err)[:300])
+        return False, {}
+    return True, (obj.get("data") or {})
+
+
 def _ok(proc) -> bool:
-    return proc is not None and proc.returncode == 0
+    return _parse(proc)[0]
 
 
 def _data(proc) -> dict:
+    return _parse(proc)[1]
+
+
+@contextlib.contextmanager
+def _json_arg(payload: dict):
+    # lark-cli 的 --json 不支持 stdin、@文件只接受 cwd 内相对路径；
+    # 大批记录走 argv 会超 ARG_MAX（Errno 7 Argument list too long），落临时文件传引用
+    fd, tmp_path = tempfile.mkstemp(prefix=".lark-json-", suffix=".json", dir=".")
     try:
-        out = json.loads(proc.stdout or "{}")
-        return out.get("data") or {}
-    except json.JSONDecodeError:
-        return {}
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        yield "--json", f"@./{os.path.basename(tmp_path)}"
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
 
 
 def base_url(app_token: str) -> str:
@@ -156,8 +194,10 @@ def create_table(app_token: str, app_env: str = "prod") -> str:
     )
     if not _ok(proc):
         raise RuntimeError("创建数据表失败")
-    table_id = (_data(proc).get("table_id"))
-    return table_id or TABLE_NAME
+    table_id = _data(proc).get("table_id")
+    if not table_id:
+        raise RuntimeError(f"创建数据表响应缺少 table_id: {(proc.stdout or '')[:200]}")
+    return table_id
 
 
 def _view_id(app_token: str, table_id: str) -> str | None:
@@ -311,10 +351,6 @@ def ensure_initialized(bt, app_env: str = "prod") -> dict:
 
 
 def _cell(item: dict, now_iso: str | None = None, env_name: str | None = None) -> dict:
-    if env_name is None and now_iso in ("dev", "test"):
-        env_name = now_iso
-        now_iso = None
-
     def fmt_dt(iso: str | None) -> str | None:
         if not iso:
             return None
@@ -355,7 +391,8 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
             timeout=120,
         )
         if not _ok(proc):
-            break
+            # 拉不到已有链接集合时必须中止：返回空集会让全量被当新记录写入，造成重复行
+            raise RuntimeError("拉取多维表格已有链接失败，中止本次同步以避免重复写入")
         data = _data(proc)
         fields = data.get("fields") or []
         if "链接" not in fields:
@@ -398,18 +435,17 @@ def sync_records(app_token: str, table_id: str, items: list[dict], env_name: str
     total_ok = True
     for i in range(0, len(picked), _CHUNK):
         chunk = picked[i : i + _CHUNK]
-        payload = json.dumps(
-            {"create_records": [_cell(it, now_iso, env_name) for it in chunk]}, ensure_ascii=False
-        )
-        proc = _run(
-            [
-                "base", "+record-batch-create",
-                "--base-token", app_token,
-                "--table-id", table_id,
-                "--json", payload,
-            ],
-            timeout=300,
-        )
+        payload = {"create_records": [_cell(it, now_iso, env_name) for it in chunk]}
+        with _json_arg(payload) as (jflag, jval):
+            proc = _run(
+                [
+                    "base", "+record-batch-create",
+                    "--base-token", app_token,
+                    "--table-id", table_id,
+                    jflag, jval,
+                ],
+                timeout=300,
+            )
         if not _ok(proc):
             total_ok = False
             log.warning("Bitable 批量写入失败（第 %d 批 %d 条）", i // _CHUNK + 1, len(chunk))
@@ -520,13 +556,7 @@ def backfill_empty_archive_dates(app_token: str, table_id: str, env_name: str | 
                 arch = _cell_str(fds.get("归档日期"))
                 if arch.strip():
                     continue
-                cand = ""
-                for key in ("推送时间", "bitable_synced_at", "first_seen"):
-                    v = fds.get(key)
-                    if v is not None:
-                        cand = _cell_str(v)
-                        if cand.strip():
-                            break
+                cand = _cell_str(fds.get("推送时间"))
                 d = _shanghai_date(cand) if cand else None
                 if not d:
                     continue
@@ -540,8 +570,6 @@ def backfill_empty_archive_dates(app_token: str, table_id: str, env_name: str | 
             break
         idx_arch = fields.index("归档日期") if "归档日期" in fields else -1
         idx_push = fields.index("推送时间") if "推送时间" in fields else -1
-        idx_synced = fields.index("bitable_synced_at") if "bitable_synced_at" in fields else -1
-        idx_first = fields.index("first_seen") if "first_seen" in fields else -1
         rids = data.get("record_ids") or data.get("recordIds") or data.get("ids") or []
         for i, r in enumerate(rows):
             total_scanned += 1
@@ -552,24 +580,16 @@ def backfill_empty_archive_dates(app_token: str, table_id: str, env_name: str | 
                     arch = _cell_str(vals.get("归档日期"))
                     if arch.strip():
                         continue
-                    cand = ""
-                    for key in ("推送时间", "bitable_synced_at", "first_seen"):
-                        vv = vals.get(key)
-                        if vv is not None:
-                            cand = _cell_str(vv)
-                            if cand.strip():
-                                break
+                    cand = _cell_str(vals.get("推送时间"))
                 else:
                     arch = _cell_str(r[idx_arch]) if idx_arch >= 0 and idx_arch < len(r) else ""
                     if arch.strip():
                         continue
-                    cand = ""
-                    for idx in (idx_push, idx_synced, idx_first):
-                        if idx >= 0 and idx < len(r):
-                            cc = _cell_str(r[idx])
-                            if cc.strip():
-                                cand = cc
-                                break
+                    cand = (
+                        _cell_str(r[idx_push])
+                        if idx_push >= 0 and idx_push < len(r)
+                        else ""
+                    )
                 d = _shanghai_date(cand) if cand else None
                 if not d or not rid:
                     continue
@@ -583,13 +603,11 @@ def backfill_empty_archive_dates(app_token: str, table_id: str, env_name: str | 
             arch = _cell_str(r[idx_arch]) if idx_arch >= 0 and idx_arch < len(r) else ""
             if arch.strip():
                 continue
-            cand = ""
-            for idx in (idx_push, idx_synced, idx_first):
-                if idx >= 0 and idx < len(r):
-                    cc = _cell_str(r[idx])
-                    if cc.strip():
-                        cand = cc
-                        break
+            cand = (
+                _cell_str(r[idx_push])
+                if idx_push >= 0 and idx_push < len(r)
+                else ""
+            )
             d = _shanghai_date(cand) if cand else None
             if not d or not rid:
                 continue

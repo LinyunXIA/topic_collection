@@ -136,7 +136,7 @@ def build_card(
                 parts.append(f"**{escape_inline(name)}**")
                 prev = name
             display = escape_inline(it["title"]) or escape_inline(it["url"])
-            parts.append(f"[{display}]({it['url']})")
+            parts.append(f"[{display}]({it['url'].replace(')', '%29')})")
             if show_desc:
                 desc = (it.get("description") or "").strip()
                 if desc:

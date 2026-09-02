@@ -27,6 +27,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             entries = fetch_feed(feed.url, cfg.http)
             store.download(conn, feed.name, entries, now)
             ok_feeds.append(feed.name)
+            store.clear_fail(conn, feed.name)
             if store.is_first_run(conn, feed.name):
                 cutoff = (now_dt - timedelta(days=cfg.bootstrap_days)).strftime(
                     "%Y-%m-%dT%H:%M:%SZ"
@@ -37,9 +38,13 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             store.bump_fail(conn, feed.name, feed.url)
             log.error("源 %s (%s) 抓取失败: %s", feed.name, feed.url, e)
 
+    # 首跑标记只盖成功抓到内容的源：新源首跑即失败时保留未首跑状态，
+    # 恢复后仍按冷启动窗口过滤历史（F4），避免全量历史当新条目推送
+    ok_feed_objs = [f for f in cfg.feeds if f.name in set(ok_feeds)]
+
     pending = store.select_pending(conn)
     if not pending:
-        store.update_first_run_all(conn, cfg.feeds, now)
+        store.update_first_run_all(conn, ok_feed_objs, now)
         log.info("运行完成：无新条目，失败源 %d 个", feed_fails)
         return 0
 
@@ -56,7 +61,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         except Exception as e:
             log.warning("多维表格同步未完成（不影响推送，保留待重试）: %s", e)
 
-    top_n = cfg.site.top_n if (cfg.site.enabled or cfg.bitable.enabled) else 0
+    top_n = cfg.site.top_n if cfg.bitable.enabled else 0
     payload = feishu.build_card(
         pending,
         feed_fails,
@@ -90,8 +95,6 @@ def run(cfg, conn, dry_run: bool = False) -> int:
 
     if ok:
         store.mark_pushed(conn, pending, now)
-        for name in ok_feeds:
-            store.clear_fail(conn, name)
         streak = int(store.get_meta(conn, PUSH_FAIL_STREAK_KEY, "0"))
         if streak:
             log.info("推送恢复，清零连败计数（此前 %d 次）", streak)
@@ -117,7 +120,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             )
             store.set_meta(conn, PUSH_FAIL_STREAK_KEY, "0")
 
-    store.update_first_run_all(conn, cfg.feeds, now)
+    store.update_first_run_all(conn, ok_feed_objs, now)
     return 0 if ok else 1
 
 

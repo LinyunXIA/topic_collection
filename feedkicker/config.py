@@ -6,7 +6,6 @@ from pathlib import Path
 
 import yaml
 
-DEFAULT_CONFIG_PATH = Path("config-prod.yaml")
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "tc-prod.sqlite3"
 VALID_ENVS = ("dev", "test", "prod")
@@ -34,10 +33,7 @@ class Feed:
 
 @dataclass
 class SiteConf:
-    enabled: bool = True
-    base_url: str = "https://linyunxia.github.io/topic_collection"
-    repo: str = "LinyunXIA/topic_collection"
-    branch: str = "gh-pages"
+    # GitHub Pages 链路已移除（site.enabled 全环境 false）；仅保留摘要卡每源条数
     top_n: int = 5
 
 
@@ -100,13 +96,7 @@ def load_config(
     cfg.feeds = feeds
 
     site_raw = raw.get("site") or {}
-    cfg.site = SiteConf(
-        enabled=bool(site_raw.get("enabled", cfg.site.enabled)),
-        base_url=str(site_raw.get("base_url") or cfg.site.base_url).rstrip("/"),
-        repo=str(site_raw.get("repo") or cfg.site.repo),
-        branch=str(site_raw.get("branch") or cfg.site.branch),
-        top_n=max(1, int(site_raw.get("top_n", cfg.site.top_n))),
-    )
+    cfg.site = SiteConf(top_n=max(1, int(site_raw.get("top_n", cfg.site.top_n))))
 
     bt_raw = raw.get("bitable") or {}
     cfg.bitable = BitableConf(
@@ -123,10 +113,6 @@ def load_config(
     env_secret = os.environ.get("FEISHU_SECRET")
     if env_secret:
         cfg.feishu_secret = env_secret
-
-    env_site_enabled = os.environ.get("TC_SITE_ENABLED")
-    if env_site_enabled is not None and env_site_enabled != "":
-        cfg.site.enabled = env_site_enabled.strip().lower() not in ("0", "false", "no", "off")
 
     env_db = os.environ.get("TC_DB")
     if env_db:
