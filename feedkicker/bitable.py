@@ -1,10 +1,13 @@
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
+import os
 import re
 import shutil
 import subprocess
+import tempfile
 from datetime import UTC, datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -78,6 +81,20 @@ def _data(proc) -> dict:
         return out.get("data") or {}
     except json.JSONDecodeError:
         return {}
+
+
+@contextlib.contextmanager
+def _json_arg(payload: dict):
+    # lark-cli 的 --json 不支持 stdin、@文件只接受 cwd 内相对路径；
+    # 大批记录走 argv 会超 ARG_MAX（Errno 7 Argument list too long），落临时文件传引用
+    fd, tmp_path = tempfile.mkstemp(prefix=".lark-json-", suffix=".json", dir=".")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False)
+        yield "--json", f"@./{os.path.basename(tmp_path)}"
+    finally:
+        with contextlib.suppress(OSError):
+            os.unlink(tmp_path)
 
 
 def base_url(app_token: str) -> str:
@@ -398,18 +415,17 @@ def sync_records(app_token: str, table_id: str, items: list[dict], env_name: str
     total_ok = True
     for i in range(0, len(picked), _CHUNK):
         chunk = picked[i : i + _CHUNK]
-        payload = json.dumps(
-            {"create_records": [_cell(it, now_iso, env_name) for it in chunk]}, ensure_ascii=False
-        )
-        proc = _run(
-            [
-                "base", "+record-batch-create",
-                "--base-token", app_token,
-                "--table-id", table_id,
-                "--json", payload,
-            ],
-            timeout=300,
-        )
+        payload = {"create_records": [_cell(it, now_iso, env_name) for it in chunk]}
+        with _json_arg(payload) as (jflag, jval):
+            proc = _run(
+                [
+                    "base", "+record-batch-create",
+                    "--base-token", app_token,
+                    "--table-id", table_id,
+                    jflag, jval,
+                ],
+                timeout=300,
+            )
         if not _ok(proc):
             total_ok = False
             log.warning("Bitable 批量写入失败（第 %d 批 %d 条）", i // _CHUNK + 1, len(chunk))

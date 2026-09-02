@@ -5,6 +5,7 @@ import json
 import sqlite3
 from datetime import datetime, timedelta, timezone
 from email.utils import format_datetime
+from pathlib import Path
 
 import pytest
 
@@ -46,6 +47,14 @@ def days_ago(n: int) -> str:
 
 def make_conn() -> sqlite3.Connection:
     return store.connect(":memory:")
+
+
+def _json_from_args(args: list[str]):
+    raw = args[args.index("--json") + 1]
+    if raw.startswith("@"):
+        with open(raw[1:], encoding="utf-8") as f:
+            return json.load(f)
+    return json.loads(raw)
 
 
 def make_cfg(feeds: list[Feed], **site_kwargs) -> Config:
@@ -590,7 +599,7 @@ def test_bitable_dedup_filters(monkeypatch):
 
     def fake_run(args, stdin_text=None, timeout=120):
         if "+record-batch-create" in args:
-            payload = json.loads(args[args.index("--json") + 1])
+            payload = _json_from_args(args)
             calls.append(len(payload["create_records"]))
             return FakeProc(0, stdout="{}")
         return FakeProc(0, stdout="{}")
@@ -610,6 +619,40 @@ def test_bitable_dedup_filters(monkeypatch):
     )
     assert bitable.sync_records("app", "tbl", items, env_name="dev") is True
     assert calls == [200, 50]
+
+
+def test_bitable_large_payload_uses_file_not_argv(monkeypatch, tmp_path):
+    # #112：200 条大摘要走 argv 会超 ARG_MAX（Argument list too long），必须走 @临时文件
+    from feedkicker import bitable
+
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr(bitable, "existing_links", lambda a, t: set())
+    argv_sizes = []
+    file_seen = {}
+
+    def fake_run(args, stdin_text=None, timeout=300):
+        if "+record-batch-create" in args:
+            ref = args[args.index("--json") + 1]
+            assert ref.startswith("@./"), "大 payload 必须走 @文件 引用"
+            file_seen["exists_during_call"] = Path(ref[1:]).exists()
+            argv_sizes.append(sum(len(a) for a in args))
+            payload = _json_from_args(args)
+            assert len(payload["create_records"]) <= 200
+            return FakeProc(0, stdout="{}")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+
+    items = [
+        {"feed_id": "F", "entry_key": f"k{i}", "title": "t" * 50,
+         "url": f"https://e.com/{i}", "description": "长摘要" * 2000,
+         "published_at": None, "pushed_at": None}
+        for i in range(250)
+    ]
+    assert bitable.sync_records("app", "tbl", items) is True
+    assert file_seen.get("exists_during_call") is True
+    assert argv_sizes and max(argv_sizes) < 50_000  # argv 远低于 ARG_MAX，payload 在文件里
+    assert not list(Path().glob(".lark-json-*.json"))  # 临时文件已清理
 
 
 def test_bitable_cell_fields(monkeypatch):
@@ -692,7 +735,7 @@ def test_bitable_cell_archive_date_fallback_dedup_batch(monkeypatch):
     payloads = []
     def fake_run(args, stdin_text=None, timeout=120):
         if "+record-batch-create" in args:
-            payload = json.loads(args[args.index("--json") + 1])
+            payload = _json_from_args(args)
             payloads.append(payload["create_records"])
             return FakeProc(0, stdout="{}")
         return FakeProc(0, stdout="{}")
@@ -758,7 +801,7 @@ def test_bitable_cell_archive_date_fallback(monkeypatch, scenario):
         payloads = []
         def fake_run(args, stdin_text=None, timeout=120):
             if "+record-batch-create" in args:
-                payload = json.loads(args[args.index("--json") + 1])
+                payload = _json_from_args(args)
                 payloads.append(payload["create_records"])
                 return FakeProc(0, stdout="{}")
             return FakeProc(0, stdout="{}")
@@ -867,7 +910,7 @@ def test_bitable_sync_env_roundtrip(monkeypatch):
 
     def fake_run(args, stdin_text=None, timeout=300):
         if "+record-batch-create" in args:
-            payload = json.loads(args[args.index("--json") + 1])
+            payload = _json_from_args(args)
             payloads.append(payload["create_records"])
             return FakeProc(0, stdout="{}")
         return FakeProc(0, stdout="{}")
@@ -916,7 +959,7 @@ def test_bitable_views_grouping_not_empty(monkeypatch):
             sort_payloads.append(payload)
             return FakeProc(0, stdout="{}")
         if "+record-batch-create" in args:
-            payload = json.loads(args[args.index("--json") + 1])
+            payload = _json_from_args(args)
             batch_records.extend(payload.get("create_records") or [])
             return FakeProc(0, stdout="{}")
         if "+view-list" in args:
