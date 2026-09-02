@@ -46,6 +46,32 @@ class BitableConf:
 
 
 @dataclass
+class SalonConf:
+    enabled: bool = False
+    app_token: str = ""
+    table_id: str = ""
+    wiki_space_id: str = ""
+    wiki_parent_token: str = ""
+    trigger_weekday: int = 4
+    trigger_hour: int = 10
+    trigger_minute: int = 0
+
+
+@dataclass
+class MinimaxConf:
+    api_key: str = ""
+    model: str = "MiniMax-M3"
+    base_url: str = "https://api.minimaxi.com"
+
+
+@dataclass
+class WikiConf:
+    space_id: str = ""
+    parent_token: str = ""
+    app_token: str = ""
+
+
+@dataclass
 class Config:
     app_env: str = "prod"
     feishu_webhook: str = ""
@@ -56,6 +82,9 @@ class Config:
     db_path: Path = DEFAULT_DB_PATH
     site: SiteConf = field(default_factory=SiteConf)
     bitable: BitableConf = field(default_factory=BitableConf)
+    salon: SalonConf = field(default_factory=SalonConf)
+    minimax: MinimaxConf = field(default_factory=MinimaxConf)
+    wiki: WikiConf = field(default_factory=WikiConf)
 
 
 def load_config(
@@ -105,6 +134,48 @@ def load_config(
         table_id=str(bt_raw.get("table_id") or ""),
         url=str(bt_raw.get("url") or ""),
     )
+
+    salon_raw = raw.get("salon") or {}
+    cfg.salon = SalonConf(
+        enabled=bool(salon_raw.get("enabled", cfg.salon.enabled)),
+        app_token=str(salon_raw.get("app_token") or ""),
+        table_id=str(salon_raw.get("table_id") or ""),
+        wiki_space_id=str(salon_raw.get("wiki_space_id") or salon_raw.get("wiki_space") or ""),
+        wiki_parent_token=str(salon_raw.get("wiki_parent_token") or ""),
+        trigger_weekday=int(salon_raw.get("trigger_weekday", cfg.salon.trigger_weekday)),
+        trigger_hour=int(salon_raw.get("trigger_hour", cfg.salon.trigger_hour)),
+        trigger_minute=int(salon_raw.get("trigger_minute", cfg.salon.trigger_minute)),
+    )
+
+    minimax_raw = raw.get("minimax") or {}
+    if not minimax_raw and salon_raw.get("minimax_api_key"):
+        minimax_raw = {"api_key": salon_raw.get("minimax_api_key")}
+    cfg.minimax = MinimaxConf(
+        api_key=str(minimax_raw.get("api_key") or minimax_raw.get("minimax_api_key") or ""),
+        model=str(minimax_raw.get("model") or cfg.minimax.model),
+        base_url=str(minimax_raw.get("base_url") or cfg.minimax.base_url),
+    )
+
+    wiki_raw = raw.get("wiki") or {}
+    cfg.wiki = WikiConf(
+        space_id=str(wiki_raw.get("space_id") or wiki_raw.get("wiki_space_id") or salon_raw.get("wiki_space_id") or ""),
+        parent_token=str(wiki_raw.get("parent_token") or wiki_raw.get("wiki_parent_token") or salon_raw.get("wiki_parent_token") or ""),
+        app_token=str(wiki_raw.get("app_token") or ""),
+    )
+    if not cfg.wiki.space_id and cfg.salon.wiki_space_id:
+        cfg.wiki.space_id = cfg.salon.wiki_space_id
+    if not cfg.wiki.parent_token and cfg.salon.wiki_parent_token:
+        cfg.wiki.parent_token = cfg.salon.wiki_parent_token
+
+    env_minimax = os.environ.get("MiniMax_Key") or os.environ.get("MINIMAX_API_KEY")
+    if env_minimax:
+        cfg.minimax.api_key = env_minimax
+    if cfg.minimax.api_key and cfg.minimax.api_key.strip().startswith("<"):
+        cfg.minimax.api_key = ""
+
+    env_salon_token = os.environ.get("TC_SALON_TOKEN")
+    if env_salon_token:
+        cfg.salon.app_token = env_salon_token
 
     env_webhook = os.environ.get("FEISHU_WEBHOOK")
     if env_webhook:

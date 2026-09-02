@@ -1,0 +1,53 @@
+feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/<prod-token>"
+feishu_secret: "<prod-secret>"
+bootstrap_days: 3
+site:
+  enabled: false
+http:
+  timeout_seconds: 20
+  user_agent: "rss2feishu/0.2 (+local cron; private)"
+feeds:
+  - name: "量子位"
+    url: "https://www.qbitai.com/feed"
+  - name: "雷峰网"
+    url: "https://www.leiphone.com/feed"
+  - name: "爱范儿"
+    url: "https://www.ifanr.com/feed"
+  - name: "少数派"
+    url: "https://sspai.com/feed"
+  - name: "Solidot"
+    url: "https://www.solidot.org/index.rss"
+  - name: "InfoQ 中文"
+    url: "https://www.infoq.cn/feed.xml"
+  - name: "Simon Willison"
+    url: "https://simonwillison.net/atom/everything/"
+  - name: "TechCrunch AI"
+    url: "https://techcrunch.com/category/artificial-intelligence/feed/"
+  - name: "The Verge AI"
+    url: "https://www.theverge.com/rss/ai-artificial-intelligence/index.xml"
+  - name: "HN AI 高赞"
+    url: "https://hnrss.org/newest?q=AI&points=100"
+  - name: "HN 热榜"
+    url: "https://news.ycombinator.com/rss"
+bitable:
+  enabled: true
+  app_token: "<prod-app-token>"
+  table_id: "<prod-table-id>"
+  url: "https://web91vfvm7.feishu.cn/base/<prod-app-token>"
+salon:
+  enabled: true
+  app_token: "TikpbwV0oaFAnYsoMCxchMRyncr"
+  table_id: "tblNPcbupKIBzLAx"
+  wiki_space_id: "<wiki-space-id>"
+  wiki_parent_token: "<wiki-parent-token>"
+  trigger_weekday: 4
+  trigger_hour: 10
+  trigger_minute: 0
+minimax:
+  api_key: "<minimax-key via MiniMax_Key env>"
+  model: "MiniMax-M3"
+  base_url: "https://api.minimaxi.com"
+wiki:
+  space_id: "<wiki-space-id>"
+  parent_token: "<wiki-parent-token>"
+  app_token: "<wiki-app-token>"

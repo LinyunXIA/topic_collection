@@ -1,0 +1,33 @@
+feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/<test-token>"
+feishu_secret: "<test-secret>"
+bootstrap_days: 1
+site:
+  enabled: false
+http:
+  timeout_seconds: 20
+  user_agent: "rss2feishu/0.2 (local test; private)"
+feeds:
+  - name: "量子位"
+    url: "https://www.qbitai.com/feed"
+bitable:
+  enabled: true
+  app_token: "<test-app-token>"
+  table_id: "<test-table-id>"
+  url: "https://web91vfvm7.feishu.cn/base/<test-app-token>"
+salon:
+  enabled: true
+  app_token: "TikpbwV0oaFAnYsoMCxchMRyncr"
+  table_id: "tblNPcbupKIBzLAx"
+  wiki_space_id: "<wiki-space-id>"
+  wiki_parent_token: "<wiki-parent-token>"
+  trigger_weekday: 4
+  trigger_hour: 10
+  trigger_minute: 0
+minimax:
+  api_key: "<minimax-key via MiniMax_Key env>"
+  model: "MiniMax-M3"
+  base_url: "https://api.minimaxi.com"
+wiki:
+  space_id: "<wiki-space-id>"
+  parent_token: "<wiki-parent-token>"
+  app_token: "<wiki-app-token>"

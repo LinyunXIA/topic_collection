@@ -42,6 +42,8 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     cols = {r[1] for r in conn.execute("PRAGMA table_info(articles)")}
     if "bitable_synced_at" not in cols:
         conn.execute("ALTER TABLE articles ADD COLUMN bitable_synced_at TEXT")
+    if "ppt_synced_at" not in cols:
+        conn.execute("ALTER TABLE articles ADD COLUMN ppt_synced_at TEXT")
     conn.commit()
     return conn
 
@@ -200,3 +202,48 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
         (key, value),
     )
     conn.commit()
+
+
+def select_unsynced_topics(conn: sqlite3.Connection) -> list[dict]:
+    rows = conn.execute(
+        "SELECT feed_id, entry_key, title, url, description, published_at, pushed_at, first_seen, bitable_synced_at, ppt_synced_at"
+        " FROM articles WHERE ppt_synced_at IS NULL"
+        " ORDER BY first_seen, feed_id"
+    ).fetchall()
+    keys = (
+        "feed_id",
+        "entry_key",
+        "title",
+        "url",
+        "description",
+        "published_at",
+        "pushed_at",
+        "first_seen",
+        "bitable_synced_at",
+        "ppt_synced_at",
+    )
+    return [dict(zip(keys, r)) for r in rows]
+
+
+def mark_ppt_synced(conn: sqlite3.Connection, items: list, now_iso: str) -> None:
+    if not items:
+        return
+    if isinstance(items[0], dict):
+        conn.executemany(
+            "UPDATE articles SET ppt_synced_at = ? WHERE feed_id = ? AND entry_key = ?",
+            [(now_iso, it["feed_id"], it["entry_key"]) for it in items],
+        )
+    else:
+        conn.executemany(
+            "UPDATE articles SET ppt_synced_at = ? WHERE entry_key = ?",
+            [(now_iso, rid) for rid in items],
+        )
+    conn.commit()
+
+
+def get_ppt_last_status(conn: sqlite3.Connection, record_id: str) -> str:
+    return get_meta(conn, f"ppt_last_status_{record_id}", "")
+
+
+def set_ppt_last_status(conn: sqlite3.Connection, record_id: str, status: str) -> None:
+    set_meta(conn, f"ppt_last_status_{record_id}", status)

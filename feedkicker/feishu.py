@@ -41,7 +41,12 @@ def _assemble(
     total: int = 0,
     detail_url: str | None = None,
     detail_label: str = "📰 详情见在线表格",
+    wiki_urls: list[str] | None = None,
+    wiki_label: str = "📖 查看大纲",
 ) -> dict:
+    wiki_urls = [u for u in (wiki_urls or []) if u]
+    if not (content or "").strip() and wiki_urls:
+        content = f"📖 已生成 {len(wiki_urls)} 份大纲"
     elements = [{"tag": "div", "text": {"tag": "lark_md", "content": content}}]
     if feed_fails:
         elements += [
@@ -65,6 +70,46 @@ def _assemble(
         elements += [
             {"tag": "div", "text": {"tag": "lark_md", "content": f"[{detail_label}]({detail_url})"}}
         ]
+    if wiki_urls:
+        if len(wiki_urls) == 1:
+            url = wiki_urls[0]
+            elements += [
+                {
+                    "tag": "action",
+                    "actions": [
+                        {
+                            "tag": "button",
+                            "text": {"tag": "plain_text", "content": wiki_label},
+                            "url": url,
+                            "type": "default",
+                        }
+                    ],
+                }
+            ]
+            elements += [
+                {"tag": "div", "text": {"tag": "lark_md", "content": f"[{wiki_label}]({url})"}}
+            ]
+        else:
+            for idx, url in enumerate(wiki_urls, 1):
+                label = f"{wiki_label} {idx}" if len(wiki_urls) > 1 else wiki_label
+                elements += [
+                    {
+                        "tag": "action",
+                        "actions": [
+                            {
+                                "tag": "button",
+                                "text": {"tag": "plain_text", "content": label},
+                                "url": url,
+                                "type": "default",
+                            }
+                        ],
+                    }
+                ]
+            for idx, url in enumerate(wiki_urls, 1):
+                label = f"{wiki_label} {idx}" if len(wiki_urls) > 1 else wiki_label
+                elements += [
+                    {"tag": "div", "text": {"tag": "lark_md", "content": f"[{label}]({url})"}}
+                ]
     if dropped:
         elements += [
             {"tag": "div", "text": {"tag": "lark_md", "content": f"… 已截断 {dropped} 条旧条目"}}
@@ -101,6 +146,8 @@ def build_card(
     detail_url: str | None = None,
     max_bytes: int = _MAX_BODY_BYTES,
     detail_label: str = "📰 详情见在线表格",
+    wiki_urls: list[str] | None = None,
+    wiki_label: str = "📖 查看大纲",
 ) -> dict:
     by_feed: dict[str, list[dict]] = {}
     for it in new_items:
@@ -151,7 +198,7 @@ def build_card(
 
     def fits(show_desc: bool, dropped: int) -> bool:
         body = json.dumps(
-            _assemble(render(show_desc), feed_fails, dropped, total, detail_url, detail_label),
+            _assemble(render(show_desc), feed_fails, dropped, total, detail_url, detail_label, wiki_urls, wiki_label),
             ensure_ascii=False,
         )
         return len(body.encode("utf-8")) <= max_bytes
@@ -167,7 +214,7 @@ def build_card(
         selected.pop()
         dropped += 1
 
-    return _assemble(render(show_desc), feed_fails, dropped, total, detail_url, detail_label)
+    return _assemble(render(show_desc), feed_fails, dropped, total, detail_url, detail_label, wiki_urls, wiki_label)
 
 
 def _post(
