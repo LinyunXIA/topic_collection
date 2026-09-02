@@ -71,16 +71,31 @@ def _run(args: list[str], stdin_text: str | None = None, timeout: float = 120):
     return proc
 
 
+def _parse(proc) -> tuple[bool, dict]:
+    # lark-cli 业务失败时退出码仍为 0，失败信号在 stdout JSON 顶层 ok:false；
+    # 非 JSON 输出（markdown/help）以 returncode 判定
+    if proc is None or proc.returncode != 0:
+        return False, {}
+    raw = (proc.stdout or "").strip()
+    if not raw or raw[0] not in "{[":
+        return True, {}
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return True, {}
+    if isinstance(obj, dict) and obj.get("ok") is False:
+        err = obj.get("error") or {}
+        log.warning("lark-cli 业务失败: %s", str(err.get("message") or err)[:300])
+        return False, {}
+    return True, (obj.get("data") or {})
+
+
 def _ok(proc) -> bool:
-    return proc is not None and proc.returncode == 0
+    return _parse(proc)[0]
 
 
 def _data(proc) -> dict:
-    try:
-        out = json.loads(proc.stdout or "{}")
-        return out.get("data") or {}
-    except json.JSONDecodeError:
-        return {}
+    return _parse(proc)[1]
 
 
 @contextlib.contextmanager
@@ -372,7 +387,8 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
             timeout=120,
         )
         if not _ok(proc):
-            break
+            # 拉不到已有链接集合时必须中止：返回空集会让全量被当新记录写入，造成重复行
+            raise RuntimeError("拉取多维表格已有链接失败，中止本次同步以避免重复写入")
         data = _data(proc)
         fields = data.get("fields") or []
         if "链接" not in fields:

@@ -37,9 +37,13 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             store.bump_fail(conn, feed.name, feed.url)
             log.error("源 %s (%s) 抓取失败: %s", feed.name, feed.url, e)
 
+    # 首跑标记只盖成功抓到内容的源：新源首跑即失败时保留未首跑状态，
+    # 恢复后仍按冷启动窗口过滤历史（F4），避免全量历史当新条目推送
+    ok_feed_objs = [f for f in cfg.feeds if f.name in set(ok_feeds)]
+
     pending = store.select_pending(conn)
     if not pending:
-        store.update_first_run_all(conn, cfg.feeds, now)
+        store.update_first_run_all(conn, ok_feed_objs, now)
         log.info("运行完成：无新条目，失败源 %d 个", feed_fails)
         return 0
 
@@ -117,7 +121,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             )
             store.set_meta(conn, PUSH_FAIL_STREAK_KEY, "0")
 
-    store.update_first_run_all(conn, cfg.feeds, now)
+    store.update_first_run_all(conn, ok_feed_objs, now)
     return 0 if ok else 1
 
 

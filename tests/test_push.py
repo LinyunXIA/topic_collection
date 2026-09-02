@@ -581,6 +581,42 @@ def test_run_sos_after_three_failures(monkeypatch):
     conn.close()
 
 
+def test_first_run_failure_then_recovery_applies_window(monkeypatch):
+    # #113：新源首跑抓取失败不得盖 first_run_at；恢复后仍开冷启动窗口
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+
+    def boom(url, http):
+        raise ValueError("源挂了")
+
+    monkeypatch.setattr(push, "fetch_feed", boom)
+    rc = push.run(cfg, conn)
+    assert rc == 0
+    assert store.is_first_run(conn, "F")  # 失败不盖戳
+
+    entries = parse_content(
+        rss(
+            item("old", "https://e.com/old", pubdate=days_ago(10)),
+            item("new", "https://e.com/new", pubdate=days_ago(1)),
+        )
+    )
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    sent = []
+    monkeypatch.setattr(feishu, "send", lambda p, *a, **kw: sent.append(p) or True)
+
+    rc = push.run(cfg, conn)
+    assert rc == 0
+    assert not store.is_first_run(conn, "F")  # 成功首跑后盖戳
+    content = sent[0]["card"]["elements"][0]["text"]["content"]
+    assert "https://e.com/new" in content
+    assert "https://e.com/old" not in content  # 窗口生效，旧文不推
+    old_row = conn.execute(
+        "SELECT pushed_at FROM articles WHERE url = 'https://e.com/old'"
+    ).fetchone()
+    assert old_row and old_row[0]  # 旧文入档但标记不推
+    conn.close()
+
+
 def test_store_sync_roundtrip():
     conn = make_conn()
     store.download(conn, "F", SAMPLE_ENTRIES, "2026-08-25T00:00:00Z")
@@ -937,6 +973,53 @@ def test_bitable_sync_env_rejects_empty_config(monkeypatch):
                         lambda bt, e: {"app_token": "", "table_id": "", "url": ""})
     with pytest.raises(RuntimeError, match="初始化不完整"):
         bitable.sync_env(empty_bt, "prod", conn)
+    conn.close()
+
+
+def test_bitable_sync_aborts_when_existing_links_fail(monkeypatch):
+    # #114：record-list 拉取已有链接失败（rc=0 + ok:false）必须中止，不得拿空集合继续写
+    from feedkicker import bitable
+
+    created = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+record-list" in args:
+            return FakeProc(0, stdout=json.dumps(
+                {"ok": False, "error": {"type": "api", "message": "api boom"}}))
+        if "+record-batch-create" in args:
+            created.append(_json_from_args(args))
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+    items = [{"feed_id": "F", "entry_key": "k", "title": "t", "url": "https://e.com/1",
+              "description": "", "published_at": None, "pushed_at": None}]
+    with pytest.raises(RuntimeError, match="已有链接"):
+        bitable.sync_records("app", "tbl", items)
+    assert created == []
+
+
+def test_bitable_sync_env_ok_false_not_marked(monkeypatch):
+    # #114：批量写入 API 报错（rc=0 + ok:false）视为失败：sync_env 抛错且不打同步标
+    from feedkicker import bitable
+
+    conn = make_conn()
+    store.download(conn, "F", SAMPLE_ENTRIES, "2026-08-25T00:00:00Z")
+    monkeypatch.setattr(bitable, "ensure_initialized",
+                        lambda bt, env: {"app_token": "app-x", "table_id": "tbl-x",
+                                         "url": "https://x.test/base"})
+
+    def fake_run(args, stdin_text=None, timeout=300):
+        if "+record-batch-create" in args:
+            return FakeProc(0, stdout=json.dumps(
+                {"ok": False, "error": {"type": "api", "message": "denied"}}))
+        return FakeProc(0, stdout=json.dumps({"data": {"fields": ["链接"], "data": []}}))
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+    bt = type("BT", (), {"enabled": True, "app_token": "app-x",
+                         "table_id": "tbl-x", "url": ""})()
+    with pytest.raises(RuntimeError):
+        bitable.sync_env(bt, "prod", conn)
+    assert len(store.select_unsynced(conn)) == 2
     conn.close()
 
 
