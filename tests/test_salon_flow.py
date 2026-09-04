@@ -333,14 +333,18 @@ def test_salon_flow_full_chain_via_httpx_subprocess(monkeypatch):
     cfg = _cfg(monkeypatch)
     conn = store.connect(":memory:")
 
-    # mock subprocess lark-cli for fetch + wiki upload
+    # mock subprocess lark-cli for fetch + wiki docx create
     def fake_run(args, stdin_text=None, timeout=120):
         if "+record-list" in args or "record-list" in args:
             assert "--filter-json" in args
             payload = {"records": [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "低层话题"}}]}
             return FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False))
-        if "+upload" in args or "upload" in args:
-            return FakeProc(0, stdout=json.dumps({"data": {"wiki_token": "wik_low_mock"}}, ensure_ascii=False))
+        if args[:2] == ["docs", "+create"]:
+            assert "--doc-format" in args and args[args.index("--doc-format") + 1] == "markdown"
+            assert args[args.index("--content") + 1].startswith("@./")
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"document": {"document_id": "docx_low_001"}}}, ensure_ascii=False))
+        if args[:2] == ["wiki", "+node-get"]:
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"node_token": "wik_low_node", "obj_token": "docx_low_001", "obj_type": "docx"}}, ensure_ascii=False))
         return FakeProc(0, stdout=json.dumps({"data": {}}, ensure_ascii=False))
 
     monkeypatch.setattr(bt, "_run", fake_run)
@@ -361,16 +365,12 @@ def test_salon_flow_full_chain_via_httpx_subprocess(monkeypatch):
             outline = {"title": "大纲-" + last[:4], "slides": [{"heading": f"H{i}", "bullets": ["a", "b", "c"], "speaker_note": "n"} for i in range(1, 7)]}
             data = {"choices": [{"message": {"tool_calls": [{"function": {"name": "generate_ppt_outline", "arguments": _j.dumps(outline, ensure_ascii=False)}}]}}]}
             return FakeResp(200, data)
-        if "wiki/v2" in url:
-            return FakeResp(200, {"code": 0, "data": {"wiki_token": "wik_low_mock"}})
         if "hook.test" in url:
             return FakeResp(200, {"StatusCode": 0, "code": 0})
         return FakeResp(200, {"code": 0, "data": {}})
 
     import feedkicker.minimax as mm
-    import feedkicker.wiki as wk
     monkeypatch.setattr(mm.httpx, "post", fake_httpx_post)
-    monkeypatch.setattr(wk.httpx, "post", fake_httpx_post)
     import feedkicker.feishu as fs
     monkeypatch.setattr(fs.httpx, "post", fake_httpx_post)
 
@@ -417,20 +417,96 @@ def test_salon_flow_minimax_tool_calls_real_parse_via_httpx(monkeypatch):
     conn.close()
 
 
-def test_salon_flow_wiki_subprocess_httpx_mocked(monkeypatch):
+def test_salon_flow_wiki_docx_create_path(monkeypatch):
+    """docs +create 在 wiki 节点下建 docx，node-get 反查 node_token 拼 /wiki/ 链接（#133）"""
     import feedkicker.wiki as wk
     from feedkicker import bitable as bt
 
-    def fake_run(args, stdin_text=None, timeout=120):
-        return FakeResp and FakeProc(0, stdout=json.dumps({"data": {"wiki_token": "wik_up_001"}}, ensure_ascii=False))  # type: ignore
+    seen = []
 
-    monkeypatch.setattr(bt, "_run", lambda args, stdin_text=None, timeout=120: FakeProc(0, stdout=json.dumps({"data": {"wiki_token": "wik_up_001"}}, ensure_ascii=False)))
-    monkeypatch.setattr(wk.httpx, "post", lambda url, json=None, headers=None, timeout=None, **kw: FakeResp(200, {"code": 0, "data": {"wiki_token": "wik_up_001"}}))
-    url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题/Wiki\\检验", "# md\n", dry_run=False)
-    assert "wik_up_001" in url
-    # ensure relative path constraint satisfied (internal asserts)
+    def fake_run(args, stdin_text=None, timeout=120):
+        seen.append(args)
+        if args[:2] == ["docs", "+create"]:
+            assert args[args.index("--parent-token") + 1] == "parent"
+            assert args[args.index("--doc-format") + 1] == "markdown"
+            assert args[args.index("--title") + 1] == "话题_Wiki_检验_2026-09-04_大纲"
+            content_arg = args[args.index("--content") + 1]
+            assert content_arg.startswith("@./") and content_arg.endswith(".md")
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"document": {"document_id": "docx_new_001", "url": "https://web91vfvm7.feishu.cn/docx/docx_new_001"}}}, ensure_ascii=False))
+        if args[:2] == ["wiki", "+node-get"]:
+            assert args[args.index("--node-token") + 1] == "docx_new_001"
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"node_token": "wiknode_001", "obj_token": "docx_new_001", "obj_type": "docx"}}, ensure_ascii=False))
+        raise AssertionError(f"未预期的 lark-cli 调用: {args}")
+
+    monkeypatch.setattr(bt, "_run", fake_run)
+    url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题/Wiki\\检验", "# md\n", dry_run=False, date_str="2026-09-04")
+    assert url == "https://web91vfvm7.feishu.cn/wiki/wiknode_001"
+    # 不得再走 drive upload / httpx move 的旧 file 路径
+    assert not any("upload" in a for a in seen)
+    # 文件名/标题工具函数
     assert wk.sanitize_topic("a/b\\c") == "a_b_c"
     assert wk.build_filename("a/b", date_str="2026-09-03") == "a_b_2026-09-03_大纲.md"
+    assert wk.build_doc_title("a/b", date_str="2026-09-03") == "a_b_2026-09-03_大纲"
+    assert wk.docx_url("docx_x") == "https://web91vfvm7.feishu.cn/docx/docx_x"
+
+
+def test_salon_flow_wiki_docx_create_business_failure_raises(monkeypatch):
+    """docs +create 业务失败（rc=0 但 ok:false）必须抛错，不得静默返回假链接（#133）"""
+    import feedkicker.wiki as wk
+    from feedkicker import bitable as bt
+
+    monkeypatch.setattr(bt, "_run", lambda args, stdin_text=None, timeout=120: FakeProc(
+        0, stdout=json.dumps({"ok": False, "error": {"message": "no permission on parent"}}, ensure_ascii=False)))
+    raised = False
+    try:
+        wk.create_wiki_doc_from_md("app", "spc", "parent", "话题", "# md\n", dry_run=False)
+    except RuntimeError as e:
+        raised = True
+        assert "Wiki docx 创建失败" in str(e)
+    assert raised
+
+
+def test_salon_flow_wiki_nodeget_retry_then_success(monkeypatch):
+    """node-get 首次 131005（新建传播延迟），重试成功 → 返回 /wiki/ 规范链接（#133）"""
+    import feedkicker.wiki as wk
+    from feedkicker import bitable as bt
+
+    seq = {"n": 0}
+    monkeypatch.setattr(wk.time, "sleep", lambda *_: None)
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if args[:2] == ["docs", "+create"]:
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"document": {"document_id": "docx_rt_003"}}}, ensure_ascii=False))
+        if args[:2] == ["wiki", "+node-get"]:
+            seq["n"] += 1
+            if seq["n"] == 1:
+                return FakeProc(0, stdout=json.dumps({"ok": False, "error": {"code": 131005, "message": "not found"}}, ensure_ascii=False))
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"node_token": "wiknode_rt", "obj_type": "docx"}}, ensure_ascii=False))
+        raise AssertionError(f"未预期的 lark-cli 调用: {args}")
+
+    monkeypatch.setattr(bt, "_run", fake_run)
+    url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题", "# md\n", dry_run=False)
+    assert url == "https://web91vfvm7.feishu.cn/wiki/wiknode_rt"
+    assert seq["n"] == 2
+
+
+def test_salon_flow_wiki_nodeget_failure_fallback_docx_url(monkeypatch):
+    """docx 已建成但 node-get 重试仍失败：回退 /docx/ 链接保证可用，不丢已建文档（#133）"""
+    import feedkicker.wiki as wk
+    from feedkicker import bitable as bt
+
+    monkeypatch.setattr(wk.time, "sleep", lambda *_: None)
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if args[:2] == ["docs", "+create"]:
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"document": {"document_id": "docx_fb_002"}}}, ensure_ascii=False))
+        if args[:2] == ["wiki", "+node-get"]:
+            return FakeProc(0, stdout=json.dumps({"ok": False, "error": {"message": "node 131005 not_found"}}, ensure_ascii=False))
+        raise AssertionError(f"未预期的 lark-cli 调用: {args}")
+
+    monkeypatch.setattr(bt, "_run", fake_run)
+    url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题", "# md\n", dry_run=False)
+    assert url == "https://web91vfvm7.feishu.cn/docx/docx_fb_002"
 
 
 def test_salon_flow_flip_twice_regen_with_ppt_synced(monkeypatch):
@@ -494,9 +570,9 @@ def test_salon_flow_dry_run_no_db_write_and_no_httpx(monkeypatch):
     monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not call feishu.send")))
     import feedkicker.minimax as mm
     monkeypatch.setattr(mm.httpx, "post", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not hit minimax httpx")))
-    # wiki 内部的 httpx 也不应被 dry-run 触发（create_wiki 早期 return）
-    import feedkicker.wiki as wk
-    monkeypatch.setattr(wk.httpx, "post", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not hit wiki httpx")))
+    # dry-run 不应 spawn 任何 lark-cli 子进程（topic/wiki 均已 mock 或早退）
+    from feedkicker import bitable as bt
+    monkeypatch.setattr(bt, "_run", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not spawn lark-cli")))
 
     rc = sf.run(cfg, conn, dry_run=True)
     assert rc == 0
