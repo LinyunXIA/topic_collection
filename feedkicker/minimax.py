@@ -91,7 +91,7 @@ def call_minimax_chat(
     model: str = "MiniMax-M3",
     api_key: str | None = None,
     base_url: str = "https://api.minimaxi.com",
-    timeout: float = 60,
+    timeout: float = 180,
 ) -> dict:
     key = _resolve_api_key(api_key)
     if not key:
@@ -108,7 +108,13 @@ def call_minimax_chat(
     }
     last_data: dict | None = None
     for attempt in range(2):
-        resp = httpx.post(url, json=payload, headers=headers, timeout=timeout)
+        try:
+            resp = httpx.post(url, json=payload, headers=headers, timeout=timeout)
+        except httpx.TimeoutException as e:
+            log.warning("MiniMax 读超时（%ss）attempt %d/2", timeout, attempt + 1)
+            if attempt == 0:
+                continue
+            raise RuntimeError(f"MiniMax 读超时（{timeout}s）重试后仍失败: {e}") from e
         try:
             data = resp.json()
         except Exception:  # noqa: BLE001
