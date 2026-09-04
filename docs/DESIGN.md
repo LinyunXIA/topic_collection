@@ -636,3 +636,14 @@ wiki:
 
 - `pyproject.toml [project.scripts] tc-salon = "feedkicker.salon_flow:main"`（与 `tc-push` 并列）
 - 现有 `com.feedkicker.push.plist`（8:30/16:00）保持不变，新增 plist 独立运行
+
+### 19.5 Wiki 归档链路（docx，#133 修正）
+
+- `wiki.create_wiki_doc_from_md(app_token, space_id, parent, title, md, dry_run, date_str)`：
+  1. MD 写 cwd 临时文件（`.wiki-*.md`，lark-cli `@file` 只接受 cwd 内相对路径）；
+  2. `lark-cli docs +create --parent-token <wiki父节点> --title {话题}_{日期}_大纲 --doc-format markdown --content @./.wiki-*.md --json` —— 直接在 wiki 树内创建 **docx** 节点（实测 obj_type=docx），取 `data.document.document_id`；
+  3. `lark-cli wiki +node-get --node-token <document_id> --json` 反查 `data.node_token`（进度信息走 stderr，stdout 为纯 JSON）；新建节点秒级内可能 131005 not_found（传播延迟），间隔 3s 重试 1 次；
+  4. 返回规范链接 `/wiki/<node_token>`。
+- 失败语义：`docs +create` 业务失败（rc=0 但 `ok:false` 或缺 document_id）→ RuntimeError，salon_flow 单条 WARNING 跳过、**不标** ppt_synced；node-get 重试后仍失败但 docx 已建成 → WARNING 并回退 `/docx/<document_id>` 链接（文档可正常打开、不丢已建产物）；节点 obj_type 非 docx → WARNING 但仍返回链接。
+- 节点标题 `{话题}_{日期}_大纲`（docx 无扩展名）；`build_filename()` 的 `.md` 名仅用于临时文件。
+- **弃用路径**：`drive +upload --wiki-token` 只会产出 obj_type=**file** 的附件节点（标题为临时文件名、`docs +fetch` 报 3380002「Only docx is supported」），`move_docs_to_wiki` 兜底对 file 类型无效——该路径与 `_httpx_move`/`_parse_upload_token` 已移除（#133）。

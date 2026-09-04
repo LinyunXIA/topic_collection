@@ -5,10 +5,9 @@ import json
 import logging
 import os
 import tempfile
+import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
-
-import httpx
 
 from feedkicker import bitable
 
@@ -20,7 +19,6 @@ except Exception:
 log = logging.getLogger(__name__)
 
 WIKI_HOST = "https://web91vfvm7.feishu.cn/wiki"
-API_BASE = "https://open.feishu.cn/open-apis"
 
 
 def sanitize_topic(topic: str) -> str:
@@ -46,31 +44,16 @@ def _dry_run_token(title: str) -> str:
     return f"wiki_dry_{safe}"
 
 
-def _parse_upload_token(proc) -> str | None:
-    if proc is None:
-        return None
-    raw = (proc.stdout or "").strip()
-    if raw and raw[0] in "{[":
-        try:
-            obj = json.loads(raw)
-        except json.JSONDecodeError:
-            obj = {}
-        if isinstance(obj, dict):
-            data = obj.get("data") or obj
-            for k in ("wiki_token", "wikiToken", "token", "file_token", "fileToken", "obj_token"):
-                v = data.get(k)
-                if isinstance(v, str) and v:
-                    return v
-            inner = data.get("file") or data.get("wiki") or {}
-            if isinstance(inner, dict):
-                for k in ("wiki_token", "token", "file_token"):
-                    v = inner.get(k)
-                    if isinstance(v, str) and v:
-                        return v
-    tok = raw.split()[-1] if raw else ""
-    if tok and tok.startswith("wik"):
-        return tok
-    return None
+def build_doc_title(topic: str, date_str: str | None = None) -> str:
+    """wiki docx 节点标题：{话题}_{日期}_大纲（不带 .md）"""
+    if date_str is None:
+        date_str = datetime.now(SHANGHAI).strftime("%Y-%m-%d")
+    return f"{sanitize_topic(topic)}_{date_str}_大纲"
+
+
+def docx_url(token: str) -> str:
+    host = WIKI_HOST.rsplit("/wiki", 1)[0]
+    return f"{host}/docx/{token}"
 
 
 @contextlib.contextmanager
@@ -86,61 +69,88 @@ def _md_temp_file(md_content: str, filename: str):
             os.unlink(tmp_path)
 
 
-def _lark_upload(rel_path: str, parent_wiki_token: str):
-    candidates = [
-        ["drive", "+upload", "--file", rel_path, "--wiki-token", parent_wiki_token],
-        ["drive", "upload", "--file", rel_path, "--wiki-token", parent_wiki_token],
-        ["drive", "+upload", "--file", rel_path, "--wiki_token", parent_wiki_token],
+def _lark_doc_create(rel_path: str, parent_wiki_token: str, doc_title: str):
+    # docs +create --parent-token 传 wiki 节点 token 时，直接在 wiki 树内创建 docx
+    # （实测 obj_type=docx）；--content 只接受 cwd 内相对路径 @file
+    args = [
+        "docs", "+create",
+        "--parent-token", parent_wiki_token,
+        "--title", doc_title,
+        "--doc-format", "markdown",
+        "--content", f"@{rel_path}",
+        "--json",
     ]
-    if not parent_wiki_token:
-        candidates = [
-            ["drive", "+upload", "--file", rel_path],
-            ["drive", "upload", "--file", rel_path],
-        ] + candidates
-    last = None
-    for args in candidates[:1]:
-        proc = bitable._run(args, timeout=120)
-        last = proc
-        if proc is not None and bitable._parse(proc)[0]:
-            return proc
-        if proc is not None and proc.returncode == 0:
-            tok = _parse_upload_token(proc)
-            if tok:
-                return proc
-    return last
+    return bitable._run(args, timeout=120)
 
 
-def _httpx_move(app_token: str, space_id: str, parent_wiki_token: str, obj_token: str) -> str | None:
-    if not space_id or not obj_token:
+def _parse_document_id(proc) -> str | None:
+    """docs +create 成功响应 → data.document.document_id"""
+    if proc is None or proc.returncode != 0:
         return None
-    url = f"{API_BASE}/wiki/v2/spaces/{space_id}/nodes/move_docs_to_wiki"
-    payload = {
-        "parent_wiki_token": parent_wiki_token,
-        "obj_type": "docx",
-        "obj_token": obj_token,
-    }
+    raw = (proc.stdout or "").strip()
+    if not raw or raw[0] not in "{[":
+        return None
     try:
-        resp = httpx.post(url, json=payload, timeout=30, headers={"Authorization": f"Bearer {app_token}"} if app_token else None)
-        try:
-            data = resp.json()
-        except Exception:
-            try:
-                data = json.loads(resp.text or "{}")
-            except Exception:
-                data = {}
-        if resp.status_code in (200, 201):
-            if isinstance(data, dict):
-                if data.get("code") not in (None, 0) and data.get("code") != "0":
-                    log.warning("wiki move 业务失败: %s", data)
-                    return None
-                d = data.get("data") or {}
-                tok = d.get("wiki_token") or d.get("wikiToken") or d.get("token") or obj_token
-                return tok
-            return obj_token
-        log.warning("wiki move HTTP %d: %s", resp.status_code, str(data)[:300])
-    except Exception as e:
-        log.warning("wiki move 异常: %s", e)
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(obj, dict):
+        return None
+    data = obj.get("data")
+    if not isinstance(data, dict):
+        return None
+    doc = data.get("document")
+    if isinstance(doc, dict):
+        for k in ("document_id", "documentId", "doc_token"):
+            v = doc.get(k)
+            if isinstance(v, str) and v:
+                return v
+    for k in ("document_id", "documentId", "doc_token", "obj_token"):
+        v = data.get(k)
+        if isinstance(v, str) and v:
+            return v
     return None
+
+
+def _lark_node_get(doc_token: str, attempts: int = 2, wait_seconds: float = 3.0):
+    # node-get 接受 docx obj_token / URL，反查 wiki node_token（进度信息走 stderr，stdout 为纯 JSON）；
+    # docs +create 刚建成的节点秒级内可能 131005 not_found（传播延迟），故短重试一次
+    proc = None
+    for i in range(attempts):
+        proc = bitable._run(["wiki", "+node-get", "--node-token", doc_token, "--json"], timeout=60)
+        node_token, _ = _parse_node(proc)
+        if node_token:
+            return proc
+        ok, _ = bitable._parse(proc) if proc is not None else (False, None)
+        if ok:
+            return proc  # 业务成功但无 node_token，重试无意义
+        log.warning("wiki +node-get 第 %d/%d 次未解析到 node_token（新建节点传播延迟？）", i + 1, attempts)
+        if i < attempts - 1:
+            time.sleep(wait_seconds)
+    return proc
+
+
+def _parse_node(proc) -> tuple[str | None, str | None]:
+    """wiki +node-get 响应 → (node_token, obj_type)"""
+    if proc is None or proc.returncode != 0:
+        return None, None
+    raw = (proc.stdout or "").strip()
+    if not raw or raw[0] not in "{[":
+        return None, None
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return None, None
+    data = obj.get("data") if isinstance(obj, dict) else None
+    if not isinstance(data, dict):
+        return None, None
+    node = data.get("node") if isinstance(data.get("node"), dict) else data
+    nt = node.get("node_token") or node.get("nodeToken")
+    ot = node.get("obj_type") or node.get("objType")
+    return (
+        nt if isinstance(nt, str) and nt else None,
+        ot if isinstance(ot, str) and ot else None,
+    )
 
 
 def create_wiki_doc_from_md(
@@ -152,44 +162,49 @@ def create_wiki_doc_from_md(
     dry_run: bool = False,
     date_str: str | None = None,
 ) -> str:
-    filename = build_filename(title, date_str=date_str)
+    """在 wiki 父节点下创建 docx 并写入 markdown，返回 /wiki/<node_token> 规范链接。
+
+    流程（lark-cli，已实测）：
+    1. ``docs +create --parent-token <wiki节点> --doc-format markdown --content @file``
+       直接在 wiki 树内建 docx（obj_type=docx），取 data.document.document_id；
+    2. ``wiki +node-get --node-token <document_id>`` 反查 node_token 拼规范链接。
+    注意：``drive +upload --wiki-token`` 只会产出 obj_type=file 的附件节点（#133），不可用。
+    app_token/space_id 保留入参兼容调用方，lark-cli 自行鉴权与空间解析。
+    """
+    doc_title = build_doc_title(title, date_str=date_str)
     if dry_run:
-        stub = _dry_run_token(title)
-        url = wiki_url(stub)
+        url = wiki_url(_dry_run_token(title))
         print(url)
         return url
     if not md_content:
         md_content = f"# {title}\n"
-    with _md_temp_file(md_content, filename) as (rel_path, _fname):
+    with _md_temp_file(md_content, build_filename(title, date_str)) as (rel_path, _fname):
         assert not os.path.isabs(rel_path), "必须用相对路径"
         assert rel_path.startswith("./"), "必须用相对路径 ./ 前缀"
-        proc = _lark_upload(rel_path, parent_wiki_token)
-        if proc is not None:
-            ok, _ = bitable._parse(proc)
-            tok = _parse_upload_token(proc)
-            if tok:
-                return wiki_url(tok)
-            if ok:
-                raw = (proc.stdout or "").strip()
-                if raw and "wiki" in raw.lower():
-                    for part in raw.split():
-                        if part.startswith("wik"):
-                            return wiki_url(part.strip())
-                if ok and not tok:
-                    cand = raw.split("/")[-1].strip() if "/" in raw else ""
-                    if cand and len(cand) > 6:
-                        return wiki_url(cand)
-        obj_token = _parse_upload_token(proc) if proc else None
-        if not obj_token:
-            obj_token = _dry_run_token(title)
-        moved = _httpx_move(app_token, space_id, parent_wiki_token, obj_token)
-        if moved:
-            return wiki_url(moved)
-        if proc is not None:
-            tok = _parse_upload_token(proc)
-            if tok:
-                return wiki_url(tok)
-        raise RuntimeError(f"Wiki 写入失败: lark-cli 与 move_docs_to_wiki 均未返回 token (title={title})")
+
+        create_proc = _lark_doc_create(rel_path, parent_wiki_token, doc_title)
+        ok, _ = bitable._parse(create_proc)
+        doc_id = _parse_document_id(create_proc)
+        if not ok or not doc_id:
+            raw = ""
+            if create_proc is not None:
+                raw = (create_proc.stderr or create_proc.stdout or "").strip()
+            raise RuntimeError(
+                f"Wiki docx 创建失败（docs +create ok={ok} document_id={doc_id}）: {raw[:300]}"
+            )
+
+        node_proc = _lark_node_get(doc_id)
+        node_token, obj_type = _parse_node(node_proc)
+        if not node_token:
+            # docx 已建成且挂在 wiki 父节点下，仅 node_token 反查失败：回退 /docx/ 链接保证可用
+            log.warning(
+                "wiki +node-get 未返回 node_token，回退 /docx/ 链接: %s",
+                ((node_proc.stdout if node_proc is not None else "") or "")[:200],
+            )
+            return docx_url(doc_id)
+        if obj_type and obj_type != "docx":
+            log.warning("新建 wiki 节点 obj_type=%s（预期 docx），title=%s", obj_type, doc_title)
+        return wiki_url(node_token)
 
 
 if __name__ == "__main__":
