@@ -14,6 +14,7 @@ bitable:
   app_token: "<dev-app-token>"
   table_id: "<dev-table-id>"
   url: "https://web91vfvm7.feishu.cn/base/<dev-app-token>"
+  retention_days: 365
 salon:
   enabled: true
   app_token: "TikpbwV0oaFAnYsoMCxchMRyncr"

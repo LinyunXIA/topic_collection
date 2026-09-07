@@ -24,6 +24,7 @@ dev = [
 [project.scripts]
 tc-push = "feedkicker.push:main"
 tc-salon = "feedkicker.salon_flow:main"
+tc-purge = "feedkicker.purge:main"
 
 [tool.setuptools.packages.find]
 include = ["feedkicker*"]

@@ -280,7 +280,7 @@ feeds:
 | F16 | 双分组视图 | 「按来源」+「按日期」视图开箱即用，替代日期分表方案 | P1 |
 
 - §15 的电子表格方案废弃；F13/F14 中"在线表格"表述统一改为"多维表格"
-- 365 天滚动策略延续：定期清理推送时间超期记录（后续版本实现自动化）
+- 365 天滚动策略延续：定期清理推送时间超期记录（自动化见 §18 F22）
 
 ---
 
@@ -298,3 +298,16 @@ feeds:
 
 - 配置可配：`config.salon.trigger_weekday/trigger_hour/trigger_minute`（默认 4/10/0 = 周五 10:00），MiniMax Key 走 `MiniMax_Key` 环境变量覆盖
 - 不产 PPTX，不混入 `push.py` 主流程，去重列 `ppt_synced_at` + `ppt_last_status_{rid}` 翻转检测，失败单条 WARNING 不阻断他条
+
+---
+
+## 18. v0.7 增量（2026-09-07）— 365 天滚动保留自动化（purge）
+
+落地 §16 承诺的滚动保留：独立 CLI `tc-purge` 清理推送时间超过保留期（默认 365 天，`config.bitable.retention_days` 可配）的存档，**sqlite 与多维表格双清**。删除不可逆，故自动化只做巡检、真删由人工执行。
+
+| # | 特性 | 验收要点 | 优先级 |
+|---|---|---|---|
+| F22 | 365 天滚动保留 | 独立 `tc-purge` CLI（`feedkicker.purge`），**默认 dry-run** 打印 PurgeStats，`--apply` 才真删；sqlite 仅删 `bitable_synced_at` 非空（已在线归档）的超期行，未归档超期只计数 WARNING；bitable 按「推送时间」早于截止日期客户端过滤、200/批 `+record-delete --yes`，首屏失败零删除、批失败即终止；launchd 每月 1 号 10:30 只跑 dry-run 巡检（`com.feedkicker.purge.plist`） | P1 |
+
+- 安全模型：dry-run 为默认且唯一调度形态；`--apply` 必须人工执行；占位 token（含 `<`）与未启用配置直接跳过 bitable 段；**绝不调 `ensure_initialized`**（防误建 Base）；只操作资讯归档 Base（cfg.bitable），不碰 salon 选题 Base；截止判定用上海时区日期串字典序比较，截止当天的记录保留（保守方向）
+- 不影响 push/salon 主流程；设计见 DESIGN §20
