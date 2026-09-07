@@ -33,7 +33,8 @@ class Feed:
 
 @dataclass
 class SiteConf:
-    # GitHub Pages 链路已移除（site.enabled 全环境 false）；仅保留摘要卡每源条数
+    """GitHub Pages 链路已移除（site.enabled 全环境 false）；仅保留摘要卡每源条数。"""
+
     top_n: int = 5
 
 

@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import calendar
 import logging
-from datetime import datetime, timezone
+from datetime import UTC, datetime
+from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
 import feedparser
@@ -14,13 +15,13 @@ _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
 
 def utc_now_iso() -> str:
-    return datetime.now(timezone.utc).strftime(_ISO_FMT)
+    return datetime.now(UTC).strftime(_ISO_FMT)
 
 
 def iso_utc(struct_time) -> str | None:
     if not struct_time:
         return None
-    dt = datetime.fromtimestamp(calendar.timegm(struct_time), tz=timezone.utc)
+    dt = datetime.fromtimestamp(calendar.timegm(struct_time), tz=UTC)
     return dt.strftime(_ISO_FMT)
 
 
@@ -46,7 +47,7 @@ def entry_key_of(entry) -> str:
     return "title:" + " ".join((entry.get("title") or "").strip().lower().split())
 
 
-def normalize_entry(entry) -> dict:
+def normalize_entry(entry: Any) -> dict[str, Any]:
     title = (entry.get("title") or "").strip()
     url = canonicalize(entry.get("link") or "")
     description = entry.get("summary") or entry.get("description") or ""
@@ -59,7 +60,7 @@ def normalize_entry(entry) -> dict:
     }
 
 
-def parse_content(content: bytes) -> list[dict]:
+def parse_content(content: bytes) -> list[dict[str, Any]]:
     parsed = feedparser.parse(content)
     if getattr(parsed, "bozo", False) and not parsed.entries:
         raise ValueError(f"feed 解析失败: {getattr(parsed, 'bozo_exception', '')}")
@@ -68,7 +69,7 @@ def parse_content(content: bytes) -> list[dict]:
     return [normalize_entry(e) for e in parsed.entries]
 
 
-def fetch_feed(url: str, http_conf) -> list[dict]:
+def fetch_feed(url: str, http_conf: Any) -> list[dict[str, Any]]:
     resp = httpx.get(
         url,
         timeout=http_conf.timeout_seconds,

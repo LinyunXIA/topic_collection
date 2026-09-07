@@ -1,129 +1,128 @@
-"""salon Wiki 卡片连败 SOS 行为测试（OBS1）。
-
-Commit 1 阶段逻辑内联在 salon_flow.run()；Commit 2 抽到 salon_notify.send_wiki_card
-后仅需把 sf.run 调用换成 send_wiki_card。
-"""
+"""salon Wiki 卡片连败 SOS 行为测试（OBS1，salon_notify.send_wiki_card）。"""
 
 from __future__ import annotations
 
-from feedkicker import store
+from feedkicker import salon_notify, store
 
 
-def _cfg(monkeypatch):
-    from feedkicker.config import load_config
-
+def _cfg(monkeypatch, webhook: str = "https://hook.test"):
     monkeypatch.delenv("MiniMax_Key", raising=False)
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
+    from feedkicker.config import load_config
+
     cfg = load_config(app_env="test")
-    cfg.salon.app_token = "app_test"
-    cfg.salon.table_id = "tbl_test"
-    cfg.salon.wiki_space_id = "spc_test"
-    cfg.salon.wiki_parent_token = "parent_test"
-    cfg.wiki.space_id = "spc_test"
-    cfg.wiki.parent_token = "parent_test"
-    cfg.wiki.app_token = "app_wiki"
-    cfg.minimax.api_key = "sk-test"
-    cfg.feishu_webhook = "https://hook.test"
+    cfg.feishu_webhook = webhook
     cfg.feishu_secret = ""
     cfg.http.timeout_seconds = 20
     cfg.http.user_agent = "test"
     return cfg
 
 
-def _patch_pipeline(monkeypatch, sf):
-    """每班返回一个全新已选题话题（已处理话题会被跳过），MiniMax/Wiki 全打桩。"""
-    counter = {"n": 0}
+def _patch_card(monkeypatch, send_ret, sos_texts):
+    sends = []
 
-    def fake_fetch(*a, **kw):
-        counter["n"] += 1
-        n = counter["n"]
-        return [{"record_id": f"rec{n}", "fields": {"讨论状态": ["已选题"], "话题名称": f"话题{n}"}}]
+    def fake_send(payload, *a, **kw):
+        sends.append(payload)
+        return send_ret
 
-    monkeypatch.setattr(sf, "fetch_selected_topics", fake_fetch)
+    monkeypatch.setattr(salon_notify.feishu, "send", fake_send)
     monkeypatch.setattr(
-        sf.minimax,
-        "gen_outline",
-        lambda *a, **kw: {"title": "t", "slides": [{"heading": "h", "bullets": ["a"]}]},
+        salon_notify.feishu,
+        "send_text",
+        lambda text, *a, **kw: (sos_texts.append(text), True)[1],
     )
-    monkeypatch.setattr(
-        sf.wiki,
-        "create_wiki_doc_from_md",
-        lambda *a, **kw: f"https://web91vfvm7.feishu.cn/wiki/wik{counter['n']}",
-    )
-    return counter
+    return sends
 
 
-def test_salon_card_three_failures_triggers_sos_then_reset(monkeypatch):
-    from feedkicker import salon_flow as sf
-
+def test_send_wiki_card_three_failures_triggers_sos_then_reset(monkeypatch):
     cfg = _cfg(monkeypatch)
     conn = store.connect(":memory:")
-    _patch_pipeline(monkeypatch, sf)
-    sends = []
-    sos_texts = []
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: (sends.append(1), False)[1])
-    monkeypatch.setattr(sf.feishu, "send_text", lambda text, *a, **kw: (sos_texts.append(text), True)[1])
+    sos_texts: list[str] = []
+    sends = _patch_card(monkeypatch, False, sos_texts)
 
-    rcs = [sf.run(cfg, conn, dry_run=False) for _ in range(3)]
-    assert rcs == [1, 1, 1]
+    rcs = [
+        salon_notify.send_wiki_card(cfg, conn, [f"https://web91vfvm7.feishu.cn/wiki/wik{i}"])
+        for i in range(3)
+    ]
+    assert rcs == [False, False, False]
     # 每班：初发 1 次 + strip_actions 降级重试 1 次
     assert len(sends) == 6
     assert len(sos_texts) == 1
     assert "连续 3 次" in sos_texts[0]
-    assert store.get_meta(conn, sf.SALON_FAIL_STREAK_KEY, "0") == "0"
+    assert store.get_meta(conn, salon_notify.SALON_FAIL_STREAK_KEY, "0") == "0"
     conn.close()
 
 
-def test_salon_card_recovery_clears_streak_without_sos(monkeypatch):
-    from feedkicker import salon_flow as sf
-
+def test_send_wiki_card_recovery_clears_streak_without_sos(monkeypatch):
     cfg = _cfg(monkeypatch)
     conn = store.connect(":memory:")
-    store.set_meta(conn, sf.SALON_FAIL_STREAK_KEY, "2")
-    _patch_pipeline(monkeypatch, sf)
-    sos_texts = []
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: True)
-    monkeypatch.setattr(sf.feishu, "send_text", lambda text, *a, **kw: (sos_texts.append(text), True)[1])
+    store.set_meta(conn, salon_notify.SALON_FAIL_STREAK_KEY, "2")
+    sos_texts: list[str] = []
+    _patch_card(monkeypatch, True, sos_texts)
 
-    rc = sf.run(cfg, conn, dry_run=False)
-    assert rc == 0
+    ok = salon_notify.send_wiki_card(cfg, conn, ["https://web91vfvm7.feishu.cn/wiki/wik1"])
+    assert ok is True
     assert sos_texts == []
-    assert store.get_meta(conn, sf.SALON_FAIL_STREAK_KEY, "0") == "0"
+    assert store.get_meta(conn, salon_notify.SALON_FAIL_STREAK_KEY, "0") == "0"
     conn.close()
 
 
-def test_salon_card_first_two_failures_no_sos(monkeypatch):
-    from feedkicker import salon_flow as sf
-
+def test_send_wiki_card_first_two_failures_no_sos(monkeypatch):
     cfg = _cfg(monkeypatch)
     conn = store.connect(":memory:")
-    _patch_pipeline(monkeypatch, sf)
-    sos_texts = []
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: False)
-    monkeypatch.setattr(sf.feishu, "send_text", lambda text, *a, **kw: (sos_texts.append(text), True)[1])
+    sos_texts: list[str] = []
+    _patch_card(monkeypatch, False, sos_texts)
 
-    rcs = [sf.run(cfg, conn, dry_run=False) for _ in range(2)]
-    assert rcs == [1, 1]
+    rcs = [
+        salon_notify.send_wiki_card(cfg, conn, [f"https://web91vfvm7.feishu.cn/wiki/wik{i}"])
+        for i in range(2)
+    ]
+    assert rcs == [False, False]
     assert sos_texts == []
-    assert store.get_meta(conn, sf.SALON_FAIL_STREAK_KEY, "0") == "2"
+    assert store.get_meta(conn, salon_notify.SALON_FAIL_STREAK_KEY, "0") == "2"
     conn.close()
 
 
-def test_salon_card_dry_run_no_send_no_sos_no_meta(monkeypatch):
-    from feedkicker import salon_flow as sf
-
+def test_send_wiki_card_empty_urls_is_ok(monkeypatch):
     cfg = _cfg(monkeypatch)
     conn = store.connect(":memory:")
-    _patch_pipeline(monkeypatch, sf)
+    sos_texts: list[str] = []
+    sends = _patch_card(monkeypatch, False, sos_texts)
+
+    assert salon_notify.send_wiki_card(cfg, conn, []) is True
+    assert sends == []
+    assert store.get_meta(conn, salon_notify.SALON_FAIL_STREAK_KEY, "MISSING") == "MISSING"
+    conn.close()
+
+
+def test_send_wiki_card_dry_run_no_send_no_sos_no_meta(monkeypatch, capsys):
+    cfg = _cfg(monkeypatch)
+    conn = store.connect(":memory:")
 
     def _guard(*a, **kw):
         raise AssertionError("dry-run 不得触网")
 
-    monkeypatch.setattr(sf.minimax, "gen_outline", _guard)
-    monkeypatch.setattr(sf.feishu, "send", _guard)
-    monkeypatch.setattr(sf.feishu, "send_text", _guard)
+    monkeypatch.setattr(salon_notify.feishu, "send", _guard)
+    monkeypatch.setattr(salon_notify.feishu, "send_text", _guard)
 
-    rc = sf.run(cfg, conn, dry_run=True)
-    assert rc == 0
-    assert store.get_meta(conn, sf.SALON_FAIL_STREAK_KEY, "MISSING") == "MISSING"
+    ok = salon_notify.send_wiki_card(
+        cfg, conn, ["https://web91vfvm7.feishu.cn/wiki/wik1"], dry_run=True
+    )
+    assert ok is True
+    assert '"msg_type": "interactive"' in capsys.readouterr().out
+    assert store.get_meta(conn, salon_notify.SALON_FAIL_STREAK_KEY, "MISSING") == "MISSING"
+    conn.close()
+
+
+def test_send_wiki_card_sos_requires_webhook(monkeypatch):
+    cfg = _cfg(monkeypatch, webhook="")
+    conn = store.connect(":memory:")
+    sos_texts: list[str] = []
+    sends = _patch_card(monkeypatch, False, sos_texts)
+
+    for i in range(4):
+        salon_notify.send_wiki_card(cfg, conn, [f"https://web91vfvm7.feishu.cn/wiki/wik{i}"])
+    assert sos_texts == []
+    assert len(sends) == 8
+    assert store.get_meta(conn, salon_notify.SALON_FAIL_STREAK_KEY, "0") == "4"
     conn.close()

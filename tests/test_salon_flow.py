@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 
-from feedkicker import store
+from feedkicker import feishu, store
 from feedkicker.config import load_config
 
 
@@ -106,7 +106,7 @@ def test_salon_flow_happy_one_doc_two_outlines(monkeypatch):
         return "https://web91vfvm7.feishu.cn/wiki/wik123"
 
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", fake_wiki)
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: True)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
 
     rc = sf.run(cfg, conn, dry_run=False)
     assert rc == 0
@@ -132,7 +132,7 @@ def test_salon_flow_skip_already_synced(monkeypatch):
 
     monkeypatch.setattr(sf.minimax, "gen_outline", fake_gen)
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: "https://web91vfvm7.feishu.cn/wiki/wik1")
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: True)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
 
     sf.run(cfg, conn, dry_run=False)
     calls = []
@@ -162,7 +162,7 @@ def test_salon_flow_flip_regen(monkeypatch):
 
     monkeypatch.setattr(sf.minimax, "gen_outline", fake_gen)
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: "https://web91vfvm7.feishu.cn/wiki/wik1")
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: True)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
 
     sf.run(cfg, conn, dry_run=False)
     assert store.get_ppt_last_status(conn, "rec1") == "已选题"
@@ -209,7 +209,7 @@ def test_salon_flow_failure_single_not_block(monkeypatch):
         return f"https://web91vfvm7.feishu.cn/wiki/{title}"
 
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", fake_wiki)
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: True)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
 
     sf.run(cfg, conn, dry_run=False)
     assert wiki_calls == ["T2"]
@@ -239,7 +239,6 @@ def test_salon_flow_wiki_failure_skip_mark(monkeypatch):
 
 
 def test_salon_flow_cli_dry_run(monkeypatch, capsys):
-    import sys
     from feedkicker import salon_flow as sf
 
     cfg = _cfg(monkeypatch)
@@ -266,8 +265,11 @@ def test_salon_flow_not_mixed_with_push():
     assert "fetch_selected_topics" in txt
     assert "gen_outline" in txt
     assert "create_wiki_doc_from_md" in txt
-    assert "mark_ppt_synced" in txt
-    assert "set_ppt_last_status" in txt or "ppt_last_status" in txt
+    assert "salon_notify" in txt
+    assert "mark_topic_archived" in txt
+    notify_txt = pathlib.Path("feedkicker/salon_notify.py").read_text(encoding="utf-8")
+    assert "send_text" in notify_txt
+    assert "SALON_FAIL_STREAK_KEY" in notify_txt
     push_txt = pathlib.Path("feedkicker/push.py").read_text(encoding="utf-8")
     assert "salon_flow" not in push_txt
     assert "minimax" not in push_txt.lower() or "salon" not in push_txt
@@ -294,7 +296,7 @@ def test_salon_flow_21_to_1_selected_filter(monkeypatch):
     monkeypatch.setattr(sf.minimax, "gen_outline", fake_gen)
     wiki_calls = []
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: (wiki_calls.append(kw.get("title") or a[3]), "https://web91vfvm7.feishu.cn/wiki/wik_sel")[1])
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: True)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
 
     rc = sf.run(cfg, conn, dry_run=False)
     assert rc == 0
@@ -317,7 +319,7 @@ def test_salon_flow_non_selected_skipped(monkeypatch):
     called = []
     monkeypatch.setattr(sf.minimax, "gen_outline", lambda *a, **kw: (called.append(1), {"title": "t", "slides": []})[1])
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: "https://web91vfvm7.feishu.cn/wiki/wik")
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("非已选题不应发卡")))
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("非已选题不应发卡")))
     rc = sf.run(cfg, conn, dry_run=False)
     assert rc == 0
     assert called == []
@@ -325,8 +327,8 @@ def test_salon_flow_non_selected_skipped(monkeypatch):
 
 
 def test_salon_flow_full_chain_via_httpx_subprocess(monkeypatch):
-    from feedkicker import salon_flow as sf
     from feedkicker import bitable as bt
+    from feedkicker import salon_flow as sf
 
     cfg = _cfg(monkeypatch)
     conn = store.connect(":memory:")
@@ -355,7 +357,6 @@ def test_salon_flow_full_chain_via_httpx_subprocess(monkeypatch):
     def fake_httpx_post(url, json_payload=None, headers=None, timeout=None, **kw):
         import json as _j
         payload = json_payload if json_payload is not None else kw.get("json")
-        content = kw.get("content")
         call_log.append(url)
         if "minimaxi.com" in url:
             msgs = (payload or {}).get("messages") or []
@@ -408,7 +409,7 @@ def test_salon_flow_minimax_tool_calls_real_parse_via_httpx(monkeypatch):
     monkeypatch.setattr(sf, "fetch_selected_topics", lambda *a, **kw: [{"record_id": "recT", "fields": {"讨论状态": ["已选题"], "话题名称": "话题A"}}])
     # do not mock gen_outline – let it hit the httpx mock above
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: "https://web91vfvm7.feishu.cn/wiki/wik_tc")
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: True)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
     rc = sf.run(cfg, conn, dry_run=False)
     assert rc == 0
     assert store.get_ppt_last_status(conn, "recT") == "已选题"
@@ -467,10 +468,11 @@ def test_salon_flow_wiki_docx_create_business_failure_raises(monkeypatch):
 def test_salon_flow_wiki_nodeget_retry_then_success(monkeypatch):
     """node-get 首次 131005（新建传播延迟），重试成功 → 返回 /wiki/ 规范链接（#133）"""
     import feedkicker.wiki as wk
+    import feedkicker.wiki_lark as wl
     from feedkicker import bitable as bt
 
     seq = {"n": 0}
-    monkeypatch.setattr(wk.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(wl.time, "sleep", lambda *_: None)
 
     def fake_run(args, stdin_text=None, timeout=120):
         if args[:2] == ["docs", "+create"]:
@@ -491,9 +493,10 @@ def test_salon_flow_wiki_nodeget_retry_then_success(monkeypatch):
 def test_salon_flow_wiki_nodeget_failure_fallback_docx_url(monkeypatch):
     """docx 已建成但 node-get 重试仍失败：回退 /docx/ 链接保证可用，不丢已建文档（#133）"""
     import feedkicker.wiki as wk
+    import feedkicker.wiki_lark as wl
     from feedkicker import bitable as bt
 
-    monkeypatch.setattr(wk.time, "sleep", lambda *_: None)
+    monkeypatch.setattr(wl.time, "sleep", lambda *_: None)
 
     def fake_run(args, stdin_text=None, timeout=120):
         if args[:2] == ["docs", "+create"]:
@@ -515,7 +518,7 @@ def test_salon_flow_flip_twice_regen_with_ppt_synced(monkeypatch):
     monkeypatch.setattr(sf, "fetch_selected_topics", lambda *a, **kw: [{"record_id": "recF", "fields": {"讨论状态": ["已选题"], "话题名称": "翻转话题"}}])
     monkeypatch.setattr(sf.minimax, "gen_outline", lambda topic, kind="tool", api_key=None, base_url=None, model=None: {"title": "t", "slides": [{"heading": "h", "bullets": ["a"]}]})
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: "https://web91vfvm7.feishu.cn/wiki/wik1")
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: True)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
     # 首次 已选题
     sf.run(cfg, conn, dry_run=False)
     first_synced = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recF'").fetchone()[0]
@@ -567,8 +570,8 @@ def test_salon_flow_dry_run_no_db_write_and_no_httpx(monkeypatch):
         return True
 
     # 确保 dry-run 绝不调用 feishu.send / send_text (httpx)
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not call feishu.send")))
-    monkeypatch.setattr(sf.feishu, "send_text", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not call feishu.send_text")))
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not call feishu.send")))
+    monkeypatch.setattr(feishu, "send_text", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not call feishu.send_text")))
     import feedkicker.minimax as mm
     monkeypatch.setattr(mm.httpx, "post", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not hit minimax httpx")))
     # dry-run 不应 spawn 任何 lark-cli 子进程（topic/wiki 均已 mock 或早退）
@@ -621,7 +624,7 @@ def test_salon_flow_480_monkeypatch_isolation(monkeypatch):
     monkeypatch.setattr(sf.minimax, "gen_outline", fake_gen_480)
     wiki_calls = []
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: (wiki_calls.append(kw.get("title") or a[3]), f"https://web91vfvm7.feishu.cn/wiki/{kw.get('title') or a[3]}")[1])
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: True)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
     rc = sf.run(cfg, conn, dry_run=False)
     assert rc == 0
     assert wiki_calls == ["T480b"]
@@ -654,7 +657,7 @@ def test_salon_flow_select_unsynced_filters_and_mark(monkeypatch):
     monkeypatch.setattr(sf.minimax, "gen_outline", lambda topic, kind="tool", api_key=None, base_url=None, model=None: {"title": "t", "slides": [{"heading": "h", "bullets": ["a"]}]})
     wiki_calls = []
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: (wiki_calls.append(kw.get("title") or a[3]), "https://web91vfvm7.feishu.cn/wiki/wik")[1])
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: True)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
     sf.run(cfg, conn, dry_run=False)
     assert "已同步" not in wiki_calls
     assert "未同步" in wiki_calls

@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import json
 
-import pytest
-
 from feedkicker import feishu, store
 from feedkicker.config import load_config
 
@@ -151,7 +149,7 @@ def test_salon_flow_push_sends_wiki_card(monkeypatch):
         sends.append((payload, webhook, timeout, ua, secret))
         return True
 
-    monkeypatch.setattr(sf.feishu, "send", fake_send)
+    monkeypatch.setattr(feishu, "send", fake_send)
     rc = sf.run(cfg, conn, dry_run=False)
     assert rc == 0
     assert len(sends) == 1
@@ -187,7 +185,7 @@ def test_salon_flow_push_strip_actions_retry(monkeypatch):
         assert all(e["tag"] != "action" for e in payload["card"]["elements"])
         return True
 
-    monkeypatch.setattr(sf.feishu, "send", fake_send)
+    monkeypatch.setattr(feishu, "send", fake_send)
     rc = sf.run(cfg, conn, dry_run=False)
     assert rc == 0
     assert len(calls) == 2
@@ -205,7 +203,7 @@ def test_salon_flow_no_wiki_no_send(monkeypatch):
     cfg = _cfg(monkeypatch)
     conn = store.connect(":memory:")
     monkeypatch.setattr(sf, "fetch_selected_topics", lambda app, tbl, limit=200: [])
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not send")))
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("should not send")))
     rc = sf.run(cfg, conn, dry_run=False)
     assert rc == 0
     conn.close()
@@ -222,7 +220,7 @@ def test_salon_flow_dry_run_no_send_network(monkeypatch):
     ])
     monkeypatch.setattr(sf.minimax, "gen_outline", lambda topic, kind="tool", api_key=None, base_url=None, model=None: {"title": "t", "slides": [{"heading": "h", "bullets": ["a"]}]})
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: "https://web91vfvm7.feishu.cn/wiki/wik_nosend")
-    monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not call send")))
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not call send")))
     rc = sf.run(cfg, conn, dry_run=True)
     assert rc == 0
     conn.close()
@@ -245,7 +243,7 @@ def test_salon_flow_uses_same_webhook_as_push(monkeypatch):
         captured["webhook"] = webhook
         return True
 
-    monkeypatch.setattr(sf.feishu, "send", fake_send)
+    monkeypatch.setattr(feishu, "send", fake_send)
     sf.run(cfg, conn, dry_run=False)
     assert captured["webhook"] == "https://hook.test/salon_same"
     conn.close()

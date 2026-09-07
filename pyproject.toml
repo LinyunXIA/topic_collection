@@ -17,6 +17,8 @@ dependencies = [
 [project.optional-dependencies]
 dev = [
     "pytest>=8.0",
+    "ruff==0.16.4",
+    "basedpyright==1.39.10",
 ]
 
 [project.scripts]
@@ -28,3 +30,32 @@ include = ["feedkicker*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.ruff]
+target-version = "py312"
+line-length = 100
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F", "I", "UP", "BLE", "DTZ", "FURB", "PLW1510"]
+
+[tool.ruff.lint.per-file-ignores]
+# store.py 底部/顶部 facade 成组 re-export store_salon，刻意保持单块导入
+"feedkicker/store.py" = ["I001"]
+
+[tool.basedpyright]
+include = ["feedkicker"]
+pythonVersion = "3.12"
+# 子进程/JSON 边界与跨模块 facade 架构产生的噪音规则降级，依据见 docs/DESIGN.md §21
+reportAny = "none"
+reportUnknownArgumentType = "none"
+reportUnknownMemberType = "none"
+reportUnknownVariableType = "none"
+reportUnknownParameterType = "none"
+reportMissingParameterType = "none"
+reportPrivateUsage = "none"
+reportUnusedExpression = "none"
+# JSON 边界的 dict[str, Any] 是刻意选择（lark-cli/HTTP 响应无静态 schema）；
+# __main__ 块 argparse add_argument 返回值不使用属 CLI 惯例
+reportExplicitAny = "none"
+reportUnusedCallResult = "none"
+reportUnusedParameter = "warning"

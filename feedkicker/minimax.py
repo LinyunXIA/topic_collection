@@ -3,57 +3,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+from typing import Any
 
 import httpx
 
+from feedkicker.minimax_schema import (
+    _TOOL_GENERATE_PPT_OUTLINE as _TOOL_GENERATE_PPT_OUTLINE,
+)
+from feedkicker.minimax_schema import (
+    PROMPT_TEMPLATES as PROMPT_TEMPLATES,
+)
+
 log = logging.getLogger(__name__)
-
-PROMPT_TEMPLATES: dict[str, str] = {
-    "tool": (
-        "你是PPT大纲生成助手（工具类）。请围绕用户给定的话题，生成一份面向实操的PPT大纲。"
-        "要求：5-8页自适应，覆盖背景/痛点、工具选型/流程、分步操作、案例演示、避坑与总结；"
-        "每页 heading + 3-4 条 bullets + speaker_note；通过 generate_ppt_outline 工具返回JSON。"
-    ),
-    "principle": (
-        "你是PPT大纲生成助手（原理类）。请围绕用户给定的话题，生成一份面向原理与深度的PPT大纲。"
-        "要求：5-8页自适应，覆盖背景/问题定义、核心原理/架构、关键机制对比、推导与验证、趋势与总结；"
-        "每页 heading + 3-4 条 bullets + speaker_note；通过 generate_ppt_outline 工具返回JSON。"
-    ),
-}
-
-_TOOL_GENERATE_PPT_OUTLINE = {
-    "type": "function",
-    "function": {
-        "name": "generate_ppt_outline",
-        "description": "生成PPT大纲，返回标题与5-8页幻灯片",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "title": {"type": "string", "description": "大纲总标题"},
-                "slides": {
-                    "type": "array",
-                    "description": "幻灯片列表，5-8页",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "heading": {"type": "string", "description": "页标题"},
-                            "bullets": {
-                                "type": "array",
-                                "items": {"type": "string"},
-                                "description": "要点，3-4条",
-                            },
-                            "speaker_note": {"type": "string", "description": "讲者备注"},
-                        },
-                        "required": ["heading", "bullets"],
-                    },
-                    "minItems": 5,
-                    "maxItems": 8,
-                },
-            },
-            "required": ["title", "slides"],
-        },
-    },
-}
 
 _RETRY_CODES = {1002, 1004, 1039, "1002", "1004", "1039"}
 
@@ -64,7 +25,7 @@ def _resolve_api_key(api_key: str | None) -> str:
     return os.environ.get("MiniMax_Key") or os.environ.get("MINIMAX_API_KEY") or ""
 
 
-def _extract_code(data: dict) -> str | int | None:
+def _extract_code(data: dict[str, Any]) -> str | int | None:
     if not isinstance(data, dict):
         return None
     br = data.get("base_resp")
@@ -87,12 +48,12 @@ def _extract_code(data: dict) -> str | int | None:
 
 
 def call_minimax_chat(
-    messages: list[dict],
+    messages: list[dict[str, Any]],
     model: str = "MiniMax-M3",
     api_key: str | None = None,
     base_url: str = "https://api.minimaxi.com",
     timeout: float = 180,
-) -> dict:
+) -> dict[str, Any]:
     key = _resolve_api_key(api_key)
     if not key:
         raise RuntimeError("MiniMax api_key 缺失，请设置 MiniMax_Key 环境变量或 config.minimax.api_key")
@@ -106,7 +67,7 @@ def call_minimax_chat(
         "tools": [_TOOL_GENERATE_PPT_OUTLINE],
         "tool_choice": {"type": "function", "function": {"name": "generate_ppt_outline"}},
     }
-    last_data: dict | None = None
+    last_data: dict[str, Any] | None = None
     for attempt in range(2):
         try:
             resp = httpx.post(url, json=payload, headers=headers, timeout=timeout)
@@ -151,7 +112,7 @@ def call_minimax_chat(
     raise RuntimeError("MiniMax 调用失败")
 
 
-def _parse_outline_from_response(data: dict) -> dict:
+def _parse_outline_from_response(data: dict[str, Any]) -> dict[str, Any]:
     choices = data.get("choices") or []
     if choices:
         msg = choices[0].get("message") or {}
@@ -193,7 +154,7 @@ def gen_outline(
     api_key: str | None = None,
     base_url: str = "https://api.minimaxi.com",
     model: str = "MiniMax-M3",
-) -> dict:
+) -> dict[str, Any]:
     if kind not in PROMPT_TEMPLATES:
         raise ValueError(f"未知 kind: {kind}，可选 {list(PROMPT_TEMPLATES)}")
     system_prompt = PROMPT_TEMPLATES[kind]

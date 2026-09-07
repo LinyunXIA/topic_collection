@@ -17,6 +17,11 @@ SOS_THRESHOLD = 3
 
 
 def run(cfg, conn, dry_run: bool = False) -> int:
+    """抓取订阅源 → bitable 归档 → 飞书摘要卡。
+
+    首跑标记只盖成功抓到内容的源：新源首跑即失败时保留未首跑状态，
+    恢复后仍按冷启动窗口过滤历史（F4），避免全量历史当新条目推送。
+    """
     now_dt = datetime.now(UTC)
     now = now_dt.strftime("%Y-%m-%dT%H:%M:%SZ")
     feed_fails = 0
@@ -33,13 +38,11 @@ def run(cfg, conn, dry_run: bool = False) -> int:
                     "%Y-%m-%dT%H:%M:%SZ"
                 )
                 store.promise_skip_old(conn, feed.name, cutoff, now)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             feed_fails += 1
             store.bump_fail(conn, feed.name, feed.url)
             log.error("源 %s (%s) 抓取失败: %s", feed.name, feed.url, e)
 
-    # 首跑标记只盖成功抓到内容的源：新源首跑即失败时保留未首跑状态，
-    # 恢复后仍按冷启动窗口过滤历史（F4），避免全量历史当新条目推送
     ok_feed_objs = [f for f in cfg.feeds if f.name in set(ok_feeds)]
 
     pending = store.select_pending(conn)
@@ -58,7 +61,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             if synced_n:
                 detail_url = cfg.bitable.url or bitable.base_url(cfg.bitable.app_token)
                 log.info("多维表格已写入 %d 条", synced_n)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             log.warning("多维表格同步未完成（不影响推送，保留待重试）: %s", e)
 
     top_n = cfg.site.top_n if cfg.bitable.enabled else 0
@@ -145,7 +148,7 @@ def main(argv=None) -> int:
     )
     try:
         cfg = load_config(args.config, args.db, app_env=args.env)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         log.error("%s", e)
         return 2
 
@@ -153,7 +156,7 @@ def main(argv=None) -> int:
     log.info("运行开始：环境=%s，db=%s", cfg.app_env, cfg.db_path)
     try:
         return run(cfg, conn, dry_run=args.dry_run)
-    except Exception:
+    except Exception:  # noqa: BLE001
         log.exception("未捕获异常")
         return 1
     finally:

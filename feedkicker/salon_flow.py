@@ -5,62 +5,23 @@ import json
 import logging
 import sys
 from datetime import UTC, datetime
+from typing import Any
 
-from feedkicker import feishu, minimax, store, wiki
+from feedkicker import minimax, salon_md, salon_notify, store, wiki
 from feedkicker.config import load_config
 from feedkicker.topic import fetch_selected_topics
 
 log = logging.getLogger(__name__)
 
-SALON_FAIL_STREAK_KEY = "salon_fail_streak"
-SOS_THRESHOLD = 3
-
-
-def _topic_title(rec: dict) -> str:
-    fields = rec.get("fields") or {}
-    for k in ("话题名称", "标题", "title", "Topic", "name"):
-        v = fields.get(k)
-        if isinstance(v, str) and v.strip():
-            return v.strip()
-        if isinstance(v, list) and v and isinstance(v[0], str) and v[0].strip():
-            return v[0].strip()
-    rid = rec.get("record_id") or rec.get("id") or ""
-    return rid or "未命名话题"
-
-
-def _outline_to_md(outline: dict, label: str) -> str:
-    title = outline.get("title") or label
-    slides = outline.get("slides") or []
-    lines = [f"## {label}", "", f"**{title}**", ""]
-    for idx, s in enumerate(slides, 1):
-        heading = s.get("heading") or f"第{idx}页"
-        bullets = s.get("bullets") or []
-        note = s.get("speaker_note") or s.get("speakerNote") or ""
-        lines.append(f"### {idx}. {heading}")
-        for b in bullets:
-            lines.append(f"- {b}")
-        if note:
-            lines.append(f"> 备注：{note}")
-        lines.append("")
-    md_json = json.dumps(outline, ensure_ascii=False, indent=2)
-    lines.append(f"```json\n{md_json}\n```")
-    lines.append("")
-    return "\n".join(lines)
-
-
-def _build_combined_md(title: str, tool_outline: dict, principle_outline: dict) -> str:
-    date_str = datetime.now(UTC).strftime("%Y-%m-%d")
-    header = f"# {title} · 大纲归档 {date_str}\n"
-    tool_md = _outline_to_md(tool_outline, "工具类大纲")
-    princ_md = _outline_to_md(principle_outline, "原理类大纲")
-    return f"{header}\n{tool_md}\n---\n\n{princ_md}\n"
-
 
 def run(cfg, conn, dry_run: bool = False) -> int:
     app_token = cfg.salon.app_token
     table_id = cfg.salon.table_id
+    selected: list[dict[str, Any]]
     if (not app_token or not table_id) and dry_run:
-        selected = [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
+        selected = [
+            {"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}
+        ]
         app_token = app_token or "stub_app"
         table_id = table_id or "stub_tbl"
     elif not app_token or not table_id:
@@ -69,7 +30,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     else:
         try:
             selected = fetch_selected_topics(app_token, table_id)
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             log.warning("拉取已选题失败: %s", e)
             raise
 
@@ -86,12 +47,12 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     success_count = 0
 
     for rec in selected:
-        rid = rec.get("record_id") or rec.get("id") or ""
+        rid = str(rec.get("record_id") or rec.get("id") or "")
         if not rid:
             log.warning("跳过无 record_id 的记录: %s", rec)
             continue
 
-        fields = rec.get("fields") or {}
+        fields: dict[str, Any] = rec.get("fields") or {}
         cur_status_val = fields.get("讨论状态")
         if isinstance(cur_status_val, list):
             cur_status = cur_status_val[0] if cur_status_val else ""
@@ -113,11 +74,10 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         if dry_run and last_status == "已选题" and not ppt_synced_is_null:
             continue
 
-        title = _topic_title(rec)
+        title = salon_md.topic_title(rec)
 
         if dry_run:
-            tool_outline = {"title": f"{title} · 工具类大纲", "slides": [{"heading": f"工具页{i}", "bullets": ["要点A", "要点B", "要点C"], "speaker_note": "备注"} for i in range(1, 6)]}
-            principle_outline = {"title": f"{title} · 原理类大纲", "slides": [{"heading": f"原理页{i}", "bullets": ["要点A", "要点B", "要点C"], "speaker_note": "备注"} for i in range(1, 6)]}
+            tool_outline, principle_outline = salon_md.stub_outlines(title)
         else:
             try:
                 tool_outline = minimax.gen_outline(
@@ -127,7 +87,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
                     base_url=cfg.minimax.base_url,
                     model=cfg.minimax.model,
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 log.warning("topic %s 工具类大纲生成失败: %s", rid, e)
                 continue
 
@@ -139,11 +99,11 @@ def run(cfg, conn, dry_run: bool = False) -> int:
                     base_url=cfg.minimax.base_url,
                     model=cfg.minimax.model,
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001
                 log.warning("topic %s 原理类大纲生成失败: %s", rid, e)
                 continue
 
-        combined_md = _build_combined_md(title, tool_outline, principle_outline)
+        combined_md = salon_md.build_combined_md(title, tool_outline, principle_outline)
         if dry_run:
             print(json.dumps({"tool_outline": tool_outline, "principle_outline": principle_outline}, ensure_ascii=False, indent=2))
             print(combined_md[:3000])
@@ -157,7 +117,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
                 combined_md,
                 dry_run=dry_run,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001
             log.warning("topic %s Wiki 写入失败: %s", rid, e)
             continue
 
@@ -167,27 +127,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         if dry_run:
             continue
 
-        try:
-            exists = conn.execute("SELECT 1 FROM articles WHERE entry_key = ?", (rid,)).fetchone()
-            if exists is None:
-                conn.execute(
-                    "INSERT INTO articles (feed_id, entry_key, title, url, description, published_at, first_seen, pushed_at, ppt_synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL) ON CONFLICT (feed_id, entry_key) DO NOTHING",
-                    (table_id, rid, title, url, combined_md[:500], None, now_iso),
-                )
-                conn.commit()
-        except Exception as e:
-            log.warning("插入占位 article 失败 %s: %s", rid, e)
-
-        try:
-            store.mark_ppt_synced(conn, [rid], now_iso)
-        except Exception as e:
-            log.warning("mark_ppt_synced 失败 %s: %s", rid, e)
-
-        try:
-            store.set_ppt_last_status(conn, rid, "已选题")
-        except Exception as e:
-            log.warning("set_ppt_last_status 失败 %s: %s", rid, e)
-
+        store.mark_topic_archived(conn, table_id, rid, title, url, combined_md, now_iso)
         success_count += 1
 
     if wiki_urls and not dry_run:
@@ -199,58 +139,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     else:
         log.info("本轮无新增 Wiki")
 
-    card_ok = True
-    if wiki_urls:
-        payload = feishu.build_card([], 0, [], wiki_urls=wiki_urls)
-        if dry_run:
-            print(json.dumps(payload, ensure_ascii=False, indent=2))
-            log.info("dry-run 卡片预览已打印（含 %d 个 Wiki 链接）", len(wiki_urls))
-        else:
-            card_ok = False
-            try:
-                ok = feishu.send(
-                    payload,
-                    cfg.feishu_webhook,
-                    cfg.http.timeout_seconds,
-                    cfg.http.user_agent,
-                    secret=cfg.feishu_secret,
-                )
-                if not ok:
-                    log.warning("Wiki 卡片发送失败，降级为纯链接卡片重试一次")
-                    ok = feishu.send(
-                        feishu.strip_actions(payload),
-                        cfg.feishu_webhook,
-                        cfg.http.timeout_seconds,
-                        cfg.http.user_agent,
-                        secret=cfg.feishu_secret,
-                    )
-                if ok:
-                    streak = int(store.get_meta(conn, SALON_FAIL_STREAK_KEY, "0"))
-                    if streak:
-                        log.info("Wiki 卡片推送恢复，清零连败计数（此前 %d 次）", streak)
-                    store.set_meta(conn, SALON_FAIL_STREAK_KEY, "0")
-                    log.info("Wiki 卡片已推送 %d 个链接", len(wiki_urls))
-                    card_ok = True
-                else:
-                    streak = int(store.get_meta(conn, SALON_FAIL_STREAK_KEY, "0")) + 1
-                    store.set_meta(conn, SALON_FAIL_STREAK_KEY, str(streak))
-                    log.warning("Wiki 卡片推送失败，连败 %d 次", streak)
-                    if streak >= SOS_THRESHOLD and cfg.feishu_webhook:
-                        sos = (
-                            f"⚠️ feedkicker salon 连续 {streak} 次 Wiki 大纲卡片推送失败，"
-                            f"请检查机器人状态/网络。最近一班 {len(wiki_urls)} 份大纲 Wiki 已建成但卡片可能未送达。"
-                        )
-                        feishu.send_text(
-                            sos,
-                            cfg.feishu_webhook,
-                            cfg.http.timeout_seconds,
-                            cfg.http.user_agent,
-                            secret=cfg.feishu_secret,
-                        )
-                        store.set_meta(conn, SALON_FAIL_STREAK_KEY, "0")
-            except Exception as e:  # noqa: BLE001
-                log.warning("Wiki 卡片推送异常: %s", e)
-
+    card_ok = salon_notify.send_wiki_card(cfg, conn, wiki_urls, dry_run=dry_run)
     return 0 if card_ok else 1
 
 
@@ -273,7 +162,7 @@ def main(argv=None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
     try:
         cfg = load_config(args.config, args.db, app_env=args.env)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
         log.error("%s", e)
         return 2
 
@@ -281,7 +170,7 @@ def main(argv=None) -> int:
     log.info("salon_flow 运行开始：环境=%s，db=%s，dry_run=%s", cfg.app_env, cfg.db_path, args.dry_run)
     try:
         return run(cfg, conn, dry_run=args.dry_run)
-    except Exception:
+    except Exception:  # noqa: BLE001
         log.exception("未捕获异常")
         return 1
     finally:

@@ -9,14 +9,20 @@ import shutil
 import subprocess
 import tempfile
 from datetime import UTC, datetime, timedelta, timezone
+from typing import Any
 from zoneinfo import ZoneInfo
 
 from feedkicker.fetch import canonicalize, utc_now_iso
 
-try:
-    SHANGHAI = ZoneInfo("Asia/Shanghai")
-except (ValueError, OSError):
-    SHANGHAI = timezone(timedelta(hours=8))
+
+def _shanghai_tz():
+    try:
+        return ZoneInfo("Asia/Shanghai")
+    except (ValueError, OSError):
+        return timezone(timedelta(hours=8))
+
+
+SHANGHAI = _shanghai_tz()
 
 log = logging.getLogger(__name__)
 
@@ -41,7 +47,7 @@ _FIELDS = [
 ]
 
 
-def fields_for(app_env: str) -> list[dict]:
+def fields_for(app_env: str) -> list[dict[str, Any]]:
     if app_env in ("dev", "test"):
         return [_FIELDS[0]] + [{"name": "环境", "type": "text"}] + _FIELDS[1:]
     return list(_FIELDS)
@@ -57,17 +63,28 @@ def lark_bin() -> str:
     raise FileNotFoundError("找不到 lark-cli，请先安装 @larksuite/cli 并完成 auth login")
 
 
-def _run(args: list[str], stdin_text: str | None = None, timeout: float = 120):
+def _run(
+    args: list[str], stdin_text: str | None = None, timeout: float = 120
+) -> subprocess.CompletedProcess[str] | None:
+    """执行 lark-cli 子进程。
+
+    launchd 的 PATH 只有 /usr/bin:/bin，lark-cli 是 env node 脚本会以 rc=127 失败；
+    显式增补 homebrew 与二进制所在目录（#123）。
+    """
     bin_path = lark_bin()
     cmd = [bin_path] + args
-    # launchd 的 PATH 只有 /usr/bin:/bin，lark-cli 是 env node 脚本会以 rc=127 失败；
-    # 显式增补 homebrew 与二进制所在目录（#123）
     env = os.environ.copy()
     extra = [os.path.dirname(bin_path), "/opt/homebrew/bin", "/usr/local/bin"]
     env["PATH"] = os.pathsep.join([p for p in extra if p] + [env.get("PATH", "")])
     try:
         proc = subprocess.run(
-            cmd, input=stdin_text, capture_output=True, text=True, timeout=timeout, env=env
+            cmd,
+            input=stdin_text,
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=env,
+            check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
         log.warning("lark-cli 执行异常: %s", e)
@@ -77,9 +94,11 @@ def _run(args: list[str], stdin_text: str | None = None, timeout: float = 120):
     return proc
 
 
-def _parse(proc) -> tuple[bool, dict]:
-    # lark-cli 业务失败时退出码仍为 0，失败信号在 stdout JSON 顶层 ok:false；
-    # 非 JSON 输出（markdown/help）以 returncode 判定
+def _parse(proc: subprocess.CompletedProcess[str] | None) -> tuple[bool, dict[str, Any]]:
+    """lark-cli 业务失败时退出码仍为 0，失败信号在 stdout JSON 顶层 ok:false；
+
+    非 JSON 输出（markdown/help）以 returncode 判定。
+    """
     if proc is None or proc.returncode != 0:
         return False, {}
     raw = (proc.stdout or "").strip()
@@ -100,14 +119,16 @@ def _ok(proc) -> bool:
     return _parse(proc)[0]
 
 
-def _data(proc) -> dict:
+def _data(proc: subprocess.CompletedProcess[str] | None) -> dict[str, Any]:
     return _parse(proc)[1]
 
 
 @contextlib.contextmanager
-def _json_arg(payload: dict):
-    # lark-cli 的 --json 不支持 stdin、@文件只接受 cwd 内相对路径；
-    # 大批记录走 argv 会超 ARG_MAX（Errno 7 Argument list too long），落临时文件传引用
+def _json_arg(payload: dict[str, Any]):
+    """lark-cli 的 --json 不支持 stdin、@文件只接受 cwd 内相对路径；
+
+    大批记录走 argv 会超 ARG_MAX（Errno 7 Argument list too long），落临时文件传引用。
+    """
     fd, tmp_path = tempfile.mkstemp(prefix=".lark-json-", suffix=".json", dir=".")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -122,7 +143,7 @@ def base_url(app_token: str) -> str:
     return f"https://web91vfvm7.feishu.cn/base/{app_token}"
 
 
-def find_base_by_title(title: str) -> dict | None:
+def find_base_by_title(title: str) -> dict[str, Any] | None:
     proc = _run(["base", "+title-resolve", "--title", title[:30]])
     if not _ok(proc):
         return None
@@ -142,7 +163,7 @@ def find_base_by_title(title: str) -> dict | None:
     return None
 
 
-def create_base(title: str, app_env: str = "prod") -> dict:
+def create_base(title: str, app_env: str = "prod") -> dict[str, Any]:
     proc = _run(
         [
             "base",
@@ -196,7 +217,8 @@ def create_table(app_token: str, app_env: str = "prod") -> str:
         raise RuntimeError("创建数据表失败")
     table_id = _data(proc).get("table_id")
     if not table_id:
-        raise RuntimeError(f"创建数据表响应缺少 table_id: {(proc.stdout or '')[:200]}")
+        stdout = proc.stdout if proc is not None else ""
+        raise RuntimeError(f"创建数据表响应缺少 table_id: {stdout[:200]}")
     return table_id
 
 
@@ -319,7 +341,7 @@ def purge_all_records(app_token: str, table_id: str) -> int:
         )
         if not _ok(proc):
             break
-        ids = _markdown_record_ids(proc.stdout or "")
+        ids = _markdown_record_ids(proc.stdout if proc is not None else "")
         if not ids:
             break
         d = _run(["base", "+record-delete", "--base-token", app_token,
@@ -335,9 +357,9 @@ def purge_all_records(app_token: str, table_id: str) -> int:
     return deleted
 
 
-def ensure_initialized(bt, app_env: str = "prod") -> dict:
+def ensure_initialized(bt: Any, app_env: str = "prod") -> dict[str, Any]:
     title = BASE_TITLES.get(app_env, BASE_TITLE_DEFAULT)
-    info: dict = {"app_token": bt.app_token, "table_id": bt.table_id,
+    info: dict[str, Any] = {"app_token": bt.app_token, "table_id": bt.table_id,
                   "url": bt.url or (base_url(bt.app_token) if bt.app_token else "")}
     if not info["app_token"]:
         found = find_base_by_title(title)
@@ -350,12 +372,14 @@ def ensure_initialized(bt, app_env: str = "prod") -> dict:
     return info
 
 
-def _cell(item: dict, now_iso: str | None = None, env_name: str | None = None) -> dict:
+def _cell(
+    item: dict[str, Any], now_iso: str | None = None, env_name: str | None = None
+) -> dict[str, Any]:
     def fmt_dt(iso: str | None) -> str | None:
         if not iso:
             return None
         try:
-            dt = datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(SHANGHAI)
+            dt = datetime.fromisoformat(iso).astimezone(SHANGHAI)
         except ValueError:
             return None
         return dt.strftime("%Y-%m-%d %H:%M")
@@ -375,6 +399,10 @@ def _cell(item: dict, now_iso: str | None = None, env_name: str | None = None) -
 
 
 def existing_links(app_token: str, table_id: str) -> set[str]:
+    """拉取表内全部已有链接（分页）。
+
+    拉不到已有链接集合时必须中止：返回空集会让全量被当新记录写入，造成重复行。
+    """
     links: set[str] = set()
     offset = 0
     while True:
@@ -391,7 +419,6 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
             timeout=120,
         )
         if not _ok(proc):
-            # 拉不到已有链接集合时必须中止：返回空集会让全量被当新记录写入，造成重复行
             raise RuntimeError("拉取多维表格已有链接失败，中止本次同步以避免重复写入")
         data = _data(proc)
         fields = data.get("fields") or []
@@ -410,13 +437,19 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
     return links
 
 
-def sync_records(app_token: str, table_id: str, items: list[dict], env_name: str | None = None, now_iso: str | None = None) -> bool:
+def sync_records(
+    app_token: str,
+    table_id: str,
+    items: list[dict[str, Any]],
+    env_name: str | None = None,
+    now_iso: str | None = None,
+) -> bool:
     if not items:
         return True
     if now_iso is None:
         now_iso = utc_now_iso()
     seen_links = existing_links(app_token, table_id)
-    picked: list[dict] = []
+    picked: list[dict[str, Any]] = []
     batch_seen: set[str] = set()
     skipped = 0
     for it in items:
@@ -499,7 +532,7 @@ def _shanghai_date(s: str) -> str | None:
             return None
     try:
         if "T" in s or s.endswith("Z") or "+" in s[10:]:
-            dt = datetime.fromisoformat(s.replace("Z", "+00:00"))
+            dt = datetime.fromisoformat(s)
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=SHANGHAI)
             else:
@@ -507,7 +540,7 @@ def _shanghai_date(s: str) -> str | None:
             return dt.strftime("%Y-%m-%d")
         for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
             try:
-                dt = datetime.strptime(s, fmt)
+                dt = datetime.strptime(s, fmt)  # noqa: DTZ007
                 dt = dt.replace(tzinfo=SHANGHAI)
                 return dt.strftime("%Y-%m-%d")
             except ValueError:
@@ -546,8 +579,8 @@ def backfill_empty_archive_dates(app_token: str, table_id: str, env_name: str | 
             break
         data = _data(proc)
         fields: list[str] = data.get("fields") or []
-        rows: list = data.get("data") or []
-        records: list[dict] = data.get("records") or []
+        rows: list[Any] = data.get("data") or []
+        records: list[dict[str, Any]] = data.get("records") or []
         if records:
             for rec in records:
                 total_scanned += 1
