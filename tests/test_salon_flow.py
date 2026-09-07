@@ -55,11 +55,8 @@ def test_salon_flow_dry_run_no_mark(monkeypatch, capsys):
         {"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "话题A"}},
     ])
 
-    calls = []
-
     def fake_gen(topic, kind="tool", api_key=None, base_url=None, model=None):
-        calls.append(kind)
-        return {"title": f"{kind}大纲", "slides": [{"heading": f"h{i}", "bullets": ["a", "b", "c"], "speaker_note": "note"} for i in range(5)]}
+        raise AssertionError(f"dry-run 不得真实调用 MiniMax（{kind}）")
 
     monkeypatch.setattr(sf.minimax, "gen_outline", fake_gen)
 
@@ -67,6 +64,8 @@ def test_salon_flow_dry_run_no_mark(monkeypatch, capsys):
         assert dry_run is True
         assert "工具类大纲" in md_content
         assert "原理类大纲" in md_content
+        assert "工具页1" in md_content
+        assert "原理页1" in md_content
         assert "```json" in md_content
         return f"https://web91vfvm7.feishu.cn/wiki/wik_test_{title}"
 
@@ -74,7 +73,6 @@ def test_salon_flow_dry_run_no_mark(monkeypatch, capsys):
 
     rc = sf.run(cfg, conn, dry_run=True)
     assert rc == 0
-    assert calls == ["tool", "principle"]
     assert store.get_ppt_last_status(conn, "recGWg8Kb9kUDI") == ""
     row = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recGWg8Kb9kUDI'").fetchone()
     assert row is None
@@ -558,16 +556,19 @@ def test_salon_flow_dry_run_no_db_write_and_no_httpx(monkeypatch):
         {"record_id": "recDRY", "fields": {"讨论状态": ["已选题"], "话题名称": "旧话题"}},
         {"record_id": "recNEW", "fields": {"讨论状态": ["已选题"], "话题名称": "新话题"}},
     ])
-    # DRY 的新话题应走 fake_wiki 但不写库
-    monkeypatch.setattr(sf.minimax, "gen_outline", lambda topic, kind="tool", api_key=None, base_url=None, model=None: {"title": "t", "slides": [{"heading": "h", "bullets": ["a"]}]})
-    monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda app_token, space_id, parent_token, title, md_content, dry_run=False, date_str=None: (assert_dry(dry_run), f"https://web91vfvm7.feishu.cn/wiki/{title}")[1])
+    # DRY 的新话题必须走 stub 大纲：gen_outline 被调即失败（OBS2 守卫）
+    monkeypatch.setattr(sf.minimax, "gen_outline", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not call minimax.gen_outline")))
+    monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda app_token, space_id, parent_token, title, md_content, dry_run=False, date_str=None: (assert_dry(dry_run, md_content), f"https://web91vfvm7.feishu.cn/wiki/{title}")[1])
 
-    def assert_dry(dry_run):
+    def assert_dry(dry_run, md_content=""):
         assert dry_run is True
+        assert "工具页1" in md_content
+        assert "原理页1" in md_content
         return True
 
-    # 确保 dry-run 绝不调用 feishu.send (httpx)
+    # 确保 dry-run 绝不调用 feishu.send / send_text (httpx)
     monkeypatch.setattr(sf.feishu, "send", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not call feishu.send")))
+    monkeypatch.setattr(sf.feishu, "send_text", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not call feishu.send_text")))
     import feedkicker.minimax as mm
     monkeypatch.setattr(mm.httpx, "post", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not hit minimax httpx")))
     # dry-run 不应 spawn 任何 lark-cli 子进程（topic/wiki 均已 mock 或早退）
@@ -642,9 +643,9 @@ def test_salon_flow_select_unsynced_filters_and_mark(monkeypatch):
     conn.execute("UPDATE articles SET ppt_synced_at=? WHERE entry_key=?", ("2026-09-01T01:00:00Z", "recSynced"))
     conn.commit()
     store.set_ppt_last_status(conn, "recSynced", "已选题")
-    unsynced = store.select_unsynced_topics(conn)
-    assert any(r["entry_key"] == "recUnsync" for r in unsynced)
-    assert not any(r["entry_key"] == "recSynced" for r in unsynced)
+    assert store.is_ppt_synced(conn, "recSynced") is True
+    assert store.is_ppt_synced(conn, "recUnsync") is False
+    assert store.is_ppt_synced(conn, "recMissing") is False
 
     monkeypatch.setattr(sf, "fetch_selected_topics", lambda *a, **kw: [
         {"record_id": "recSynced", "fields": {"讨论状态": ["已选题"], "话题名称": "已同步"}},

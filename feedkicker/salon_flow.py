@@ -12,6 +12,9 @@ from feedkicker.topic import fetch_selected_topics
 
 log = logging.getLogger(__name__)
 
+SALON_FAIL_STREAK_KEY = "salon_fail_streak"
+SOS_THRESHOLD = 3
+
 
 def _topic_title(rec: dict) -> str:
     fields = rec.get("fields") or {}
@@ -81,11 +84,6 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     wiki_urls: list[str] = []
     success_count = 0
-    try:
-        unsynced_topics = store.select_unsynced_topics(conn)
-        _unsynced_keys = {r.get("entry_key") for r in unsynced_topics}
-    except Exception:  # noqa: BLE001
-        _unsynced_keys = None
 
     for rec in selected:
         rid = rec.get("record_id") or rec.get("id") or ""
@@ -106,21 +104,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             continue
 
         last_status = store.get_ppt_last_status(conn, rid)
-
-        if _unsynced_keys is not None and rid in _unsynced_keys:
-            ppt_synced_is_null = True
-        else:
-            ppt_synced_is_null = True
-            try:
-                row = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key = ?", (rid,)).fetchone()
-                if row is not None and row[0] is not None:
-                    ppt_synced_is_null = False
-                elif row is not None:
-                    ppt_synced_is_null = True
-                else:
-                    ppt_synced_is_null = True
-            except Exception:  # noqa: BLE001
-                ppt_synced_is_null = True
+        ppt_synced_is_null = not store.is_ppt_synced(conn, rid)
 
         if not ppt_synced_is_null and last_status == "已选题":
             log.info("跳过已处理 %s (last_status=已选题)", rid)
@@ -131,7 +115,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
 
         title = _topic_title(rec)
 
-        if dry_run and (not cfg.minimax.api_key or cfg.minimax.api_key.strip().startswith('<')):
+        if dry_run:
             tool_outline = {"title": f"{title} · 工具类大纲", "slides": [{"heading": f"工具页{i}", "bullets": ["要点A", "要点B", "要点C"], "speaker_note": "备注"} for i in range(1, 6)]}
             principle_outline = {"title": f"{title} · 原理类大纲", "slides": [{"heading": f"原理页{i}", "bullets": ["要点A", "要点B", "要点C"], "speaker_note": "备注"} for i in range(1, 6)]}
         else:
@@ -215,12 +199,14 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     else:
         log.info("本轮无新增 Wiki")
 
+    card_ok = True
     if wiki_urls:
         payload = feishu.build_card([], 0, [], wiki_urls=wiki_urls)
         if dry_run:
             print(json.dumps(payload, ensure_ascii=False, indent=2))
             log.info("dry-run 卡片预览已打印（含 %d 个 Wiki 链接）", len(wiki_urls))
         else:
+            card_ok = False
             try:
                 ok = feishu.send(
                     payload,
@@ -239,13 +225,33 @@ def run(cfg, conn, dry_run: bool = False) -> int:
                         secret=cfg.feishu_secret,
                     )
                 if ok:
+                    streak = int(store.get_meta(conn, SALON_FAIL_STREAK_KEY, "0"))
+                    if streak:
+                        log.info("Wiki 卡片推送恢复，清零连败计数（此前 %d 次）", streak)
+                    store.set_meta(conn, SALON_FAIL_STREAK_KEY, "0")
                     log.info("Wiki 卡片已推送 %d 个链接", len(wiki_urls))
+                    card_ok = True
                 else:
-                    log.warning("Wiki 卡片推送失败")
+                    streak = int(store.get_meta(conn, SALON_FAIL_STREAK_KEY, "0")) + 1
+                    store.set_meta(conn, SALON_FAIL_STREAK_KEY, str(streak))
+                    log.warning("Wiki 卡片推送失败，连败 %d 次", streak)
+                    if streak >= SOS_THRESHOLD and cfg.feishu_webhook:
+                        sos = (
+                            f"⚠️ feedkicker salon 连续 {streak} 次 Wiki 大纲卡片推送失败，"
+                            f"请检查机器人状态/网络。最近一班 {len(wiki_urls)} 份大纲 Wiki 已建成但卡片可能未送达。"
+                        )
+                        feishu.send_text(
+                            sos,
+                            cfg.feishu_webhook,
+                            cfg.http.timeout_seconds,
+                            cfg.http.user_agent,
+                            secret=cfg.feishu_secret,
+                        )
+                        store.set_meta(conn, SALON_FAIL_STREAK_KEY, "0")
             except Exception as e:  # noqa: BLE001
                 log.warning("Wiki 卡片推送异常: %s", e)
 
-    return 0
+    return 0 if card_ok else 1
 
 
 def main(argv=None) -> int:

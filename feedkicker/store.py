@@ -204,25 +204,15 @@ def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
     conn.commit()
 
 
-def select_unsynced_topics(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute(
-        "SELECT feed_id, entry_key, title, url, description, published_at, pushed_at, first_seen, bitable_synced_at, ppt_synced_at"
-        " FROM articles WHERE ppt_synced_at IS NULL"
-        " ORDER BY first_seen, feed_id"
-    ).fetchall()
-    keys = (
-        "feed_id",
-        "entry_key",
-        "title",
-        "url",
-        "description",
-        "published_at",
-        "pushed_at",
-        "first_seen",
-        "bitable_synced_at",
-        "ppt_synced_at",
-    )
-    return [dict(zip(keys, r)) for r in rows]
+def is_ppt_synced(conn: sqlite3.Connection, record_id: str) -> bool:
+    try:
+        row = conn.execute(
+            "SELECT 1 FROM articles WHERE entry_key = ? AND ppt_synced_at IS NOT NULL",
+            (record_id,),
+        ).fetchone()
+        return row is not None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def mark_ppt_synced(conn: sqlite3.Connection, items: list, now_iso: str) -> None:
