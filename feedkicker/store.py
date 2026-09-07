@@ -2,6 +2,22 @@ from __future__ import annotations
 
 import sqlite3
 from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+from feedkicker.store_meta import (  # noqa: I001
+    get_meta as get_meta,
+    set_meta as set_meta,
+)
+from feedkicker.store_salon import (
+    get_ppt_last_status as get_ppt_last_status,
+    is_ppt_synced as is_ppt_synced,
+    mark_ppt_synced as mark_ppt_synced,
+    mark_topic_archived as mark_topic_archived,
+    set_ppt_last_status as set_ppt_last_status,
+)
+
+if TYPE_CHECKING:
+    from feedkicker.config import Feed
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS articles (
@@ -48,7 +64,9 @@ def connect(db_path: str | Path) -> sqlite3.Connection:
     return conn
 
 
-def download(conn: sqlite3.Connection, feed_id: str, entries: list[dict], now_iso: str) -> int:
+def download(
+    conn: sqlite3.Connection, feed_id: str, entries: list[dict[str, Any]], now_iso: str
+) -> int:
     rows = [
         (
             feed_id,
@@ -97,7 +115,7 @@ def promise_skip_old(
     return cur.rowcount
 
 
-def select_pending(conn: sqlite3.Connection) -> list[dict]:
+def select_pending(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT feed_id, entry_key, title, url, description, published_at"
         " FROM articles WHERE pushed_at IS NULL"
@@ -107,26 +125,7 @@ def select_pending(conn: sqlite3.Connection) -> list[dict]:
     return [dict(zip(keys, r)) for r in rows]
 
 
-def select_pushed_since(conn: sqlite3.Connection, since_iso: str) -> list[dict]:
-    rows = conn.execute(
-        "SELECT feed_id, entry_key, title, url, description, published_at, pushed_at"
-        " FROM articles WHERE pushed_at IS NOT NULL AND pushed_at >= ?"
-        " ORDER BY pushed_at, feed_id",
-        (since_iso,),
-    ).fetchall()
-    keys = (
-        "feed_id",
-        "entry_key",
-        "title",
-        "url",
-        "description",
-        "published_at",
-        "pushed_at",
-    )
-    return [dict(zip(keys, r)) for r in rows]
-
-
-def mark_pushed(conn: sqlite3.Connection, items: list[dict], now_iso: str) -> None:
+def mark_pushed(conn: sqlite3.Connection, items: list[dict[str, Any]], now_iso: str) -> None:
     conn.executemany(
         "UPDATE articles SET pushed_at = ? WHERE feed_id = ? AND entry_key = ?",
         [(now_iso, it["feed_id"], it["entry_key"]) for it in items],
@@ -149,7 +148,7 @@ def clear_fail(conn: sqlite3.Connection, feed_id: str) -> None:
     conn.commit()
 
 
-def update_first_run_all(conn: sqlite3.Connection, feeds: list, now_iso: str) -> None:
+def update_first_run_all(conn: sqlite3.Connection, feeds: list[Feed], now_iso: str) -> None:
     conn.executemany(
         "INSERT INTO feeds (feed_id, url, first_run_at, fail_streak)"
         " VALUES (?, ?, ?, 0)"
@@ -161,12 +160,7 @@ def update_first_run_all(conn: sqlite3.Connection, feeds: list, now_iso: str) ->
     conn.commit()
 
 
-def get_meta(conn: sqlite3.Connection, key: str, default: str = "") -> str:
-    row = conn.execute("SELECT value FROM meta WHERE key = ?", (key,)).fetchone()
-    return row[0] if row else default
-
-
-def select_unsynced(conn: sqlite3.Connection) -> list[dict]:
+def select_unsynced(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     rows = conn.execute(
         "SELECT feed_id, entry_key, title, url, description, published_at, pushed_at, first_seen, bitable_synced_at"
         " FROM articles WHERE bitable_synced_at IS NULL"
@@ -186,64 +180,10 @@ def select_unsynced(conn: sqlite3.Connection) -> list[dict]:
     return [dict(zip(keys, r)) for r in rows]
 
 
-def mark_synced(conn: sqlite3.Connection, items: list[dict], now_iso: str) -> None:
-    # 复用 select_unsynced 返回列表，不二次查询
+def mark_synced(conn: sqlite3.Connection, items: list[dict[str, Any]], now_iso: str) -> None:
+    """复用 select_unsynced 返回列表直接标记，不二次查询。"""
     conn.executemany(
         "UPDATE articles SET bitable_synced_at = ? WHERE feed_id = ? AND entry_key = ?",
         [(now_iso, it["feed_id"], it["entry_key"]) for it in items],
     )
     conn.commit()
-
-
-def set_meta(conn: sqlite3.Connection, key: str, value: str) -> None:
-    conn.execute(
-        "INSERT INTO meta (key, value) VALUES (?, ?)"
-        " ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-        (key, value),
-    )
-    conn.commit()
-
-
-def select_unsynced_topics(conn: sqlite3.Connection) -> list[dict]:
-    rows = conn.execute(
-        "SELECT feed_id, entry_key, title, url, description, published_at, pushed_at, first_seen, bitable_synced_at, ppt_synced_at"
-        " FROM articles WHERE ppt_synced_at IS NULL"
-        " ORDER BY first_seen, feed_id"
-    ).fetchall()
-    keys = (
-        "feed_id",
-        "entry_key",
-        "title",
-        "url",
-        "description",
-        "published_at",
-        "pushed_at",
-        "first_seen",
-        "bitable_synced_at",
-        "ppt_synced_at",
-    )
-    return [dict(zip(keys, r)) for r in rows]
-
-
-def mark_ppt_synced(conn: sqlite3.Connection, items: list, now_iso: str) -> None:
-    if not items:
-        return
-    if isinstance(items[0], dict):
-        conn.executemany(
-            "UPDATE articles SET ppt_synced_at = ? WHERE feed_id = ? AND entry_key = ?",
-            [(now_iso, it["feed_id"], it["entry_key"]) for it in items],
-        )
-    else:
-        conn.executemany(
-            "UPDATE articles SET ppt_synced_at = ? WHERE entry_key = ?",
-            [(now_iso, rid) for rid in items],
-        )
-    conn.commit()
-
-
-def get_ppt_last_status(conn: sqlite3.Connection, record_id: str) -> str:
-    return get_meta(conn, f"ppt_last_status_{record_id}", "")
-
-
-def set_ppt_last_status(conn: sqlite3.Connection, record_id: str, status: str) -> None:
-    set_meta(conn, f"ppt_last_status_{record_id}", status)

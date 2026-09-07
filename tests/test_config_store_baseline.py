@@ -1,9 +1,7 @@
 from __future__ import annotations
 
-import sqlite3
-
 from feedkicker import store
-from feedkicker.config import BitableConf, Config, Feed, HttpConf, SiteConf, load_config
+from feedkicker.config import BitableConf, load_config
 
 
 def test_baseline_load_config_test_defaults():

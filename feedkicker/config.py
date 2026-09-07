@@ -33,7 +33,8 @@ class Feed:
 
 @dataclass
 class SiteConf:
-    # GitHub Pages 链路已移除（site.enabled 全环境 false）；仅保留摘要卡每源条数
+    """GitHub Pages 链路已移除（site.enabled 全环境 false）；仅保留摘要卡每源条数。"""
+
     top_n: int = 5
 
 
@@ -43,6 +44,7 @@ class BitableConf:
     app_token: str = ""
     table_id: str = ""
     url: str = ""
+    retention_days: int = 365
 
 
 @dataclass
@@ -133,6 +135,7 @@ def load_config(
         app_token=str(bt_raw.get("app_token") or ""),
         table_id=str(bt_raw.get("table_id") or ""),
         url=str(bt_raw.get("url") or ""),
+        retention_days=max(1, int(bt_raw.get("retention_days", cfg.bitable.retention_days))),
     )
 
     salon_raw = raw.get("salon") or {}

@@ -1,9 +1,5 @@
 from __future__ import annotations
 
-import sqlite3
-
-import pytest
-
 
 def test_salon_config_defaults(monkeypatch):
     from feedkicker.config import load_config
@@ -51,7 +47,7 @@ def test_store_ppt_synced_column_exists():
     conn.close()
 
 
-def test_store_select_unsynced_topics_and_mark():
+def test_store_is_ppt_synced_and_mark():
     from feedkicker import store
 
     conn = store.connect(":memory:")
@@ -59,12 +55,13 @@ def test_store_select_unsynced_topics_and_mark():
         {"entry_key": "k1", "title": "t1", "url": "https://e.com/1", "description": "", "published_at": None},
         {"entry_key": "k2", "title": "t2", "url": "https://e.com/2", "description": "", "published_at": None},
     ], "2026-08-25T00:00:00Z")
-    unsynced = store.select_unsynced_topics(conn)
-    assert len(unsynced) == 2
-    store.mark_ppt_synced(conn, unsynced, "2026-08-25T01:00:00Z")
-    assert store.select_unsynced_topics(conn) == []
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(articles)")}
-    assert "ppt_synced_at" in cols
+    assert store.is_ppt_synced(conn, "k1") is False
+    assert store.is_ppt_synced(conn, "k2") is False
+    assert store.is_ppt_synced(conn, "k-missing") is False
+    store.mark_ppt_synced(conn, ["k1", "k2"], "2026-08-25T01:00:00Z")
+    assert store.is_ppt_synced(conn, "k1") is True
+    assert store.is_ppt_synced(conn, "k2") is True
+    assert store.is_ppt_synced(conn, "k-missing") is False
     conn.close()
 
 
@@ -72,11 +69,7 @@ def test_store_ppt_last_status_via_meta():
     from feedkicker import store
 
     conn = store.connect(":memory:")
-    if hasattr(store, "set_ppt_last_status") and hasattr(store, "get_ppt_last_status"):
-        store.set_ppt_last_status(conn, "rec123", "已选题")
-        assert store.get_ppt_last_status(conn, "rec123") == "已选题"
-        assert store.get_ppt_last_status(conn, "rec999") == ""
-    else:
-        store.set_meta(conn, "ppt_last_status_rec123", "已选题")
-        assert store.get_meta(conn, "ppt_last_status_rec123") == "已选题"
+    store.set_ppt_last_status(conn, "rec123", "已选题")
+    assert store.get_ppt_last_status(conn, "rec123") == "已选题"
+    assert store.get_ppt_last_status(conn, "rec999") == ""
     conn.close()

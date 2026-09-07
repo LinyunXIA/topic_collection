@@ -3,14 +3,14 @@ from __future__ import annotations
 import base64
 import json
 import sqlite3
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
 from pathlib import Path
 
 import pytest
 
 from feedkicker import feishu, push, store
-from feedkicker.config import Config, Feed, HttpConf, SiteConf, load_config
+from feedkicker.config import Config, Feed, HttpConf, SiteConf
 from feedkicker.fetch import canonicalize, entry_key_of, parse_content
 
 
@@ -42,7 +42,7 @@ def item(
 
 
 def days_ago(n: int) -> str:
-    return format_datetime(datetime.now(timezone.utc) - timedelta(days=n))
+    return format_datetime(datetime.now(UTC) - timedelta(days=n))
 
 
 def make_conn() -> sqlite3.Connection:
@@ -155,7 +155,7 @@ def test_bootstrap_window():
         )
     )
     now = "2026-08-25T12:00:00Z"
-    cutoff = (datetime.now(timezone.utc) - timedelta(days=3)).strftime(
+    cutoff = (datetime.now(UTC) - timedelta(days=3)).strftime(
         "%Y-%m-%dT%H:%M:%SZ"
     )
     store.download(conn, "F", entries, now)
@@ -189,7 +189,7 @@ def test_second_run_after_bootstrap():
     store.promise_skip_old(
         conn,
         "F",
-        (datetime.now(timezone.utc) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        (datetime.now(UTC) - timedelta(days=3)).strftime("%Y-%m-%dT%H:%M:%SZ"),
         now,
     )
     store.update_first_run_all(conn, cfg.feeds, now)
@@ -721,15 +721,15 @@ def test_bitable_cell_fields(monkeypatch):
 
 @pytest.mark.parametrize("scenario", ["cross_midnight", "pushed_at_priority", "first_seen_chain", "dedup_batch"])
 def test_bitable_cell_archive_date_fallback(monkeypatch, scenario):
-    from feedkicker import bitable
-    from zoneinfo import ZoneInfo
-    from datetime import datetime
     import inspect
-    import json
+    from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from feedkicker import bitable
     if scenario == "cross_midnight":
         item = {"feed_id": "F", "title": "t", "url": "https://e.com/1", "description": "", "published_at": None, "pushed_at": None}
         now_iso = "2026-08-26T16:00:00Z"
-        expected = datetime.fromisoformat(now_iso.replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+        expected = datetime.fromisoformat(now_iso).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
         assert expected == "2026-08-27"
         sig = inspect.signature(bitable._cell)
         if "now_iso" in sig.parameters:
@@ -742,7 +742,7 @@ def test_bitable_cell_archive_date_fallback(monkeypatch, scenario):
     elif scenario == "pushed_at_priority":
         item = {"feed_id": "F", "title": "t", "url": "https://e.com/1", "description": "", "published_at": "2026-08-25T01:30:00Z", "pushed_at": "2026-08-25T01:30:00Z"}
         now_iso = "2026-08-27T00:00:00Z"
-        expected = datetime.fromisoformat("2026-08-25T01:30:00Z".replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+        expected = datetime.fromisoformat("2026-08-25T01:30:00Z").astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
         assert expected == "2026-08-25"
         sig = inspect.signature(bitable._cell)
         assert "now_iso" in sig.parameters
@@ -752,7 +752,7 @@ def test_bitable_cell_archive_date_fallback(monkeypatch, scenario):
         assert len(cell["归档日期"]) == 10
     elif scenario == "first_seen_chain":
         item = {"feed_id": "F", "title": "t", "url": "https://e.com/2", "description": "", "published_at": None, "pushed_at": None, "first_seen": "2026-08-25T23:59:00Z"}
-        expected = datetime.fromisoformat("2026-08-25T23:59:00Z".replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+        expected = datetime.fromisoformat("2026-08-25T23:59:00Z").astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
         assert expected == "2026-08-26"
         sig = inspect.signature(bitable._cell)
         if "now_iso" in sig.parameters:
@@ -1056,12 +1056,13 @@ def test_bitable_views_grouping_not_empty(monkeypatch):
 
 
 def test_bitable_backfill_empty_archive_dates(monkeypatch):
-    from feedkicker import bitable
-    from zoneinfo import ZoneInfo
     from datetime import datetime
+    from zoneinfo import ZoneInfo
+
+    from feedkicker import bitable
 
     def shanghai_date(iso):
-        return datetime.fromisoformat(iso.replace("Z", "+00:00")).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
+        return datetime.fromisoformat(iso).astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
 
     captured = []
 

@@ -5,20 +5,24 @@ import json
 import logging
 import os
 import tempfile
-import time
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from feedkicker import bitable
-
-try:
-    SHANGHAI = ZoneInfo("Asia/Shanghai")
-except Exception:
-    SHANGHAI = timezone(timedelta(hours=8))
+from feedkicker import bitable, wiki_lark
 
 log = logging.getLogger(__name__)
 
 WIKI_HOST = "https://web91vfvm7.feishu.cn/wiki"
+
+
+def _shanghai_tz():
+    try:
+        return ZoneInfo("Asia/Shanghai")
+    except (ValueError, OSError):
+        return timezone(timedelta(hours=8))
+
+
+SHANGHAI = _shanghai_tz()
 
 
 def sanitize_topic(topic: str) -> str:
@@ -69,90 +73,6 @@ def _md_temp_file(md_content: str, filename: str):
             os.unlink(tmp_path)
 
 
-def _lark_doc_create(rel_path: str, parent_wiki_token: str, doc_title: str):
-    # docs +create --parent-token 传 wiki 节点 token 时，直接在 wiki 树内创建 docx
-    # （实测 obj_type=docx）；--content 只接受 cwd 内相对路径 @file
-    args = [
-        "docs", "+create",
-        "--parent-token", parent_wiki_token,
-        "--title", doc_title,
-        "--doc-format", "markdown",
-        "--content", f"@{rel_path}",
-        "--json",
-    ]
-    return bitable._run(args, timeout=120)
-
-
-def _parse_document_id(proc) -> str | None:
-    """docs +create 成功响应 → data.document.document_id"""
-    if proc is None or proc.returncode != 0:
-        return None
-    raw = (proc.stdout or "").strip()
-    if not raw or raw[0] not in "{[":
-        return None
-    try:
-        obj = json.loads(raw)
-    except json.JSONDecodeError:
-        return None
-    if not isinstance(obj, dict):
-        return None
-    data = obj.get("data")
-    if not isinstance(data, dict):
-        return None
-    doc = data.get("document")
-    if isinstance(doc, dict):
-        for k in ("document_id", "documentId", "doc_token"):
-            v = doc.get(k)
-            if isinstance(v, str) and v:
-                return v
-    for k in ("document_id", "documentId", "doc_token", "obj_token"):
-        v = data.get(k)
-        if isinstance(v, str) and v:
-            return v
-    return None
-
-
-def _lark_node_get(doc_token: str, attempts: int = 2, wait_seconds: float = 3.0):
-    # node-get 接受 docx obj_token / URL，反查 wiki node_token（进度信息走 stderr，stdout 为纯 JSON）；
-    # docs +create 刚建成的节点秒级内可能 131005 not_found（传播延迟），故短重试一次
-    proc = None
-    for i in range(attempts):
-        proc = bitable._run(["wiki", "+node-get", "--node-token", doc_token, "--json"], timeout=60)
-        node_token, _ = _parse_node(proc)
-        if node_token:
-            return proc
-        ok, _ = bitable._parse(proc) if proc is not None else (False, None)
-        if ok:
-            return proc  # 业务成功但无 node_token，重试无意义
-        log.warning("wiki +node-get 第 %d/%d 次未解析到 node_token（新建节点传播延迟？）", i + 1, attempts)
-        if i < attempts - 1:
-            time.sleep(wait_seconds)
-    return proc
-
-
-def _parse_node(proc) -> tuple[str | None, str | None]:
-    """wiki +node-get 响应 → (node_token, obj_type)"""
-    if proc is None or proc.returncode != 0:
-        return None, None
-    raw = (proc.stdout or "").strip()
-    if not raw or raw[0] not in "{[":
-        return None, None
-    try:
-        obj = json.loads(raw)
-    except json.JSONDecodeError:
-        return None, None
-    data = obj.get("data") if isinstance(obj, dict) else None
-    if not isinstance(data, dict):
-        return None, None
-    node = data.get("node") if isinstance(data.get("node"), dict) else data
-    nt = node.get("node_token") or node.get("nodeToken")
-    ot = node.get("obj_type") or node.get("objType")
-    return (
-        nt if isinstance(nt, str) and nt else None,
-        ot if isinstance(ot, str) and ot else None,
-    )
-
-
 def create_wiki_doc_from_md(
     app_token: str,
     space_id: str,
@@ -182,9 +102,9 @@ def create_wiki_doc_from_md(
         assert not os.path.isabs(rel_path), "必须用相对路径"
         assert rel_path.startswith("./"), "必须用相对路径 ./ 前缀"
 
-        create_proc = _lark_doc_create(rel_path, parent_wiki_token, doc_title)
+        create_proc = wiki_lark.lark_doc_create(rel_path, parent_wiki_token, doc_title)
         ok, _ = bitable._parse(create_proc)
-        doc_id = _parse_document_id(create_proc)
+        doc_id = wiki_lark.parse_document_id(create_proc)
         if not ok or not doc_id:
             raw = ""
             if create_proc is not None:
@@ -193,10 +113,9 @@ def create_wiki_doc_from_md(
                 f"Wiki docx 创建失败（docs +create ok={ok} document_id={doc_id}）: {raw[:300]}"
             )
 
-        node_proc = _lark_node_get(doc_id)
-        node_token, obj_type = _parse_node(node_proc)
+        node_proc = wiki_lark.lark_node_get(doc_id)
+        node_token, obj_type = wiki_lark.parse_node(node_proc)
         if not node_token:
-            # docx 已建成且挂在 wiki 父节点下，仅 node_token 反查失败：回退 /docx/ 链接保证可用
             log.warning(
                 "wiki +node-get 未返回 node_token，回退 /docx/ 链接: %s",
                 ((node_proc.stdout if node_proc is not None else "") or "")[:200],
@@ -246,7 +165,7 @@ if __name__ == "__main__":
                     app_token = args.app_token or cfg.wiki.app_token or cfg.salon.app_token
                     space_id = args.space_id or cfg.wiki.space_id
                     parent = args.parent_token or cfg.wiki.parent_token
-                except Exception:
+                except Exception:  # noqa: BLE001
                     app_token = args.app_token
                     space_id = args.space_id
                     parent = args.parent_token

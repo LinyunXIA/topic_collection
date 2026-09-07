@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 FILTER_JSON = json.dumps({"logic": "and", "conditions": [["讨论状态", "intersects", ["已选题"]]]}, ensure_ascii=False)
 
 
-def _extract_records(data: dict) -> list[dict]:
+def _extract_records(data: dict[str, Any]) -> list[dict[str, Any]]:
     records = data.get("records") or data.get("items") or []
     if records:
         return list(records)
@@ -20,7 +20,7 @@ def _extract_records(data: dict) -> list[dict]:
     rows: list[Any] = data.get("data") or []
     if not rows:
         return []
-    converted: list[dict] = []
+    converted: list[dict[str, Any]] = []
     rids: list[str] = data.get("record_ids") or data.get("recordIds") or data.get("ids") or data.get("record_id_list") or data.get("recordId_list") or data.get("recordIdList") or []
     for i, r in enumerate(rows):
         if isinstance(r, dict):
@@ -30,12 +30,7 @@ def _extract_records(data: dict) -> list[dict]:
                 converted.append({"record_id": rid, "fields": fds, **({k: v for k, v in r.items() if k not in ("fields", "record")} if isinstance(r, dict) else {})})
             else:
                 rid = r.get("record_id") or r.get("id") or (rids[i] if i < len(rids) else "")
-                # treat whole dict as fields if no explicit fields wrapper
-                has_known = any(k in r for k in ("讨论状态", "话题名称", "title", "Topic"))
-                if has_known:
-                    converted.append({"record_id": rid, "fields": r})
-                else:
-                    converted.append({"record_id": rid, "fields": r})
+                converted.append({"record_id": rid, "fields": r})
         elif isinstance(r, list) and fields:
             d = {fields[idx]: r[idx] for idx in range(min(len(fields), len(r)))}
             rid = rids[i] if i < len(rids) else ""
@@ -45,10 +40,17 @@ def _extract_records(data: dict) -> list[dict]:
     return converted
 
 
-def fetch_selected_topics(app_token: str, table_id: str, limit: int = 200) -> list[dict]:
+def fetch_selected_topics(
+    app_token: str, table_id: str, limit: int = 200
+) -> list[dict[str, Any]]:
+    """拉取讨论状态 intersects 已选题 的记录，自动分页。
+
+    响应兼容 records/items 包装与 data.fields+data.data 行式两种形态；
+    空页且 has_more 非真即终止，has_more 缺失时以不足一页判定结束。
+    """
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")
-    all_records: list[dict] = []
+    all_records: list[dict[str, Any]] = []
     offset = 0
     while True:
         args = [
@@ -73,17 +75,13 @@ def fetch_selected_topics(app_token: str, table_id: str, limit: int = 200) -> li
             log.warning("lark-cli 业务失败: %s", msg)
             raise RuntimeError(f"lark-cli 业务失败: {msg}")
         chunk = _extract_records(data)
-        # also handle pure rows without wrapper returning directly in data fields/data
-        # fallback: if _extract returned empty but data has non-empty records-like keys
         if not chunk:
-            # check if response is paginated via has_more but empty chunk means done
             has_more = data.get("has_more") if "has_more" in data else data.get("hasMore")
             if has_more is True:
                 offset += limit
                 continue
             break
         all_records.extend(chunk)
-        # pagination termination
         has_more = data.get("has_more") if "has_more" in data else data.get("hasMore")
         if has_more is not None:
             if not has_more:
@@ -99,7 +97,8 @@ def fetch_selected_topics(app_token: str, table_id: str, limit: int = 200) -> li
     return all_records
 
 
-def fetch_topic_fields(app_token: str, table_id: str) -> list[dict]:
+def fetch_topic_fields(app_token: str, table_id: str) -> list[dict[str, Any]]:
+    """列出表字段并校验 讨论状态；select/singleSelect/multiSelect 均视为合法（intersects 已验证可用）。"""
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")
     proc = bitable._run(["base", "+field-list", "--base-token", app_token, "--table-id", table_id], timeout=60)
@@ -114,7 +113,7 @@ def fetch_topic_fields(app_token: str, table_id: str) -> list[dict]:
         msg = (proc.stdout or proc.stderr or "").strip()[:500]
         log.warning("lark-cli 业务失败: %s", msg)
         raise RuntimeError(f"lark-cli 业务失败: {msg}")
-    fields: list[dict] = data.get("fields") or data.get("items") or []
+    fields: list[dict[str, Any]] = data.get("fields") or data.get("items") or []
     found = None
     for f in fields:
         name = f.get("field_name") or f.get("name") or ""
@@ -125,7 +124,6 @@ def fetch_topic_fields(app_token: str, table_id: str) -> list[dict]:
         log.warning("未找到 讨论状态 字段")
     else:
         ftype = str(found.get("type") or found.get("field_type") or "").lower()
-        # select / singleSelect / multiSelect 均视为合法，intersects 已验证可用
         if ftype and ftype not in ("select", "singleselect", "multiselect", "single_select", "multiple_select", "7", "3"):
             log.warning("讨论状态字段类型异常: %s", ftype)
     return fields
@@ -151,19 +149,17 @@ if __name__ == "__main__":
 
             cfg = load_config(app_env=args.env)
             app_token = app_token or cfg.salon.app_token or cfg.salon.table_id and "" or ""
-            # salon app_token/table_id 来源：config.salon.app_token / table_id
             if not app_token:
                 app_token = cfg.salon.app_token
             if not table_id:
                 table_id = cfg.salon.table_id
-            # 若 config 仍为空，且为 test dry-run，打印 stub 并退出
             if (not app_token or not table_id) and args.dry_run:
                 stub = [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
                 print(json.dumps(stub, ensure_ascii=False, indent=2))
                 raise SystemExit(0)
         except SystemExit:
             raise
-        except Exception:
+        except Exception:  # noqa: BLE001
             if args.dry_run:
                 stub = [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
                 print(json.dumps(stub, ensure_ascii=False, indent=2))

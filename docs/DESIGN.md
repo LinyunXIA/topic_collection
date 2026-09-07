@@ -41,20 +41,27 @@
 
 ```
 topic_collection/
-├── pyproject.toml            # 依赖 + [project.scripts] tc-push
+├── pyproject.toml            # 依赖 + [project.scripts] tc-push/tc-salon/tc-purge
 ├── config-{dev,test,prod}.yaml  # 三环境分文件，均 gitignored（见 §4）
 ├── data/                     # 运行时生成：tc-{env}.sqlite3（gitignore）
-├── logs/                     # cron 重定向写日志（gitignore）
+├── logs/                     # launchd 重定向写日志（gitignore）
 ├── feedkicker/
-│   ├── __init__.py
 │   ├── config.py             # 读 config-{env}.yaml + env 覆盖
 │   ├── fetch.py              # feedparser 抓取 + 归一化
-│   ├── store.py              # sqlite 打开/建表/入库/待推/标已推/首跑/归档同步标
-│   ├── feishu.py             # 卡片构建 + webhook 发送 + 业务码校验
-│   ├── bitable.py            # 多维表格归档（subprocess 调 lark-cli，见 §16/§18）
-│   └── push.py               # 编排主流程 + --dry-run
-└── tests/
-    └── test_push.py
+│   ├── store.py              # sqlite 主表 + facade re-export（§21.2）
+│   ├── store_meta.py         # meta 键值表（叶子模块）
+│   ├── store_salon.py        # salon 选题 sqlite 状态（ppt 同步/last_status/落库）
+│   ├── feishu.py / feishu_card.py    # webhook 发送 / 卡片构建（facade，§21.2）
+│   ├── bitable.py            # 多维表格归档（subprocess 调 lark-cli，§16/§18；746 行遗留见 §21.4）
+│   ├── bitable_purge.py      # 滚动保留的 bitable 侧删除（§20）
+│   ├── minimax.py / minimax_schema.py  # MiniMax 调用 / prompt 与 schema（facade）
+│   ├── wiki.py / wiki_lark.py          # Wiki 归档编排 / lark-cli 调用层
+│   ├── topic.py              # 已选题分页拉取
+│   ├── salon_flow.py         # 沙龙编排主流程（§19）
+│   ├── salon_md.py / salon_notify.py  # 大纲 markdown/stub / 卡片与连败 SOS
+│   ├── push.py               # push 编排主流程
+│   └── purge.py              # tc-purge 编排：365 天滚动保留（§20）
+└── tests/                    # 全离线，subprocess/httpx 一律 mock（test_push/test_salon_*/test_purge 等）
 ```
 
 ## 4. 配置
@@ -647,3 +654,102 @@ wiki:
 - 失败语义：`docs +create` 业务失败（rc=0 但 `ok:false` 或缺 document_id）→ RuntimeError，salon_flow 单条 WARNING 跳过、**不标** ppt_synced；node-get 重试后仍失败但 docx 已建成 → WARNING 并回退 `/docx/<document_id>` 链接（文档可正常打开、不丢已建产物）；节点 obj_type 非 docx → WARNING 但仍返回链接。
 - 节点标题 `{话题}_{日期}_大纲`（docx 无扩展名）；`build_filename()` 的 `.md` 名仅用于临时文件。
 - **弃用路径**：`drive +upload --wiki-token` 只会产出 obj_type=**file** 的附件节点（标题为临时文件名、`docs +fetch` 报 3380002「Only docx is supported」），`move_docs_to_wiki` 兜底对 file 类型无效——该路径与 `_httpx_move`/`_parse_upload_token` 已移除（#133）。
+
+## 20. v0.7 — 365 天滚动保留自动化（#120，2026-09-07）
+
+### 20.1 模块与 CLI
+
+- `feedkicker/purge.py`（CLI 编排，`tc-purge = "feedkicker.purge:main"`）：argparse 同构范式（`--apply` / `--retention-days` / `--config` / `--db` / `--env`），返回码 2=配置错误、1=异常、0=正常；末尾打印 `PurgeStats` JSON。**默认 dry-run，`--apply` 才真删**。
+- `feedkicker/bitable_purge.py`（bitable 侧清理，~130 行，新逻辑不进 bitable.py，见 §21.4）。
+- `config.BitableConf.retention_days`（默认 365，`config-{env}.yaml` 的 `bitable.retention_days` 可配，下限 1）。
+
+### 20.2 算法
+
+- 截止时点：`cutoff_iso(days)` = UTC `now - days` 的 `%Y-%m-%dT%H:%M:%SZ`（字典序可比，先例 `promise_skip_old`）；bitable 侧用 `cutoff_date_shanghai(days)` = 上海时区 `%Y-%m-%d` 日期串。
+- **sqlite**（`purge_sqlite`）：选 `pushed_at IS NOT NULL AND pushed_at < cutoff`；其中仅 `bitable_synced_at IS NOT NULL`（已在线归档）的行可删，超期未归档只计数 WARNING；dry-run 只计数，apply 才 `DELETE` + commit。salon 占位行 `pushed_at` 为 NULL，天然不匹配。
+- **bitable**（`purge_expired_records`）：`+record-list --json --limit 200 --offset N` 分页拉全表（records 包装 / fields+data 行式双形态兼容，范本 backfill），「推送时间」经 `bitable._cell_str` + `bitable._shanghai_date`（epoch 毫秒/ISO/纯日期兼容）归一成上海日期串，**客户端过滤** `d < cutoff_date`（字典序；截止当天的记录保留，保守方向）；apply 按 200/批 `+record-delete --json '{"record_id_list":[...]}' --yes`，批失败即终止。返回 `(deleted, expired, scanned)`。
+- **安全条件**：bitable 段仅在 `enabled` 且 app_token/table_id 非空且不含 `<`（占位守卫）时执行；**绝不调 `ensure_initialized`**（防误建 Base）；只操作 `cfg.bitable` 资讯归档 Base，不碰 salon 选题 Base；首屏 list 失败返回 `(0,0,0)` 零删除；apply 成功才写 meta `purge_last_run_at`。
+
+### 20.3 调度（launchd，每月 1 号 dry-run 巡检）
+
+```xml
+<!-- ~/Library/LaunchAgents/com.feedkicker.purge.plist -->
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0"><dict>
+  <key>Label</key><string>com.feedkicker.purge</string>
+  <key>ProgramArguments</key>
+  <array><string>/Users/linyunxia/PycharmProjects/topic_collection/.venv/bin/python</string>
+         <string>-m</string><string>feedkicker.purge</string></array>
+  <key>WorkingDirectory</key><string>/Users/linyunxia/PycharmProjects/topic_collection</string>
+  <key>EnvironmentVariables</key>
+  <dict><key>TC_APP_ENV</key><string>prod</string></dict>
+  <key>StartCalendarInterval</key>
+  <dict><key>Day</key><integer>1</integer><key>Hour</key><integer>10</integer><key>Minute</key><integer>30</integer></dict>
+  <key>StandardOutPath</key><string>/Users/linyunxia/PycharmProjects/topic_collection/logs/purge.log</string>
+  <key>StandardErrorPath</key><string>/Users/linyunxia/PycharmProjects/topic_collection/logs/purge.log</string>
+</dict></plist>
+```
+
+- ProgramArguments **不带 `--apply`**：调度只做 dry-run 巡检，PurgeStats 落 `logs/purge.log`；真删由人工看过日志后手动 `.venv/bin/python -m feedkicker.purge --apply --env prod`。
+- 加载/校验：`plutil -lint ~/Library/LaunchAgents/com.feedkicker.purge.plist`；`launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.feedkicker.purge.plist`；`launchctl print gui/$UID/com.feedkicker.purge | grep -i calendar` 应含 `day = 1, hour = 10, minute = 30`。
+
+### 20.4 清单
+
+- [x] `tc-purge` CLI：默认 dry-run、`--apply`、`--retention-days`，PurgeStats JSON
+- [x] sqlite 清理：仅删已归档超期行，未归档超期计数 WARNING
+- [x] bitable 清理：分页拉取、客户端日期过滤、200/批删除、首屏失败零删除、批失败终止
+- [x] 占位 token / 未启用守卫；不调 ensure_initialized；只清资讯归档 Base
+- [x] `retention_days` 配置（dataclass 默认 365 + 三份 yaml.example）
+- [x] launchd plist（每月 1 号 10:30 仅 dry-run）创建并 bootstrap
+- [x] 测试 `tests/test_purge.py`（13 例，全 mock subprocess）
+
+## 21. v0.6+ — salon 技术债清理与质量门（#131，2026-09-07）
+
+审核 P2/P3 三项行为修复 + 模块拆分与静态质量门。行为修复见 commit 1（`fix(salon)`），结构重构见 commit 2（`refactor`）。
+
+### 21.1 行为修复（OBS1–OBS3）
+
+- **OBS1（P2）卡片连败 SOS**：Wiki 大纲卡片推送从「strip_actions 重试 1 次 + WARNING、`run()` 恒返回 0」对齐 push.py 的成熟模式——失败累计 meta `salon_fail_streak`，连续 3 次且 webhook 非空时发纯文本 SOS（`feishu.send_text`，文案含「连续 N 次」与最近一班 Wiki 已建成的提示）后清零；成功即清零（有旧值记恢复日志）。逻辑收敛在 `salon_notify.send_wiki_card(cfg, conn, wiki_urls, dry_run) -> bool`，`salon_flow.run()` 据返回值返回 0/1（卡片最终失败 rc=1，launchd 记失败，与 push 一致）。
+- **OBS2（P2）dry-run 不得计费**：`--dry-run` 无条件使用 `salon_md.stub_outlines(title)` 占位大纲（5 页工具/原理页，标题含「工具类大纲」标记），不再因配置了真实 MiniMax key 而发起计费调用（原先每题 2 次）。测试以「gen_outline 被调即抛 AssertionError」做真守卫（旧守卫的 AssertionError 被 broad except 吞掉而假通过）。
+- **OBS3（P3）死逻辑移除**：`_unsynced_keys` 的 if/else 两分支都赋 `ppt_synced_is_null=True`，整段删除；同步判定改为单一来源 `store.is_ppt_synced(conn, rid)`（`ppt_synced_at IS NOT NULL`），死代码 `select_pushed_since` / `select_unsynced_topics` 一并删除。
+
+### 21.2 模块拆分（依赖单向无环）
+
+```
+store_meta（叶子：meta 键值表）
+  ↑
+store_salon（ppt 同步标记 / last_status / mark_topic_archived）
+  ↑
+store（articles/feeds 主表 + facade re-export store_meta、store_salon）
+
+feishu_card（卡片构建/转义/strip_actions）→ feishu（HTTP 发送 + facade re-export）
+minimax_schema（PROMPT_TEMPLATES / function-calling schema）→ minimax（调用 + facade）
+wiki_lark（lark-cli docs/wiki 调用与响应解析）→ wiki（编排 + __main__ CLI）
+salon_md（标题/大纲 markdown/stub）、salon_notify（卡片 + 连败 SOS）→ salon_flow（编排）
+```
+
+- **facade 约定**：被搬走的公共函数在原模块以 `from x import y as y` 显式 re-export（抑制 ruff F401 且表明是刻意重导），全部既有调用点（`store.get_ppt_last_status`、`feishu.build_card`、`mm.PROMPT_TEMPLATES` 等 ~25 处）与测试 monkeypatch 目标零改动。
+- **monkeypatch 约定**：跨模块调用必须走模块属性访问（`feishu.send`、`bitable._run`、`wiki_lark.time.sleep`），不可 `from x import y` 解包后调用，否则 patch 不生效。唯一的 patch 点迁移：`wk.time.sleep` → `wiki_lark.time.sleep`（node-get 重试在 wiki_lark 内）。
+- 拆分后行数（`wc -l feedkicker/*.py`）：除 bitable.py（746，见 21.4）外全部 ≤200；最大 feishu_card.py 195。
+
+### 21.3 质量门配置
+
+- **ruff 0.16.4**（dev 依赖固定版本）：`target-version="py312"`、`line-length=100`、`lint.select=["E4","E7","E9","F","I","UP","BLE","DTZ","FURB","PLW1510"]`。broad except 统一 `except Exception:  # noqa: BLE001`（子进程/外部 API 边界刻意兜底）；`datetime.now(tz)` 强制时区（DTZ）；`subprocess.run(..., check=False)` 显式（PLW1510）；Py3.12 现代化（UP，含 `from datetime import UTC`、原生 `fromisoformat("...Z")`）。`store.py` facade 成组 re-export 在 per-file-ignores 关 I001。命令：`.venv/bin/ruff check .` → 0 errors。
+- **basedpyright 1.39.10**：`include=["feedkicker"]`、`pythonVersion="3.12"`。JSON/子进程边界无静态 schema，`reportAny`/`reportUnknown*`/`reportMissingParameterType`/`reportPrivateUsage`（跨模块调 `bitable._run/_parse` 的架构所需）/`reportExplicitAny`（边界 `dict[str, Any]` 刻意）/`reportUnusedCallResult`（`__main__` argparse 惯例）降级 none；`reportUnusedParameter` 保留 warning。代码侧修完全部 error：裸 `dict`/`list` 一律参数化为 `dict[str, Any]`/`list[dict[str, Any]]`，`CompletedProcess | None` 与 `data.get("node")` 等 None 分支显式收窄。命令：`.venv/bin/basedpyright` → **0 errors**。
+- **零整行注释门**：`feedkicker/*.py` 无整行 `#` 注释（`grep -rn '^[[:space:]]*#' feedkicker/*.py | grep -v noqa` 为空）；承载 lark-cli/launchd 踩坑理由的注释转为函数 docstring（如 `bitable._run` 的 launchd PATH 增补 #123、`_json_arg` 的 ARG_MAX、`wiki_lark.lark_node_get` 的 131005 传播延迟）；inline `# noqa: ...` 允许。
+
+### 21.4 已知遗留
+
+- **bitable.py 746 行未拆分**：本次审核范围外、且是风险最高的 lark-cli 写路径（含 reseed/backfill/sync），强拆风险大于收益；新逻辑一律不进 bitable.py（如 #120 清理进 `bitable_purge.py`）。follow-up tech-debt issue **#135** 跟踪拆分（建议边界：lark-cli 进程层 / Base 与表结构初始化 / 记录读写与回填）。
+
+### 21.5 清单
+
+- [x] OBS1 卡片连败 SOS + `run()` 返回码对齐（salon_notify.py）
+- [x] OBS2 dry-run 强制 stub 大纲、测试真守卫（salon_md.stub_outlines）
+- [x] OBS3 `_unsynced_keys` 死逻辑与死代码删除、`is_ppt_synced` 单一判定
+- [x] 模块拆分：store_meta / store_salon / feishu_card / wiki_lark / minimax_schema / salon_md / salon_notify，facade re-export 保持调用点
+- [x] ruff 0.16.4 配置入 pyproject，`ruff check .` 0 errors
+- [x] basedpyright 1.39.10 配置入 pyproject，0 errors
+- [x] 除 bitable.py 外全部模块 ≤200 行；零整行注释
+- [x] bitable.py 拆分遗留开 follow-up issue（#135）
