@@ -7,7 +7,7 @@ import sys
 from datetime import UTC, datetime
 from typing import Any
 
-from feedkicker import minimax, salon_md, salon_notify, store, wiki
+from feedkicker import minimax, salon_md, salon_notify, store, wiki, wiki_home
 from feedkicker.config import load_config
 from feedkicker.topic import fetch_selected_topics
 
@@ -140,6 +140,13 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         log.info("本轮无新增 Wiki")
 
     card_ok = salon_notify.send_wiki_card(cfg, conn, wiki_urls, dry_run=dry_run)
+
+    if wiki_urls and wiki_space and wiki_parent:
+        try:
+            wiki_home.update_homepage(wiki_space, wiki_parent, dry_run=dry_run)
+        except Exception as e:  # noqa: BLE001
+            log.warning("Wiki 首页更新失败（不影响主流程）: %s", e)
+
     return 0 if card_ok else 1
 
 

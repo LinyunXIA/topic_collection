@@ -1,4 +1,4 @@
-"""Wiki 建文档的 lark-cli 调用层：docs +create 建 docx、wiki +node-get 反查 node_token。"""
+"""Wiki 的 lark-cli 调用层：docs +create 建 docx、wiki +node-get 反查、node-list 列子节点、docs +update 整篇覆盖。"""
 
 from __future__ import annotations
 
@@ -107,3 +107,59 @@ def parse_node(
         nt if isinstance(nt, str) and nt else None,
         ot if isinstance(ot, str) and ot else None,
     )
+
+
+def lark_node_list(
+    space_id: str, parent_node_token: str
+) -> subprocess.CompletedProcess[str] | None:
+    """wiki +node-list：列父节点下直属子节点（--page-all 自动翻页）。
+
+    实测响应为 data.nodes[]（不是 items）；node-list 即时可靠，
+    规避 node-get 对新建节点的 131005 传播延迟。
+    """
+    args = [
+        "wiki", "+node-list",
+        "--space-id", space_id,
+        "--parent-node-token", parent_node_token,
+        "--page-all",
+        "--json",
+    ]
+    return bitable._run(args, timeout=120)
+
+
+def parse_node_list(proc: subprocess.CompletedProcess[str] | None) -> list[dict[str, Any]]:
+    """wiki +node-list 响应 → data.nodes 字典列表（失败/空返回 []）。"""
+    if proc is None or proc.returncode != 0:
+        return []
+    raw = (proc.stdout or "").strip()
+    if not raw or raw[0] not in "{[":
+        return []
+    try:
+        obj = json.loads(raw)
+    except json.JSONDecodeError:
+        return []
+    data = obj.get("data") if isinstance(obj, dict) else None
+    if not isinstance(data, dict):
+        return []
+    nodes = data.get("nodes")
+    if not isinstance(nodes, list):
+        return []
+    return [n for n in nodes if isinstance(n, dict)]
+
+
+def lark_doc_overwrite_md(
+    doc_token: str, rel_content_path: str
+) -> subprocess.CompletedProcess[str] | None:
+    """docs +update --command overwrite：以 markdown 整篇覆盖目标文档。
+
+    --doc 接受 wiki node token（docs 动词对 wiki 节点透明）；
+    --content 只接受 cwd 内相对路径 @file；成功输出非 JSON，以 rc 判定。
+    """
+    args = [
+        "docs", "+update",
+        "--doc", doc_token,
+        "--command", "overwrite",
+        "--doc-format", "markdown",
+        "--content", f"@{rel_content_path}",
+    ]
+    return bitable._run(args, timeout=120)
