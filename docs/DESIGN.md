@@ -808,4 +808,4 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 - [x] salon_flow 卡片后接入，失败仅 WARNING；dry-run 预览
 - [x] tests/test_wiki_home.py（13 用例，subprocess 全 mock）；既有 sf.run 测试 autouse 打桩 update_homepage 防真实子进程
 - [x] ruff / basedpyright 0 errors，150 用例全绿，模块 ≤200 行
-- [ ] 合并后人工执行一次 `wiki_home --env prod` 存量回填并核对主页渲染（3 篇，2026年9月表格）
+- [x] 合并后人工执行一次 `wiki_home --env prod` 存量回填并核对主页渲染（3 篇，2026年9月表格；2026-09-08 已执行，主页 revision 1→3，原模板内容整篇覆盖）
