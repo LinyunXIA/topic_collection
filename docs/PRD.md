@@ -311,3 +311,17 @@ feeds:
 
 - 安全模型：dry-run 为默认且唯一调度形态；`--apply` 必须人工执行；占位 token（含 `<`）与未启用配置直接跳过 bitable 段；**绝不调 `ensure_initialized`**（防误建 Base）；只操作资讯归档 Base（cfg.bitable），不碰 salon 选题 Base；截止判定用上海时区日期串字典序比较，截止当天的记录保留（保守方向）
 - 不影响 push/salon 主流程；设计见 DESIGN §20
+
+---
+
+## 19. v0.7+ 增量（2026-09-08）— Wiki 首页自动索引（F23）
+
+沙龙大纲 docx 每周建在 Wiki「首页」节点下，但主页本身一直是建空间时的模板占位内容（愿景/简介/常用链接/帮助），已归档文档在主页无入口。本增量把**主页整篇覆盖为程序生成的索引页**，原始模板内容每次重建时全部抹去（用户明确要求：不保留、不做局部区块替换）。
+
+| # | 特性 | 验收要点 | 优先级 |
+|---|---|---|---|
+| F23 | Wiki 首页自动索引 | 按月大块（`## YYYY年M月`，不补零，**最新月在最上**），月块下一张三列表格 **生成日期 \| 文件名（纯文本话题名，不带超链接）\| 链接（`[打开](wiki_url)`）**，月内日期降序；salon_flow 每班有新文档后自动重建（失败仅 WARNING，不影响返回码、不触发 SOS）；独立 CLI `python -m feedkicker.wiki_home --env prod` 手动重建/存量回填，`--dry-run` 只打印 | P2 |
+
+- 数据源 = `wiki +node-list` 拉首页节点直属子节点（即时可靠，规避 node-get 对新建节点的 131005 传播延迟；拿到的是规范 /wiki/ node_token，不依赖 sqlite、不产生 /docx/ 回退链接）；仅收录 `obj_type=docx` 且标题匹配 `{话题}_{YYYY-MM-DD}_大纲` 的节点
+- 写入方式 = `docs +update --command overwrite --doc-format markdown --content @file`，`--doc` 直接传首页 wiki node token；整篇覆盖语义即「抹去原内容」
+- 设计见 DESIGN §22

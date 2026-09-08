@@ -9,12 +9,13 @@
 ## 命令
 
 ```bash
-.venv/bin/python -m pytest -q                 # 137 用例全离线，<1s；变慢=打真网了，必须修
+.venv/bin/python -m pytest -q                 # 150 用例全离线，<1s；变慢=打真网了，必须修
 .venv/bin/ruff check .                        # 0 errors（配置见 pyproject [tool.ruff]）
 .venv/bin/basedpyright                        # 0 errors（JSON 边界噪音规则已降级，DESIGN §21.3）
 .venv/bin/tc-push [--env dev|test|prod] [--dry-run]
 .venv/bin/tc-salon [--env dev|test|prod] [--dry-run]
 .venv/bin/tc-purge [--env dev|test|prod] [--apply] [--retention-days N]  # 默认 dry-run
+.venv/bin/python -m feedkicker.wiki_home [--env prod] [--dry-run]   # 重建 Wiki 首页大纲索引（§22）
 .venv/bin/python -m feedkicker.bitable --env prod [--init|--reseed]   # 归档运维
 ```
 

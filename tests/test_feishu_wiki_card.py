@@ -2,8 +2,18 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from feedkicker import feishu, store
 from feedkicker.config import load_config
+
+
+@pytest.fixture(autouse=True)
+def _stub_wiki_home_update(monkeypatch):
+    """salon_flow 末尾的 Wiki 首页更新默认打桩，避免测试触发真实 lark-cli 子进程。"""
+    from feedkicker import wiki_home
+
+    monkeypatch.setattr(wiki_home, "update_homepage", lambda *a, **k: True)
 
 
 def _cfg(monkeypatch):

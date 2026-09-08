@@ -56,6 +56,7 @@ topic_collection/
 │   ├── bitable_purge.py      # 滚动保留的 bitable 侧删除（§20）
 │   ├── minimax.py / minimax_schema.py  # MiniMax 调用 / prompt 与 schema（facade）
 │   ├── wiki.py / wiki_lark.py          # Wiki 归档编排 / lark-cli 调用层
+│   ├── wiki_home.py          # Wiki「首页」自动索引：node-list → 月块表格 → overwrite（§22）
 │   ├── topic.py              # 已选题分页拉取
 │   ├── salon_flow.py         # 沙龙编排主流程（§19）
 │   ├── salon_md.py / salon_notify.py  # 大纲 markdown/stub / 卡片与连败 SOS
@@ -753,3 +754,58 @@ salon_md（标题/大纲 markdown/stub）、salon_notify（卡片 + 连败 SOS�
 - [x] basedpyright 1.39.10 配置入 pyproject，0 errors
 - [x] 除 bitable.py 外全部模块 ≤200 行；零整行注释
 - [x] bitable.py 拆分遗留开 follow-up issue（#135）
+
+## 22. v0.7+ — Wiki 首页自动索引（#137 / F23，2026-09-08）
+
+Wiki「首页」节点（space `7681556911359085522`，parent/home node `X9J7wLI0QixYP3kO3RDcy1OPnVf`）原本是知识空间模板占位内容；沙龙大纲 docx 虽是其子节点，但主页无任何入口。本特性把主页**整篇 overwrite** 为程序生成的索引页（用户明确：原模板内容抹去、不保留、不做局部区块替换）。
+
+### 22.1 数据流与版式
+
+```
+wiki +node-list（space + parent_node_token，--page-all）
+  → data.nodes[] 过滤 obj_type=docx 且标题匹配 ^(?P<topic>.+)_(?P<date>\d{4}-\d{2}-\d{2})_大纲$
+  → 按日期降序（同日话题升序）
+  → build_home_md：# 标题 + 重建说明引用行 + 按月 ## YYYY年M月 大块（最新月在最上，月不补零）
+  → docs +update --command overwrite --doc <首页 node token> --doc-format markdown --content @./.wiki-home-*.md
+```
+
+生成版式（pipe table 经 lark-cli 导入为飞书原生表格）：
+
+```markdown
+# AI 沙龙双大纲归档
+
+> 本页由 feedkicker 每周五自动重建（最近更新 YYYY-MM-DD），共 N 篇。
+
+## 2026年9月
+
+| 生成日期 | 文件名 | 链接 |
+|---|---|---|
+| 2026-09-08 | 话题名（纯文本，无超链接） | [打开](https://…/wiki/<node_token>) |
+```
+
+- **数据源选 node-list 而非 sqlite**：node-list 反映 Wiki 实况且即时可靠；node-get 对新建节点有 131005 传播延迟（§19/§21 已记录），sqlite 里还可能留着 /docx/ 回退链接。node-list 直接给规范 node_token。
+- **文件名是纯文本话题名**（不带超链接），超链接只在「链接」列；表格单元格经 `_md_cell` 去换行、竖线转义。
+
+### 22.2 模块与调用点
+
+- `wiki_lark.py` 加 3 个薄封装：`lark_node_list(space_id, parent)`（`wiki +node-list --page-all --json`，timeout 120）、`parse_node_list(proc)`（读 `data.nodes`，注意实测字段是 **nodes 不是 items**；失败/空返回 `[]`）、`lark_doc_overwrite_md(doc_token, rel_path)`（`docs +update --command overwrite`；成功输出非 JSON，`bitable._parse` 以 rc 判定，故不带 `--json`）。
+- `wiki_home.py`（新，171 行）：`TITLE_RE`、`list_outline_docs`（node-list 失败抛 RuntimeError）、`build_home_md`（纯函数，`now` 可注入便于测试）、`update_homepage(space_id, parent, dry_run, now) -> bool`（任何失败仅 WARNING 返回 False；dry-run 打印预览不写；临时 md 走 cwd 相对路径 `./.wiki-home-*.md`，finally 删除）、`main(argv)` CLI（`--env/--config/--db/--dry-run`，rc 2 配置错 / 1 异常或更新失败 / 0 成功；space/parent 取 `cfg.wiki.*` 回退 `cfg.salon.wiki_*`）。
+- `salon_flow.run()`：卡片推送之后、return 之前，`if wiki_urls and wiki_space and wiki_parent:` 调 `wiki_home.update_homepage(..., dry_run=dry_run)`，外层 broad except 兜底——**主页失败不影响主流程返回码、不触发 SOS**（文档与卡片已成才是主产物）。dry-run 也调用（dry_run=True 打印预览）。
+
+### 22.3 运行方式
+
+```bash
+.venv/bin/python -m feedkicker.wiki_home --dry-run --env prod   # 预览，只读 node-list 不写
+.venv/bin/python -m feedkicker.wiki_home --env prod             # 手动重建/存量回填（prod 写）
+```
+
+salon 周五 launchd 班有新文档时自动重建，无需新 plist。
+
+### 22.4 清单
+
+- [x] wiki_lark：lark_node_list / parse_node_list（data.nodes）/ lark_doc_overwrite_md
+- [x] wiki_home.py：list_outline_docs / build_home_md / update_homepage / CLI
+- [x] salon_flow 卡片后接入，失败仅 WARNING；dry-run 预览
+- [x] tests/test_wiki_home.py（13 用例，subprocess 全 mock）；既有 sf.run 测试 autouse 打桩 update_homepage 防真实子进程
+- [x] ruff / basedpyright 0 errors，150 用例全绿，模块 ≤200 行
+- [ ] 合并后人工执行一次 `wiki_home --env prod` 存量回填并核对主页渲染（3 篇，2026年9月表格）
