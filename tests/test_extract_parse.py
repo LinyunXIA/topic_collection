@@ -8,6 +8,7 @@ import pytest
 
 from feedkicker.config_models import PROJECT_ROOT
 from feedkicker.extract_llm import build_batch_prompt, merge_topics, parse_topics
+from feedkicker.extract_parse import strip_reasoning
 
 _PROMPT_FILE = PROJECT_ROOT / "prompts" / "extract.md"
 
@@ -181,3 +182,60 @@ def test_parse_topics_merges_same_name_across_items() -> None:
     assert len(got) == 1
     assert got[0]["资讯链接"] == ["https://a/1", "https://b/2"]
     assert got[0]["出处来源"] == ["量子位", "InfoQ"]
+
+
+def test_parse_topics_strips_think_block_with_braces() -> None:
+    inner = json.dumps({"topics": [_topic(name="X", tool="T", principle="P")]}, ensure_ascii=False)
+    raw = '<think>推理里含 {"示例":1} 与 {a: [1,2]} 花括号</think>\n' + inner
+
+    got, dropped = parse_topics(raw)
+
+    assert len(got) == 1
+    assert got[0]["话题名称"] == "X"
+    assert dropped == 0
+
+
+def test_parse_topics_think_case_insensitive_and_consecutive() -> None:
+    inner = json.dumps({"topics": [_topic()]}, ensure_ascii=False)
+    raw = (
+        f"<Think>第一段 {json.dumps({'a': 1})}</Think>"
+        f"<THINKING>第二段 {json.dumps({'b': 2})}</THINKING>\n{inner}"
+    )
+
+    got, dropped = parse_topics(raw)
+
+    assert len(got) == 1
+    assert dropped == 0
+
+
+def test_parse_topics_think_after_json() -> None:
+    assert parse_topics('{"topics": []}\n<think>{"x": 1}</think>') == ([], 0)
+
+
+def test_parse_topics_fenced_json_after_think() -> None:
+    inner = json.dumps({"topics": [_topic()]}, ensure_ascii=False)
+    raw = f"<think>{json.dumps({'示例': 1})}</think>\n```json\n{inner}\n```"
+
+    got, dropped = parse_topics(raw)
+
+    assert len(got) == 1
+    assert dropped == 0
+
+
+def test_parse_topics_unclosed_think_raises() -> None:
+    with pytest.raises(ValueError):
+        parse_topics("<think>只有推理没有闭合")
+
+
+def test_strip_reasoning_paired_blocks() -> None:
+    assert strip_reasoning('<think>a{1}</think>{"topics":[]}') == '{"topics":[]}'
+
+
+def test_strip_reasoning_unclosed_truncates() -> None:
+    assert strip_reasoning("keep<thinking>reason {") == "keep"
+
+
+def test_strip_reasoning_no_tags_unchanged() -> None:
+    text = '前置 {"topics": []}'
+
+    assert strip_reasoning(text) == text
