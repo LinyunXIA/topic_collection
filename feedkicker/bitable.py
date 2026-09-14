@@ -161,9 +161,13 @@ def main(argv: list[str] | None = None) -> int:
             log.info("已清空 %d 条旧记录，准备重灌", n)
         if args.backfill or args.fix_archive_date:
             env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
-            n = bitable_backfill.backfill_empty_archive_dates(
-                info["app_token"], info["table_id"], env_name=env_name, dry_run=args.dry_run
-            )
+            try:
+                n = bitable_backfill.backfill_empty_archive_dates(
+                    info["app_token"], info["table_id"], env_name=env_name, dry_run=args.dry_run
+                )
+            except Exception as e:  # noqa: BLE001
+                log.error("backfill 失败: %s", e)
+                return 2
             log.info("归档日期回填：%d 条", n)
         synced = bitable_records.sync_env(cfg.bitable, cfg.app_env, conn)
         log.info("同步完成：%d 条", synced)

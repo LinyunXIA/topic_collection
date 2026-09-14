@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -28,15 +29,45 @@ _CHUNK = 200
 
 MAX_OFFSET = 20000
 
+MAX_OFFSET_LAST = 200000
+
 _LARK_CANDIDATES = ("/opt/homebrew/bin/lark-cli", "/usr/local/bin/lark-cli")
 
 
 def _guard_offset(offset: int) -> None:
-    """分页 offset 上限守卫：lark-cli 忽略 --offset 恒返满页时避免死循环（#223）。"""
-    if offset > MAX_OFFSET:
+    """绝对兜底（页指纹为主检测，#232）：正常大表可翻到 20 万 offset，仅防指纹失效。"""
+    if offset > MAX_OFFSET_LAST:
         raise RuntimeError(
-            f"分页 offset 超过上限 {MAX_OFFSET}，疑似未按 --offset 翻页，中止以避免死循环"
+            f"分页 offset 超过绝对兜底 {MAX_OFFSET_LAST}，疑似未按 --offset 翻页，中止以避免死循环"
         )
+
+
+def _page_fingerprint(page: Any) -> str:
+    """本页指纹：优先 id 集合的 sorted sha1，无 id 时对行式数据做 sha1。"""
+    if not isinstance(page, dict):
+        return ""
+    records = page.get("records") or page.get("items")
+    if isinstance(records, list) and records:
+        ids = [
+            str(r.get("record_id") or r.get("id") or r.get("recordId") or "")
+            for r in records
+            if isinstance(r, dict)
+        ]
+        ids = [i for i in ids if i]
+        if ids:
+            return hashlib.sha1("|".join(sorted(ids)).encode()).hexdigest()
+    rows = page.get("data")
+    if isinstance(rows, list) and rows:
+        return hashlib.sha1(json.dumps(rows, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+    return ""
+
+
+def _page_guard(prev_fp: str, page: Any) -> str:
+    """本页指纹与上页相同即判定 lark-cli 忽略 --offset，raise 而非靠 offset 天花板（#232）。"""
+    fp = _page_fingerprint(page)
+    if prev_fp and fp and fp == prev_fp:
+        raise RuntimeError("分页未前进（疑似 lark-cli 忽略 --offset），中止以避免死循环")
+    return fp
 
 
 def lark_bin() -> str:

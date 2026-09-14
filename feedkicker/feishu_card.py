@@ -39,7 +39,7 @@ def build_card(
 ) -> dict[str, Any]:
     """每源保最新 `top_n` 条（时效键=published_at/first_seen），`selected` 最旧在前（#200）。
 
-    超限裁剪（#222）：剥 description → 按拼接序 pop(0) 丢最旧（跨源近似）→ 丢 wiki_urls 尾部并提示。
+    超限裁剪（#222/#233）：剥 description → 丢全局 time_key 最小（最旧）者 → 丢 wiki_urls 尾部并提示。
     """
     def time_key(item: dict[str, Any]) -> str:
         return item.get("published_at") or item.get("first_seen") or ""
@@ -119,7 +119,8 @@ def build_card(
             show_desc = False
             continue
         if selected:
-            selected.pop(0)
+            idx = min(range(len(selected)), key=lambda i: time_key(selected[i][1]))
+            selected.pop(idx)
             dropped += 1
             continue
         if wiki_urls:

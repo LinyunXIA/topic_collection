@@ -46,6 +46,7 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
     """
     links: set[str] = set()
     offset = 0
+    prev_fp = ""
     while True:
         bitable_lark._guard_offset(offset)
         proc = bitable_lark._run(
@@ -65,6 +66,7 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
         data = bitable_lark._data(proc)
         if not isinstance(data, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
             raise RuntimeError(f"多维表格已有链接响应不是 JSON 对象，中止本次同步: {str(data)[:200]}")
+        prev_fp = bitable_lark._page_guard(prev_fp, data)
         records = data.get("records")
         if isinstance(records, list):
             for rec in records:

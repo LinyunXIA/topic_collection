@@ -106,7 +106,11 @@ def run(cfg, conn, dry_run: bool = False) -> int:
                 log.warning("topic %s 原理类大纲生成失败: %s", rid, e)
                 continue
 
-        combined_md = salon_md.build_combined_md(title, tool_outline, principle_outline)
+        try:
+            combined_md = salon_md.build_combined_md(title, tool_outline, principle_outline)
+        except Exception as e:  # noqa: BLE001
+            log.warning("topic %s 大纲合并失败: %s", rid, e)
+            continue
         if dry_run:
             print(json.dumps({"tool_outline": tool_outline, "principle_outline": principle_outline}, ensure_ascii=False, indent=2))
             print(combined_md[:3000])

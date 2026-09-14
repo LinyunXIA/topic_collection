@@ -100,6 +100,7 @@ def backfill_empty_archive_dates(
         else []
     )
     offset = 0
+    prev_fp = ""
     to_fix: list[tuple[str, str]] = []
     total_scanned = 0
     while True:
@@ -119,6 +120,7 @@ def backfill_empty_archive_dates(
         if not bitable_lark._ok(proc):
             break
         data = bitable_lark._data(proc)
+        prev_fp = bitable_lark._page_guard(prev_fp, data)
         records: list[dict[str, Any]] = data.get("records") or []
         fields: list[str] = data.get("fields") or []
         rows: list[Any] = data.get("data") or []
