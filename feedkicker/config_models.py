@@ -2,12 +2,27 @@
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "tc-prod.sqlite3"
 VALID_ENVS = ("dev", "test", "prod")
+
+PROVIDER_KEY_ENVS: dict[str, tuple[str, ...]] = {
+    "minimax": ("MiniMax_Key", "MINIMAX_API_KEY"),
+    "deepseek": ("DEEPSEEK_API_KEY",),
+}
+
+
+def env_key_for(provider: str) -> str:
+    """provider key 环境变量查找（MiniMax_Key 优先 MINIMAX_API_KEY，按注册表顺序）。"""
+    for name in PROVIDER_KEY_ENVS.get(provider, ()):
+        value = os.environ.get(name)
+        if value:
+            return value
+    return ""
 
 
 @dataclass
@@ -65,6 +80,25 @@ class WikiConf:
 
 
 @dataclass
+class ProviderConf:
+    base_url: str = ""
+    model: str = ""
+    api_key: str = ""
+    tool_label: str = ""
+
+
+@dataclass
+class ExtractConf:
+    enabled: bool = False
+    since_days: int = 7
+    batch_size: int = 30
+    provider: str = "minimax"
+    prompt_file: str = "prompts/extract.md"
+    max_calls: int = 0
+    providers: dict[str, ProviderConf] = field(default_factory=dict)
+
+
+@dataclass
 class Config:
     app_env: str = "prod"
     feishu_webhook: str = ""
@@ -78,3 +112,4 @@ class Config:
     salon: SalonConf = field(default_factory=SalonConf)
     minimax: MinimaxConf = field(default_factory=MinimaxConf)
     wiki: WikiConf = field(default_factory=WikiConf)
+    extract: ExtractConf = field(default_factory=ExtractConf)

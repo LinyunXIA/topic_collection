@@ -116,8 +116,8 @@ feeds:
 数据库按环境分流：默认 `data/tc-{env}.sqlite3`（dev/test/prod 各一库，互不污染；
 launchd 生产任务显式注入 `TC_APP_ENV=prod`）。CLI `--env` / `--db` 可覆盖。
 
-`config.py` 用 `dataclass` 类型化（以 `feedkicker/config.py` 为准，共 12 个顶层字段）：
-`Config{app_env, feishu_webhook, feishu_secret, bootstrap_days, http: HttpConf{timeout_seconds, user_agent}, feeds: list[Feed{name, url}], db_path, site: SiteConf{top_n}, bitable: BitableConf{enabled, app_token, table_id, url, retention_days}, salon: SalonConf{enabled, app_token, table_id, wiki_space_id, wiki_parent_token, trigger_weekday, trigger_hour, trigger_minute}, minimax: MinimaxConf{api_key, model, base_url}, wiki: WikiConf{space_id, parent_token, app_token}}`。
+`config.py` 用 `dataclass` 类型化（以 `feedkicker/config.py` 为准，共 13 个顶层字段）：
+`Config{app_env, feishu_webhook, feishu_secret, bootstrap_days, http: HttpConf{timeout_seconds, user_agent}, feeds: list[Feed{name, url}], db_path, site: SiteConf{top_n}, bitable: BitableConf{enabled, app_token, table_id, url, retention_days}, salon: SalonConf{enabled, app_token, table_id, wiki_space_id, wiki_parent_token, trigger_weekday, trigger_hour, trigger_minute}, minimax: MinimaxConf{api_key, model, base_url}, wiki: WikiConf{space_id, parent_token, app_token}, extract: ExtractConf{enabled, since_days, batch_size, provider, prompt_file, max_calls, providers: dict[str, ProviderConf{base_url, model, api_key, tool_label}]}}`。
 
 配置键权威面（canonical）：`salon.wiki_space_id`/`salon.wiki_parent_token`、`minimax.api_key`/`model`/`base_url`、`wiki.space_id`/`parent_token`/`app_token`、`bitable.*`（`enabled`/`app_token`/`table_id`/`url`/`retention_days`）、`site.top_n`。
 **未文档化别名已移除**（#162）：`salon.wiki_space`、`salon.minimax_api_key`、`minimax.minimax_api_key`、`wiki.wiki_space_id`、`wiki.wiki_parent_token`；`wiki.space_id`/`parent_token` 未配置时回退 `salon.wiki_space_id`/`salon.wiki_parent_token`（§22.2）。
@@ -1025,7 +1025,7 @@ tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-s
 ### 25.8 清单
 
 - [x] F28 `extract_source.py`：`ppt_synced_at IS NULL` + `COALESCE(published_at, first_seen) >= cutoff` + 升序/limit
-- [ ] F29 `extract:` 配置段 + `extract_llm.call_llm` provider 抽象（minimax/deepseek），缺 key 明确报错
+- [x] F29 `extract:` 配置段 + `extract_llm.call_llm` provider 抽象（minimax/deepseek），缺 key 明确报错
 - [ ] F30 `prompts/extract.md` + `build_batch_prompt`/`parse_topics`/`merge_topics`
 - [ ] F31 `extract_write.py`：字段映射 + 「话题名称」去重 + ≤200/批；dry-run 零写
 - [ ] F32 `tc-extract` CLI + CLI.md/OPS.md 文档 + 测试（全 mock 离线）

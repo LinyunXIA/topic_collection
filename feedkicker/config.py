@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from typing import Any
 
 import yaml
 
@@ -11,12 +12,15 @@ from feedkicker.config_models import (
     VALID_ENVS as VALID_ENVS,
     BitableConf as BitableConf,
     Config as Config,
+    ExtractConf as ExtractConf,
     Feed as Feed,
     HttpConf as HttpConf,
     MinimaxConf as MinimaxConf,
+    ProviderConf as ProviderConf,
     SalonConf as SalonConf,
     SiteConf as SiteConf,
     WikiConf as WikiConf,
+    env_key_for as env_key_for,
 )
 
 
@@ -27,6 +31,23 @@ def db_path_for(app_env: str) -> Path:
 def config_path_for(app_env: str) -> Path:
     """默认配置锚定仓库根，不随调用方 cwd 漂移（#163）。"""
     return PROJECT_ROOT / f"config-{app_env}.yaml"
+
+
+def _providers_conf(raw_providers: dict[str, Any]) -> dict[str, ProviderConf]:
+    """extract.providers 子段解析：key 空或 `<...>` 占位时回退 provider 对应 env，仍占位则清空（#249）。"""
+    providers: dict[str, ProviderConf] = {}
+    for name, spec in (raw_providers or {}).items():
+        spec = spec or {}
+        key = str(spec.get("api_key") or "").strip()
+        if not key or key.startswith("<"):
+            key = env_key_for(str(name)).strip()
+        providers[str(name)] = ProviderConf(
+            base_url=str(spec.get("base_url") or ""),
+            model=str(spec.get("model") or ""),
+            api_key="" if key.startswith("<") else key,
+            tool_label=str(spec.get("tool_label") or ""),
+        )
+    return providers
 
 
 def load_config(
@@ -107,6 +128,17 @@ def load_config(
         space_id=str(wiki_raw.get("space_id") or salon_raw.get("wiki_space_id") or ""),
         parent_token=str(wiki_raw.get("parent_token") or salon_raw.get("wiki_parent_token") or ""),
         app_token=str(wiki_raw.get("app_token") or ""),
+    )
+
+    extract_raw = raw.get("extract") or {}
+    cfg.extract = ExtractConf(
+        enabled=bool(extract_raw.get("enabled", cfg.extract.enabled)),
+        since_days=max(1, int(extract_raw.get("since_days", cfg.extract.since_days))),
+        batch_size=max(1, int(extract_raw.get("batch_size", cfg.extract.batch_size))),
+        provider=str(extract_raw.get("provider") or cfg.extract.provider),
+        prompt_file=str(extract_raw.get("prompt_file") or cfg.extract.prompt_file),
+        max_calls=max(0, int(extract_raw.get("max_calls", cfg.extract.max_calls))),
+        providers=_providers_conf(extract_raw.get("providers") or {}),
     )
 
     env_minimax = os.environ.get("MiniMax_Key") or os.environ.get("MINIMAX_API_KEY")
