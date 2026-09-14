@@ -66,9 +66,12 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             skipped += 1
             continue
 
-        last_status = store.get_ppt_last_status(conn, rid)
-        if store.is_ppt_synced(conn, rid):
-            log.info("跳过已处理 %s (last_status=%s)", rid, last_status)
+        try:
+            skip = store.is_ppt_synced(conn, rid) or store.get_ppt_last_status(conn, rid) == "已选题"
+        except Exception as e:  # noqa: BLE001
+            log.error("topic %s 跳过判据查询失败: %s", rid, e)
+            continue
+        if skip:
             skipped += 1
             continue
 
@@ -130,7 +133,10 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         if dry_run:
             continue
 
-        store.mark_topic_archived(conn, table_id, rid, title, url, combined_md, now_iso)
+        try:
+            store.mark_topic_archived(conn, table_id, rid, title, url, combined_md, now_iso)
+        except Exception as e:  # noqa: BLE001
+            log.error("topic %s 归档落库失败: %s", rid, e)
         success_count += 1
 
     if wiki_urls and not dry_run:
@@ -143,12 +149,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         log.info("本轮无新增 Wiki")
 
     if not dry_run and attempted and not wiki_urls:
-        log.warning(
-            "已选题 %d 条，尝试 %d 条但 0 条成功建 Wiki（全部失败；另 %d 条跳过），请查上方 WARNING",
-            len(selected),
-            attempted,
-            skipped,
-        )
+        log.warning("已选题 %d 条，尝试 %d 条但 0 条成功建 Wiki（全部失败；另 %d 条跳过），请查上方 WARNING", len(selected), attempted, skipped)
 
     card_ok = salon_notify.send_wiki_card(cfg, conn, wiki_urls, dry_run=dry_run)
 

@@ -29,8 +29,7 @@ SHANGHAI = _shanghai_tz()
 def sanitize_topic(topic: str) -> str:
     if not topic:
         return "未命名"
-    s = topic.replace("/", "_").replace("\\", "_")
-    s = s.strip()
+    s = topic.replace("/", "_").replace("\\", "_").strip().lstrip("-").strip()
     return s or "未命名"
 
 

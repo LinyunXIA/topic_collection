@@ -21,6 +21,23 @@ http:
 
 
 @pytest.fixture(autouse=True)
+def _isolated_host_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """清宿主机导出的凭据/环境变量，保证测试 hermetic（#349）。"""
+    for name in (
+        "FEISHU_WEBHOOK",
+        "FEISHU_SECRET",
+        "TC_SALON_TOKEN",
+        "TC_APP_ENV",
+        "TC_DB",
+        "MiniMax_Key",
+        "MINIMAX_API_KEY",
+        "DEEPSEEK_API_KEY",
+        "TC_FEISHU_HOST",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _isolated_test_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
     path = tmp_path / "config-test.yaml"
     path.write_text(_TEST_CONFIG_YAML, encoding="utf-8")

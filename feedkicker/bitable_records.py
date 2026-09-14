@@ -6,7 +6,7 @@ from typing import Any
 
 from feedkicker import bitable_lark, bitable_schema
 from feedkicker.bitable_reseed import purge_all_records as purge_all_records
-from feedkicker.fetch import canonicalize, utc_now_iso
+from feedkicker.fetch import dedup_key, utc_now_iso
 
 log = logging.getLogger(__name__)
 
@@ -77,10 +77,11 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
                 )
             for rec in records:
                 fds = rec.get("fields") or rec.get("record") or {}
+                fds = fds if isinstance(fds, dict) else {}
                 v = fds.get("链接")
                 v = v.get("link") if isinstance(v, dict) else v
-                if v:
-                    links.add(canonicalize(v))
+                if v and (key := dedup_key(v)):
+                    links.add(key)
             if len(records) < bitable_lark._CHUNK:
                 break
             offset += bitable_lark._CHUNK
@@ -104,8 +105,8 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
             else:
                 continue
             v = v.get("link") if isinstance(v, dict) else v
-            if v:
-                links.add(canonicalize(v))
+            if v and (key := dedup_key(v)):
+                links.add(key)
         if len(rows) < 200:
             break
         offset += 200
@@ -128,7 +129,7 @@ def sync_records(
     batch_seen: set[str] = set()
     skipped = 0
     for it in items:
-        key = canonicalize(it.get("url") or "")
+        key = dedup_key(it.get("url") or "")
         if key and (key in seen_links or key in batch_seen):
             skipped += 1
             continue

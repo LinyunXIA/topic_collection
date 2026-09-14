@@ -228,7 +228,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 | flag | 类型 | 默认 | 覆盖关系 | 说明 |
 |---|---|---|---|---|
 | `--apply` | store_true | 关（即默认 dry-run） | — | 真删；缺省仅 dry-run 巡检 |
-| `--retention-days` | int | `None`（取 `config.bitable.retention_days=365`） | 覆盖配置值（下限 1，上限 36500，超限 rc 2） | 保留天数 |
+| `--retention-days` | int | `None`（取 `config.bitable.retention_days=365`） | 覆盖配置值（`<1` 静默钳为 1；仅 `>36500` 报 rc 2） | 保留天数 |
 | `--config` | str | `None` | 覆盖 `--env` 推导 | 指定 `config-{env}.yaml` 路径 |
 | `--db` | str | `None` | 覆盖 `TC_DB` 与 `--env` 推导 | sqlite 路径 |
 | `--env` | choice `{dev,test,prod}` | `None`（回落 prod） | 覆盖 `TC_APP_ENV` | 决定默认配置与 db 路径 |
@@ -326,7 +326,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 | `--dry-run` | store_true | 关（默认行为） | 与 `--apply` 互斥 | 仅打印待写清单，零写调用 |
 | `--since-days` | 正整数 | `None`（取 `extract.since_days=7`） | 覆盖配置 | 时间窗天数（边界含当天；取值 1..3650，#269） |
 | `--limit` | 正整数 | `None`（不限） | — | 最多处理的 RSS 行数 |
-| `--batch-size` | 正整数 | `None`（取 `extract.batch_size=30`） | 覆盖配置 | 每批条数（每批一次 LLM 调用） |
+| `--batch-size` | 正整数 | `None`（取 `extract.batch_size=30`） | 覆盖配置 | 每批条数（每批一次 LLM 调用；取值 1..200，越界 rc 2，#335） |
 | `--max-calls` | 非负整数 | `None`（取 `extract.max_calls=0`） | 覆盖配置 | LLM 调用上限，`0`=不限；达限停止剩余批 |
 | `--provider` | choice `{minimax,deepseek}`（由 provider 注册表键动态生成） | `None`（取 `extract.provider`，默认 `minimax`） | 覆盖配置 | 本次运行使用的 LLM provider；`提取工具` 随之为该 provider 的 tool_label（minimax→`MMax`，deepseek→`DS`） |
 | `--config` | str | `None` | 覆盖 `--env` 推导 | 指定 `config-{env}.yaml` 路径 |
@@ -366,7 +366,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 待写选题 2 个（dry-run，未写表；目标表已存在跳过 0 个）：
 [将写入] 1. 话题名A
 {"话题名称": "话题名A", "可使用工具": "…", "相关AI原理": "…", "资讯链接": "https://…", "出处来源": "量子位", "提炼日期": "2026-09-14", "讨论状态": ["未讨论"], "提取工具": ["MMax"]}
-{"mode": "dry-run", "since_days": 7, "batches": 1, "llm_calls": 1, "topics": 2, "written": 0, "pending": 2, "skipped": 0, "failed_batches": 0, "empty_batches": 0}
+{"mode": "dry-run", "since_days": 7, "batches": 1, "llm_calls": 1, "topics": 2, "written": 0, "pending": 2, "skipped": 0, "failed_writes": 0, "failed_batches": 0, "empty_batches": 0}
 ```
 
 退出码 `0`。副作用：读 sqlite 与 salon 表（只读 `+record-list` 去重查询），不写表。
@@ -379,7 +379,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 
 如需本次走 DeepSeek：`.venv/bin/tc-extract --env test --apply --provider deepseek`（`提取工具=DS`）。
 
-示意输出：`提炼完成：… 写入=N 待写=0 跳过=M 失败批=0` 与统计 JSON（`"mode": "apply"`）。退出码 `0`（部分批失败仅汇总 WARNING，rc 不变；配置错 `2`，异常 `1`）。副作用：写 salon 选题表（≤200/批，`讨论状态=未讨论`、`提取工具`=所选 provider 的 tool_label）。
+示意输出：`提炼完成：… 写入=N 待写=0 跳过=M 失败批=0` 与统计 JSON（`"mode": "apply"`）。退出码 `0`（部分批失败/部分写入失败仅汇总 WARNING，rc 不变）；`--apply` **全部写入失败**（`failed_writes>0 且 written==0`）→ `1`；配置错 `2`，其它异常 `1`。副作用：写 salon 选题表（≤200/批，`讨论状态=未讨论`、`提取工具`=所选 provider 的 tool_label）。
 
 **prod（仅 dry-run）**：
 

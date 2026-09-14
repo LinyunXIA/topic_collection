@@ -31,7 +31,7 @@ def send_wiki_card(
     """推送 Wiki 大纲汇总卡片。
 
     失败时 strip_actions 降级为纯链接卡片重试一次；仍败则 meta 连败 +1，
-    达 SOS_THRESHOLD 且 webhook 非空时发纯文本求救并清零。dry-run 只打印 payload。
+    达 SOS_THRESHOLD 且 webhook 非空时发纯文本求救，`sos_ok` 为真才清零（#339）。dry-run 只打印 payload。
     非 prod 环境且 webhook 非空时发送前 WARNING（对齐 push，防误推真实群）。
     裁剪后 0 个 wiki 链接（输入非空）视为失败（#R4V-6）；
     返回 True 表示送达（或 dry-run / 无链接），False 表示最终失败。
@@ -85,14 +85,17 @@ def send_wiki_card(
                 f"⚠️ feedkicker salon 连续 {streak} 次 Wiki 大纲卡片推送失败，"
                 f"请检查机器人状态/网络。最近一班 {len(wiki_urls)} 份大纲 Wiki 已建成但卡片可能未送达。"
             )
-            feishu.send_text(
+            sos_ok = feishu.send_text(
                 sos,
                 cfg.feishu_webhook,
                 cfg.http.timeout_seconds,
                 cfg.http.user_agent,
                 secret=cfg.feishu_secret,
             )
-            store.set_meta(conn, SALON_FAIL_STREAK_KEY, "0")
+            if sos_ok:
+                store.set_meta(conn, SALON_FAIL_STREAK_KEY, "0")
+            else:
+                log.warning("salon SOS 纯文本发送失败，保留连败计数 %d（下轮重试）", streak)
         return False
     except Exception as e:  # noqa: BLE001
         log.warning("Wiki 卡片推送异常: %s", e)

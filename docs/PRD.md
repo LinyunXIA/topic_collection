@@ -299,7 +299,7 @@ feeds:
 | F11 | 多维表格归档 | 单表按来源分组视图；组织内链接只读；历史全量回填 | P1 |
 | F12 | 跨源去重入表 | 同一文章（规范化 URL）在表内仅一行，多来源取首见 | P1 |
 
-- GitHub Pages 流程暂停（site.enabled=false），多维表格承接"可浏览档案"角色
+- GitHub Pages 流程暂停（该链路已废弃移除），多维表格承接"可浏览档案"角色
 
 ---
 
@@ -378,7 +378,7 @@ feeds:
 | # | 特性 | 验收要点 | 优先级 |
 |---|---|---|---|
 | F24 | README 总览与快速上手 | 根 `README.md`：一句话定位 + 架构一句话（链 DESIGN §1）、运行环境（Python ≥3.12 / 仓库内 `.venv` / 外部 `lark-cli` 已登录）、安装、配置与凭据概览（三份 `config-{env}.yaml` + 覆盖顺序）、dev `--dry-run` 跑通 `tc-push` 的最小步骤、8 命令总览表（链 CLI.md 锚点）、目录导航 | P2 |
-| F25 | 命令行详解（8 命令） | `docs/CLI.md`：`tc-push`/`tc-salon`/`tc-purge`/`feedkicker.wiki_home`/`.bitable`/`.wiki`/`.topic` 逐命令分节——用途 + DESIGN 章节号、参数表（源码 argparse + `--help` 实跑）、dev/test/prod 环境差异、三环境示例（示意输出 + 退出码 + 副作用）、`--dry-run` 输出、注意/坑；附录错误码对照（11246/131005/>20KB） | P2 |
+| F25 | 命令行详解（8 命令） | `docs/CLI.md`：`tc-push`/`tc-salon`/`tc-purge`/`tc-extract`/`feedkicker.wiki_home`/`.bitable`/`.wiki`/`.topic` 逐命令分节——用途 + DESIGN 章节号、参数表（源码 argparse + `--help` 实跑）、dev/test/prod 环境差异、三环境示例（示意输出 + 退出码 + 副作用）、`--dry-run` 输出、注意/坑；附录错误码对照（11246/131005/>20KB） | P2 |
 | F26 | 运维手册 | `docs/OPS.md`：配置（对齐 `config_models.py` dataclass + `.example` + 覆盖顺序 + db 分流）、凭据（`FEISHU_WEBHOOK`/`FEISHU_SECRET`/`MiniMax_Key`/`TC_SALON_TOKEN`；yaml gitignored；prod 与 dev/test 双 Base）、launchd 三个 plist（push 8:30/16:00、salon 周五 10:00、purge 每月 1 号 10:30 仅 dry-run）+ 重载步骤、飞书三坑、排障（症状→排查→处置）、环境分级纪律 | P2 |
 | F27 | 三件套一致性自检 | README/CLI/OPS 与代码行为一致（参数/默认值/退出码经 `--help` + 源码核对）、交叉引用有效、无真实凭据泄漏 | P3 |
 

@@ -21,7 +21,7 @@ def lark_doc_create(rel_path: str, parent_wiki_token: str, doc_title: str):
     args = [
         "docs", "+create",
         "--parent-token", parent_wiki_token,
-        "--title", doc_title,
+        f"--title={doc_title}",
         "--doc-format", "markdown",
         "--content", f"@{rel_path}",
         "--json",

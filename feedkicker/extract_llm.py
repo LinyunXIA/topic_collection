@@ -77,12 +77,14 @@ def refine_batches(
         parsed: list[dict[str, Any]] | None = None
         dropped = 0
         limit_reached = False
+        tried = False
         for attempt in (1, 2):
             if max_calls and calls >= max_calls:
                 log.warning("达到 max_calls=%d 上限，停止剩余批", max_calls)
                 limit_reached = True
                 break
             calls += 1
+            tried = True
             try:
                 raw = call_llm(ex, prompt)
             except Exception as e:  # noqa: BLE001
@@ -94,6 +96,9 @@ def refine_batches(
             except ValueError as e:
                 log.warning("第 %d/%d 批第 %d/2 次尝试失败（JSON/契约解析失败）: %s", no, len(batches), attempt, e)
         if limit_reached:
+            if tried and parsed is None:
+                failed += 1
+                log.warning("第 %d/%d 批因达到 max_calls 上限中止重试，计失败批", no, len(batches))
             break
         if parsed is None:
             failed += 1
@@ -150,14 +155,23 @@ def _post_chat(conf: ProviderConf, prompt: str, timeout: float = 180.0) -> str:
 
 
 def _content_of(data: Any) -> str:
+    """取 assistant 文本；`content` 为空时回退 thinking 模型的 `reasoning_content`（#330）。"""
     if not isinstance(data, dict):
         return ""
     choices = data.get("choices")
     if not isinstance(choices, list) or not choices or not isinstance(choices[0], dict):
         return ""
     msg = choices[0].get("message")
-    if isinstance(msg, dict) and isinstance(msg.get("content"), str):
-        return msg["content"]
+    if isinstance(msg, dict):
+        content = msg.get("content")
+        if isinstance(content, str) and content.strip():
+            return content
+        reasoning = msg.get("reasoning_content")
+        if isinstance(reasoning, str) and reasoning.strip():
+            log.warning("LLM content 为空，回退 reasoning_content（thinking 模型）")
+            return reasoning
+        if isinstance(content, str):
+            return content
     tail = choices[0].get("text")
     return tail if isinstance(tail, str) else ""
 

@@ -4,36 +4,15 @@ from __future__ import annotations
 
 import logging
 from typing import Any
-from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from feedkicker import bitable_lark
 from feedkicker.extract_parse import _str_list, md_link_tokens, topic_key
-from feedkicker.fetch import canonicalize
+from feedkicker.fetch import dedup_key
 from feedkicker.topic_records import _extract_records
 
 log = logging.getLogger(__name__)
 
-_TRACKING = {"spm", "from", "fbclid", "gclid", "ref", "ref_src", "source", "mc_cid", "mc_eid"}
-
-
-def _link_key(url: str) -> str:
-    """单 URL 去重键：`canonicalize`（去 fragment/host 小写）后再剥 tracking 参数。"""
-    canon = canonicalize(url).strip()
-    if not canon:
-        return ""
-    parts = urlsplit(canon)
-    if not parts.query:
-        return canon
-    try:
-        pairs = parse_qsl(parts.query, keep_blank_values=True)
-    except ValueError:
-        return canon
-    kept = sorted(
-        (k, v)
-        for k, v in pairs
-        if not k.lower().startswith("utm_") and k.lower() not in _TRACKING
-    )
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(kept), ""))
+_link_key = dedup_key
 
 
 def link_keys(raw: Any) -> set[str]:
@@ -41,13 +20,13 @@ def link_keys(raw: Any) -> set[str]:
 
     真跑表内值常是 markdown 包裹 + 换行拼接 + tracking 参数的单字符串（旧 `canonicalize(str)`
     永不命中，skipped=0 已证）：目标 URL 由 `md_link_tokens` 按括号平衡扫描（任意嵌套，#N4）、
-    标签不当 URL（#270）、相邻/混排各取各（#288）→ `_link_key` 去 tracking（`utm_*` 与常见
-    广告参数）并保留有意义 query；详见 DESIGN §25.5。
+    标签不当 URL（#270）、相邻/混排各取各（#288）、非 URL token 过滤（#329）→ `dedup_key`
+    统一去 tracking（`utm_*` 与常见广告参数）并保留有意义 query（#325）；详见 DESIGN §25.5。
     """
     keys: set[str] = set()
     for item in _str_list(raw):
         for url in md_link_tokens(item):
-            if key := _link_key(url):
+            if key := dedup_key(url):
                 keys.add(key)
     return keys
 
@@ -96,6 +75,7 @@ def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
         records = _extract_records(data)
         for rec in records:
             fields = rec.get("fields") or {}
+            fields = fields if isinstance(fields, dict) else {}
             for name in _str_list(fields.get("话题名称")):
                 names.add(topic_key(name))
             links |= link_keys(fields.get("资讯链接"))

@@ -8,15 +8,14 @@ import re
 import unicodedata
 from typing import Any
 
+from feedkicker.fetch import is_url_token
+from feedkicker.reasoning import strip_reasoning as strip_reasoning
+
 log = logging.getLogger(__name__)
 
 _REQUIRED_KEYS = ("话题名称", "可使用工具", "相关AI原理", "资讯链接", "出处来源")
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
-
-_THINK_RE = re.compile(r"(?is)<(think|thinking|reasoning)>.*?</\1>")
-
-_OPEN_THINK_RE = re.compile(r"(?is)<(?:think|thinking|reasoning)\b")
 
 
 def topic_key(name: Any) -> str:
@@ -24,33 +23,17 @@ def topic_key(name: Any) -> str:
     return unicodedata.normalize("NFKC", str(name or "")).strip().casefold()
 
 
-def strip_reasoning(text: str) -> str:
-    """剥离 thinking 模型内联的推理块，返回余文（#321）。
-
-    deepseek-flash 等 thinking 模型把 `<think>…</think>` 推理内联在 content 中；若推理含
-    花括号，`_load_json_obj` 的「首个 `{` 到末个 `}`」兜底会从错误的 `{` 起步，切片错位
-    使 `json.loads` 失败、整批话题丢失。成对块重复剥离直到不再匹配（防嵌套/连续多段）；
-    仍残留未闭合开标签时自该标签处截断到末尾（响应已截断，JSON 不可能完整）。
-    """
-    prev = text
-    while True:
-        stripped = _THINK_RE.sub("", prev)
-        if stripped == prev:
-            break
-        prev = stripped
-    open_at = _OPEN_THINK_RE.search(prev)
-    return prev[: open_at.start()] if open_at else prev
+def _clip(text: str, limit: int) -> str:
+    return text[:limit] + "…" if len(text) > limit else text
 
 
 def build_batch_prompt(template: str, items: list[dict[str, Any]]) -> str:
-    """把本批条目（编号+标题+url+摘要）注入模板尾部；摘要截断 300 字符控 token。"""
+    """把本批条目（编号+标题+url+摘要）注入模板尾部；摘要/标题/链接截断控 prompt 体积（#335）。"""
     lines = [template.rstrip(), "", "## 本批资讯（先整合去重，再按 schema 输出 JSON）"]
     for i, it in enumerate(items, 1):
-        title = " ".join(str(it.get("title") or "").split())
-        url = str(it.get("url") or "").strip()
-        summary = " ".join(str(it.get("description") or "").split())
-        if len(summary) > 300:
-            summary = summary[:300] + "…"
+        title = _clip(" ".join(str(it.get("title") or "").split()), 200)
+        url = _clip(str(it.get("url") or "").strip(), 500)
+        summary = _clip(" ".join(str(it.get("description") or "").split()), 300)
         lines.append(f"{i}. [{it.get('feed_id') or ''}] {title}")
         lines.append(f"   链接: {url}")
         if summary:
@@ -164,7 +147,7 @@ def md_link_tokens(text: str) -> list[str]:
 
     目标自 `](` 起按**括号平衡**扫描，支持任意嵌套深度（`…/a_(b_(c))`，#N4）；标签文本
     `[..]` 不参与（`[标签](url)` 不得把标签当 URL，#270）；相邻/混排链接各取各、裸链不丢
-    （#270/#288）。
+    （#270/#288）；非 URL token（正文注记、`(url "标题")` 标题）一律过滤（#329）。
     """
     tokens: list[str] = []
     rest: list[str] = []
@@ -190,4 +173,4 @@ def md_link_tokens(text: str) -> list[str]:
         rest.append(text[i:start])
         i = j
     tokens.extend("".join(rest).split())
-    return tokens
+    return [t for t in tokens if is_url_token(t)]

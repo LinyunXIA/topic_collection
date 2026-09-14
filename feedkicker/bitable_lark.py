@@ -53,29 +53,28 @@ def guard_pages(pages: int) -> None:
         )
 
 
-def _page_fingerprint(page: Any) -> str:
-    """本页指纹：仅基于 record id 集合的 sorted sha1（无序化）。
+_TOP_ID_KEYS = ("record_ids", "recordIds", "ids", "record_id_list", "recordId_list", "recordIdList")
 
-    CLI 忽略 --offset 且每次打乱行序时，保序指纹永不命中；无序化后第 2 页即熔断（#243）。
-    无任何 id 时返回 ""（不熔断）——曾按 `data` 行内容哈希兜底，会让「同值满页」的表被
-    误判为未翻页而永久无法归档/清理（#303）；有界性交给 `guard_pages` 页数上限。
+
+def _page_fingerprint(page: Any) -> str:
+    """本页指纹：有 id 用排序 sha1（无序化，打乱行序也熔断，#243）；真实 lark-cli 的 id 在顶层
+    `record_id_list`（#361）。无任何 id 源时才退回 fields+data 的**有界**内容 sha1（前 20 行、
+    保序，属最后手段，此形态真实响应不出现，#355）。
     """
     if not isinstance(page, dict):
         return ""
     records = page.get("records") or page.get("items")
-    if isinstance(records, list) and records:
-        ids = [
-            str(r.get("record_id") or r.get("id") or r.get("recordId") or "")
-            for r in records
-            if isinstance(r, dict)
-        ]
-        ids = [i for i in ids if i]
-        if ids:
-            return hashlib.sha1("|".join(sorted(ids)).encode()).hexdigest()
-    top_ids = page.get("record_ids") or page.get("recordIds") or page.get("ids")
-    ids = [str(i) for i in top_ids if i] if isinstance(top_ids, list) else []
+    raw = [r for r in records if isinstance(r, dict)] if isinstance(records, list) else []
+    ids = [str(r.get("record_id") or r.get("id") or r.get("recordId") or "") for r in raw]
+    ids = [i for i in ids if i]
+    if not ids:
+        ids = [str(i) for k in _TOP_ID_KEYS if isinstance(page.get(k), list) for i in page[k] if i]
     if ids:
         return hashlib.sha1("|".join(sorted(ids)).encode()).hexdigest()
+    rows = page.get("data")
+    if isinstance(rows, list) and rows:
+        blob = json.dumps(rows[:20], ensure_ascii=False, sort_keys=True, default=str)
+        return hashlib.sha1(blob.encode()).hexdigest()
     return ""
 
 

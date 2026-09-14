@@ -117,7 +117,11 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     setup_logging(logging.INFO, PLAIN_FORMAT)
-    cfg = load_config(args.config, args.db, app_env=args.env)
+    try:
+        cfg = load_config(args.config, args.db, app_env=args.env)
+    except (FileNotFoundError, ValueError) as e:
+        log.error("%s", e)
+        return 2
     if not cfg.bitable.enabled:
         log.info("bitable 未启用（%s）", cfg.app_env)
         return 0
@@ -138,9 +142,7 @@ def main(argv: list[str] | None = None) -> int:
         return 2
 
     if not (args.init or args.reseed) and not _tokens_ready(cfg.bitable):
-        log.error(
-            "拒绝执行：Base 未配置或为占位 token（仅 --init/--reseed 可创建/修复 Base，其余动作需既有 Base）"
-        )
+        log.error("拒绝执行：Base 未配置或为占位 token（仅 --init/--reseed 可创建/修复 Base，其余动作需既有 Base）")
         return 2
     if args.reseed and not _tokens_ready(cfg.bitable):
         log.error(

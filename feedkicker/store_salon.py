@@ -16,15 +16,19 @@ log = logging.getLogger(__name__)
 
 
 def is_ppt_synced(conn: sqlite3.Connection, record_id: str) -> bool:
-    """按 entry_key 判定（无 feed 过滤）；entry_key 为 URL/guid 的实际数据不会跨源碰撞（#229）。"""
+    """按 entry_key 判定（无 feed 过滤）；entry_key 为 URL/guid 的实际数据不会跨源碰撞（#229）。
+
+    查询异常必须 raise（包装 RuntimeError）：#292 后它是跳过判据之一，把「查询失败」当
+    「未同步」会导致重复建 Wiki docx（#324）。
+    """
     try:
         row = conn.execute(
             "SELECT 1 FROM articles WHERE entry_key = ? AND ppt_synced_at IS NOT NULL",
             (record_id,),
         ).fetchone()
-        return row is not None
-    except Exception:  # noqa: BLE001
-        return False
+    except Exception as e:  # noqa: BLE001
+        raise RuntimeError(f"查询 ppt_synced 状态失败 {record_id}: {e}") from e
+    return row is not None
 
 
 def mark_ppt_synced(
@@ -70,10 +74,12 @@ def mark_topic_archived(
 ) -> None:
     """选题 Wiki 建成后落库：插占位 article 行、标记 ppt 已同步、last_status=已选题。
 
-    三段写入各自独立 try/except：单段失败只 WARNING，不影响已建成的 Wiki 与卡片推送；
-    INSERT 直接写 ppt_synced_at=now（不等第二步 mark 成功，否则 mark 失败会泄漏进 push/归档，#221）；
-    第三段 set_ppt_last_status 仅为诊断留存：跳过判据只看 is_ppt_synced，第三段失败不再致下轮重建 Wiki（#292）。
+    三段各自 try：第二段 mark_ppt_synced、第三段 set_ppt_last_status 失败只 WARNING，不影响
+    已建成的 Wiki 与卡片推送（#221/#292）；第一段（SELECT/INSERT 占位行）失败记 log.error 并在
+    尝试完全部段后 re-raise（#324）——第三段 last_status 是跳过判据的兜底痕迹，故不提前中断。
+    INSERT 直接写 ppt_synced_at=now（不等第二步 mark 成功，否则 mark 失败会泄漏进 push/归档，#221）。
     """
+    first_error: Exception | None = None
     try:
         exists = conn.execute(
             "SELECT 1 FROM articles WHERE entry_key = ?", (record_id,)
@@ -88,7 +94,8 @@ def mark_topic_archived(
             )
             conn.commit()
     except Exception as e:  # noqa: BLE001
-        log.warning("插入占位 article 失败 %s: %s", record_id, e)
+        log.error("插入占位 article 失败 %s: %s", record_id, e)
+        first_error = e
 
     try:
         mark_ppt_synced(conn, [record_id], now_iso)
@@ -99,3 +106,6 @@ def mark_topic_archived(
         set_ppt_last_status(conn, record_id, "已选题")
     except Exception as e:  # noqa: BLE001
         log.warning("set_ppt_last_status 失败 %s: %s", record_id, e)
+
+    if first_error is not None:
+        raise first_error

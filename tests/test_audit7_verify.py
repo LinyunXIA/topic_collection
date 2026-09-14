@@ -61,13 +61,13 @@ def test_yaml_retention_days_boundary_ok(tmp_path) -> None:
     assert purge.main(["--config", str(path), "--db", str(tmp_path / "t2.db"), "--env", "test"]) == 0
 
 
-# ── N2 topic 页数口径按 offset（limit=5 合法多页不误熔断；异常不前进仍终止） ──
+# ── N2 topic 页数按实际页计数（limit=5 合法多页不误熔断；异常不前进仍终止，#348） ──
 
 
 def test_topic_limit_5_many_pages_not_false_tripped(monkeypatch) -> None:
     def fake_run(args, stdin_text=None, timeout=120):
         off = int(args[args.index("--offset") + 1])
-        if off >= 5005:
+        if off >= 4995:
             return FakeProc(0, json.dumps({"data": {"records": [], "has_more": False}}))
         recs = [
             {"record_id": f"rec{off + i:05d}", "fields": {"讨论状态": ["已选题"]}}
@@ -79,7 +79,7 @@ def test_topic_limit_5_many_pages_not_false_tripped(monkeypatch) -> None:
 
     records = topic_mod.fetch_selected_topics("app", "tbl", limit=5)
 
-    assert len(records) == 5005
+    assert len(records) == 4995
 
 
 def test_topic_stuck_pagination_bounded_by_page_cap(monkeypatch) -> None:

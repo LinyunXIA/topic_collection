@@ -82,12 +82,13 @@ def test_page_fingerprint_order_insensitive_for_top_record_ids():
     assert bitable_lark._page_fingerprint(first) == bitable_lark._page_fingerprint(second)
 
 
-def test_page_fingerprint_idless_data_rows_empty_and_bounded_by_pages():
-    """#N3：无 id 的 fields+data 不再按值内容哈希（指纹恒为 "" → 不误熔断），有界性交给 guard_pages。"""
+def test_page_fingerprint_idless_data_rows_bounded_content_hash():
+    """#355：无 id 的 fields+data 用有界内容指纹（前 20 行、保序），同内容重复页可熔断。"""
     page = {"fields": ["键"], "data": [{"键": f"v{i}"} for i in range(5)]}
 
-    assert bitable_lark._page_fingerprint(page) == ""
-    assert bitable_lark._page_guard("", page) == ""
+    fp = bitable_lark._page_fingerprint(page)
+    assert fp
+    assert bitable_lark._page_guard("", page) == fp
 
 
 def _shuffled_rows_run(ids: list[str] | None, calls: dict[str, int]):
@@ -117,7 +118,7 @@ def test_backfill_shuffled_row_order_ignoring_offset_raises_on_second_page(monke
 
 
 def test_backfill_idless_shuffled_rows_bounded_by_page_cap(monkeypatch):
-    """#303：无 id 时不再按值内容哈希误熔断，改由 guard_pages 页数上限兜底终止。"""
+    """#355：无 id 打乱行序时保序内容指纹不误熔断，仍由 guard_pages 页数上限兜底终止。"""
     calls = {"n": 0}
     monkeypatch.setattr(bitable_lark, "_MAX_PAGES", 3)
     monkeypatch.setattr(bitable_lark, "_run", _shuffled_rows_run(None, calls))
@@ -138,6 +139,8 @@ def test_backfill_idless_shuffled_rows_bounded_by_page_cap(monkeypatch):
         {"records": {"x": 1}},
         {"records": [{"record_id": "r1"}, "bad"]},
         {"data": 1},
+        {},
+        {"x": 1},
     ],
 )
 def test_topic_extract_container_abnormal_raises(bad):
@@ -147,7 +150,7 @@ def test_topic_extract_container_abnormal_raises(bad):
 
 @pytest.mark.parametrize(
     "empty",
-    [{}, {"x": 1}, {"records": []}, {"items": []}, {"fields": ["标题"], "data": []}],
+    [{"records": []}, {"items": []}, {"fields": ["标题"], "data": []}],
 )
 def test_topic_extract_empty_pages_return_empty(empty):
     assert topic_mod._extract_records(empty) == []
