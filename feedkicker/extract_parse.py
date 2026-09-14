@@ -135,3 +135,37 @@ def _str_list(value: Any) -> list[str]:
             seen.add(v)
             out.append(v)
     return out
+
+
+def md_link_tokens(text: str) -> list[str]:
+    """把 markdown 链接目标与余文裸链拆成 token 列表（`_link_key` 归一前，供 `link_keys`）。
+
+    目标自 `](` 起按**括号平衡**扫描，支持任意嵌套深度（`…/a_(b_(c))`，#N4）；标签文本
+    `[..]` 不参与（`[标签](url)` 不得把标签当 URL，#270）；相邻/混排链接各取各、裸链不丢
+    （#270/#288）。
+    """
+    tokens: list[str] = []
+    rest: list[str] = []
+    i = 0
+    while True:
+        at = text.find("](", i)
+        if at < 0:
+            rest.append(text[i:])
+            break
+        start = text.rfind("[", i, at)
+        if start < 0:
+            rest.append(text[i : at + 2])
+            i = at + 2
+            continue
+        depth, j = 1, at + 2
+        while j < len(text) and depth:
+            depth += (text[j] == "(") - (text[j] == ")")
+            j += 1
+        if depth:
+            rest.append(text[i:])
+            break
+        tokens.extend(text[at + 2 : j - 1].split())
+        rest.append(text[i:start])
+        i = j
+    tokens.extend("".join(rest).split())
+    return tokens

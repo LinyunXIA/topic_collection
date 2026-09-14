@@ -82,11 +82,12 @@ def test_page_fingerprint_order_insensitive_for_top_record_ids():
     assert bitable_lark._page_fingerprint(first) == bitable_lark._page_fingerprint(second)
 
 
-def test_page_fingerprint_order_insensitive_without_ids():
-    rows = [{"键": f"v{i}"} for i in range(5)]
-    first = {"fields": ["键"], "data": rows}
-    second = {"fields": ["键"], "data": list(reversed(rows))}
-    assert bitable_lark._page_fingerprint(first) == bitable_lark._page_fingerprint(second)
+def test_page_fingerprint_idless_data_rows_empty_and_bounded_by_pages():
+    """#N3：无 id 的 fields+data 不再按值内容哈希（指纹恒为 "" → 不误熔断），有界性交给 guard_pages。"""
+    page = {"fields": ["键"], "data": [{"键": f"v{i}"} for i in range(5)]}
+
+    assert bitable_lark._page_fingerprint(page) == ""
+    assert bitable_lark._page_guard("", page) == ""
 
 
 def _shuffled_rows_run(ids: list[str] | None, calls: dict[str, int]):

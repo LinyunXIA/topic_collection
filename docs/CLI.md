@@ -68,7 +68,7 @@
 |---|---|---|---|
 | dev | `config-dev.yaml` | `data/tc-dev.sqlite3` | webhook/secret 为占位或留空（不推真实群）；bitable 与 dev/test 共享 Base，用「环境」列区分 |
 | test | `config-test.yaml` | `data/tc-test.sqlite3` | 同上；用于联调真实归档与卡片 |
-| prod | `config-prod.yaml` | `data/tc-prod.sqlite3` | 真实 webhook/secret；独立 prod Base；完整源清单、`bootstrap_days=3` |
+| prod | `config-prod.yaml` | `data/tc-prod.sqlite3` | 真实 webhook/secret；独立 prod Base；完整源清单、`bootstrap_days=3`（下限 1，上限 3650） |
 
 ### 示例
 
@@ -228,7 +228,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 | flag | 类型 | 默认 | 覆盖关系 | 说明 |
 |---|---|---|---|---|
 | `--apply` | store_true | 关（即默认 dry-run） | — | 真删；缺省仅 dry-run 巡检 |
-| `--retention-days` | int | `None`（取 `config.bitable.retention_days=365`） | 覆盖配置值（下限 1） | 保留天数 |
+| `--retention-days` | int | `None`（取 `config.bitable.retention_days=365`） | 覆盖配置值（下限 1，上限 36500，超限 rc 2） | 保留天数 |
 | `--config` | str | `None` | 覆盖 `--env` 推导 | 指定 `config-{env}.yaml` 路径 |
 | `--db` | str | `None` | 覆盖 `TC_DB` 与 `--env` 推导 | sqlite 路径 |
 | `--env` | choice `{dev,test,prod}` | `None`（回落 prod） | 覆盖 `TC_APP_ENV` | 决定默认配置与 db 路径 |

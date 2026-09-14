@@ -99,7 +99,7 @@ topic_collection/
 ```yaml
 feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/<token>"
 feishu_secret: "<签名密钥>"   # 机器人开启「签名校验」安全设置时的密钥；未开启则留空
-bootstrap_days: 3      # 冷启动窗口：新源首跑最多推最近 N 天
+bootstrap_days: 3      # 冷启动窗口：新源首跑最多推最近 N 天（下限 1，上限 3650，超限 rc 2）
 site:
   top_n: 5             # 摘要卡每源保留的最新条数（site 段仅此项生效；enabled 已不再被读取）
 http:
@@ -699,7 +699,7 @@ wiki:
 
 - `feedkicker/purge.py`（CLI 编排，`tc-purge = "feedkicker.purge:main"`）：argparse 同构范式（`--apply` / `--retention-days` / `--config` / `--db` / `--env`），返回码 2=配置错误、1=异常、0=正常；末尾打印 `PurgeStats` JSON。**默认 dry-run，`--apply` 才真删**。
 - `feedkicker/bitable_purge.py`（bitable 侧清理，~130 行，新逻辑不进 bitable.py，见 §21.4）。
-- `config.BitableConf.retention_days`（默认 365，`config-{env}.yaml` 的 `bitable.retention_days` 可配，下限 1）。
+- `config.BitableConf.retention_days`（默认 365，`config-{env}.yaml` 的 `bitable.retention_days` 可配，下限 1，上限 36500，超限 `load_config` 报错 → rc 2）。
 
 ### 20.2 算法
 
@@ -929,6 +929,7 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 - **`canonicalize` 键规则漂移**：省略默认端口/保留 userinfo 等归一变更会让 guid-less 源旧行 `entry_key` 与新 key 不一致，升级首轮可能重复推卡一次（一次性影响）。
 - **`is_ppt_synced` 无 feed 过滤**：仅按 `entry_key` 判定，理论碰撞才误伤；实际 `entry_key` 为 URL/guid，不会跨源碰撞。
 - **salon 全失败返回码不变**：`selected` 非空且**有尝试**但 0 条成功时仅 `log.warning`（salon_flow），rc 仍 0，不触发 SOS；稳态全跳过（去重命中）不再误报（#237）。
+- **接受项（记录不修）**：① 超大 `detail_url` 时 `build_card` 不保证 ≤20KB（`detail_url` 由 config 控制、现实值远小于预算；本轮只保证常规条目路径 ≤20KB，#239）；② `is_ppt_synced` 无 feed 过滤（理论碰撞，见上）；③ `select_pending` 无 lease + `mark_pushed` 无条件（数据流见 §1）→ 并发/人工重叠可能重复推送，需运行级锁方免，本机单进程运维下视为取舍；④ `#265/#274` 对「rc0 非 JSON / `data=={}`」硬 raise（安全方向：宁可中止也不误删/误写）。
 
 ### 24.2 第五轮审计修复语义补充（#231–#239，2026-09-14）
 
@@ -938,8 +939,6 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 - **脱敏 canary 哈希化**（#236）：真实 prod record id 不再以明文（含拼接）留在 tracked；测试改为 sha256 比对 + 长 token 无匹配断言，非 git 工作树显式失败（OPS §2.2 同口径记录）。
 - **边界**（#237/#244）：topic 响应容器异常（顶层非 dict / records 非空但非 list[dict] / data 非 list）抛 `RuntimeError` 中止，真正空页才返回 `[]`（#244 收紧 #237 的「空页 + WARNING」吞错）；salon 记录 skipped/attempted 计数；缺 lark-cli 时 `_run` 返回 None、`wiki.main` 统一 rc 2 不 traceback；`wiki_home` space/parent 复用「空或含 `<`」占位守卫 rc 2；minimax 成功码 `"0"` 归一为 0（`_parse_outline_from_response` 复用同款归一，#245）。
 - **配置/并发**（#239）：`feishu_webhook`/`feishu_secret` 的 `<...>` 占位在 `load_config` 统一清空（send 层判空即跳过）；`store_conn.connect` 设 `busy_timeout=5000` + `journal_mode=WAL`，ALTER 迁移容忍 duplicate column。
-- **接受项（记录不修）**：① 超大 `detail_url` 时 `build_card` 不保证 ≤20KB（`detail_url` 由 config 控制、现实值远小于预算；本轮只保证常规条目路径 ≤20KB，#239）；② `is_ppt_synced` 无 feed 过滤（理论碰撞，见 §24.1）；③ `select_pending` 无 lease + `mark_pushed` 无条件（数据流见 §1）→ 并发/人工重叠可能重复推送，需运行级锁方免，本机单进程运维下视为取舍；④ `#265/#274` 对「rc0 非 JSON / `data=={}`」硬 raise（安全方向：宁可中止也不误删/误写）。
-
 ### 24.3 第六轮审计修复登记（#262–#283，2026-09-14）
 
 第六轮全量审计（P2×7 + P3×15）修复落于 commit #286（P2 批 + P3 批 + 独立验证补遗）。行为要点：base 解析 / `--init` 占位 rc2（#262）；空大纲守卫（#263）；extract 去重索引（#264）；响应容器异常硬 raise（#265）；分页/解析健壮性（#269/#270/#271）；dry-run 可见性（#272）；`bootstrap_days` 下限（#273）；`fields+data` 行式守卫（#274/#275）；`fields` 非 `list[dict]` 统一 raise（#276）；`has_more` 归一（#277）；`sqlite_expired_archivable` 巡检可见（#278）；`detail_url` 防御（#279）；`salon.enabled=false` 可见（#280）；占位 token 守卫（#281/#282）；dry-run 零写同源（#283）。

@@ -22,14 +22,12 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
 from feedkicker import bitable, bitable_purge, store
-from feedkicker.config import Config, load_config
+from feedkicker.config import MAX_RETENTION_DAYS, Config, load_config
 from feedkicker.log_setup import setup_logging
 
 log = logging.getLogger(__name__)
 
 PURGE_LAST_RUN_KEY = "purge_last_run_at"
-
-MAX_RETENTION_DAYS = 36500
 
 
 @dataclass

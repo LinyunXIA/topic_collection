@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from feedkicker import bitable_lark
-from feedkicker.extract_parse import _str_list, topic_key
+from feedkicker.extract_parse import _str_list, md_link_tokens, topic_key
 from feedkicker.fetch import canonicalize
 from feedkicker.topic_records import _extract_records
 
 log = logging.getLogger(__name__)
 
-_MD_LINK = re.compile(r"\[(?P<inner>.*?)\]\((?P<target>(?:[^()]|\([^()]*\))*)\)", re.DOTALL)
 _TRACKING = {"spm", "from", "fbclid", "gclid", "ref", "ref_src", "source", "mc_cid", "mc_eid"}
 
 
@@ -42,15 +40,13 @@ def link_keys(raw: Any) -> set[str]:
     """把表内/候选的 `资讯链接` 原值归一为去重键集合（`existing_index`/`plan_writes` 共用）。
 
     真跑表内值常是 markdown 包裹 + 换行拼接 + tracking 参数的单字符串（旧 `canonicalize(str)`
-    永不命中，skipped=0 已证）：**只取 markdown 目标 URL**（`[标签](url)` 不得把标签当 URL，
-    相邻多链接各取各，#270）→ 对「移除 markdown 片段后的余文」按空白拆，两者取并集
-    （混合 markdown + 裸链时裸链不丢，#288）→ `_link_key` 去 tracking（`utm_*` 与常见
+    永不命中，skipped=0 已证）：目标 URL 由 `md_link_tokens` 按括号平衡扫描（任意嵌套，#N4）、
+    标签不当 URL（#270）、相邻/混排各取各（#288）→ `_link_key` 去 tracking（`utm_*` 与常见
     广告参数）并保留有意义 query；详见 DESIGN §25.5。
     """
     keys: set[str] = set()
     for item in _str_list(raw):
-        urls = _MD_LINK.sub(lambda m: f" {m.group('target')} ", item).split()
-        for url in urls:
+        for url in md_link_tokens(item):
             if key := _link_key(url):
                 keys.add(key)
     return keys

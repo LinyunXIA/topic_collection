@@ -43,8 +43,8 @@ def fetch_selected_topics(
 
     响应兼容 records/items 包装与 data.fields+data.data 行式两种形态；
     空页且 has_more 非真即终止，has_more 缺失时以不足一页判定结束；
-    翻页走页指纹守卫（#245）+ 页数上限与 offset 双兜底（#290）：has_more 恒真时
-    连续空页第 2 页即熔断；lark-cli 忽略 --offset 都不会死循环。
+    翻页走页指纹守卫（#245）+ 页数上限（`offset // _CHUNK`，与 --limit 无关）与 offset 双兜底（#290/#N2）：
+    has_more 恒真时连续空页第 2 页即熔断；lark-cli 忽略 --offset 都不会死循环。
     """
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")
@@ -52,12 +52,10 @@ def fetch_selected_topics(
     all_records: list[dict[str, Any]] = []
     offset = 0
     prev_fp = ""
-    pages = 0
     empty_pages = 0
     while True:
         bitable_lark._guard_offset(offset)
-        pages += 1
-        bitable_lark.guard_pages(pages)
+        bitable_lark.guard_pages(offset // bitable_lark._CHUNK + 1)
         args = [
             "base", "+record-list",
             "--base-token", app_token,

@@ -31,6 +31,8 @@ def db_path_for(app_env: str) -> Path:
 
 MAX_BOOTSTRAP_DAYS = 3650
 
+MAX_RETENTION_DAYS = 36500
+
 
 def config_path_for(app_env: str) -> Path:
     """默认配置锚定仓库根，不随调用方 cwd 漂移（#163）。"""
@@ -105,12 +107,15 @@ def load_config(
     cfg.site = SiteConf(top_n=max(1, int(site_raw.get("top_n", cfg.site.top_n))))
 
     bt_raw = raw.get("bitable") or {}
+    retention = max(1, int(bt_raw.get("retention_days", cfg.bitable.retention_days)))
+    if retention > MAX_RETENTION_DAYS:
+        raise ValueError(f"bitable.retention_days={retention} 超过上界 {MAX_RETENTION_DAYS}（对齐 purge）")
     cfg.bitable = BitableConf(
         enabled=bool(bt_raw.get("enabled", cfg.bitable.enabled)),
         app_token=str(bt_raw.get("app_token") or ""),
         table_id=str(bt_raw.get("table_id") or ""),
         url=str(bt_raw.get("url") or ""),
-        retention_days=max(1, int(bt_raw.get("retention_days", cfg.bitable.retention_days))),
+        retention_days=retention,
     )
 
     salon_raw = raw.get("salon") or {}
