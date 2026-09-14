@@ -6,7 +6,7 @@ import argparse
 import logging
 import sys
 
-from feedkicker import bitable_lark, score_llm, score_source
+from feedkicker import bitable_lark, score_llm, score_parse, score_report, score_source
 from feedkicker.config import load_config
 from feedkicker.config_models import Config
 from feedkicker.log_setup import setup_logging
@@ -66,10 +66,11 @@ def run(
     max_calls: int = 0,
     force: bool = False,
 ) -> int:
-    """读全表 → 校验目标列 → 组批 → dry-run 计划打印；rc 2 配置/参数非法、0 正常。
+    """读全表 → 校验目标列 → 组批 → 逐批 LLM 打分 → dry-run 清单；rc 2 配置/参数非法、0 正常。
 
-    本阶段（F38/F39）不调 LLM、不写表：`--apply` 显式拒绝为 rc2（写入属 F41）；prompt 文件
-    缺失 / provider 缺 key / 目标列缺失均 rc2，且均在发起任何 lark/LLM 调用前判定。
+    本阶段（F38–F40）仍不写表：`--apply` 显式拒绝为 rc2（写入属 F41）；prompt 文件缺失 /
+    provider 缺 key / 目标列缺失均 rc2，且均在发起任何 lark/LLM 调用前判定。默认只补空：
+    已有 `打分`/`理由` 的行计入 skipped 并作为横向上文，不进入本批（§26.7）。
     """
     if apply:
         log.error("写入尚未实现（F41）")
@@ -87,7 +88,7 @@ def run(
         log.error("salon app_token/table_id 缺失或为占位，无法读取/校验话题表")
         return 2
     try:
-        score_llm.load_template(cfg.score.prompt_file)
+        template = score_llm.load_template(cfg.score.prompt_file)
     except RuntimeError as e:
         log.error("提示词错误: %s", e)
         return 2
@@ -109,6 +110,27 @@ def run(
         "tc-score 运行计划：环境=%s db=%s 目标表=%s 模板=%s provider=%s（%s）总行数=%d 批数=%d 每批行数=%s 待打分=%d 跳过=%d 横向上文=%d max_calls=%s force=%s",
         cfg.app_env, cfg.db_path, table_id, cfg.score.prompt_file, provider, provider_conf.tool_label,
         len(rows), len(batches), sizes, len(pending), len(skipped), len(skipped), max_calls, force,
+    )
+    prior_scores = [
+        (str(row.get("话题名称") or ""), str(row.get("打分")))
+        for row in skipped
+        if row.get("打分") is not None and str(row.get("打分")).strip()
+    ]
+    result = score_llm.refine_batches(provider_conf, template, batches, prior_scores, max_calls)
+    score_report.print_dry_run(result.scored, skipped, score_parse.check_distribution(result.scored))
+    score_report.print_summary(
+        {
+            "mode": "apply" if apply else "dry-run",
+            "batches": len(batches),
+            "llm_calls": result.calls,
+            "rows": len(rows),
+            "scored": len(result.scored),
+            "skipped": len(skipped),
+            "failed_writes": 0,
+            "failed_batches": result.failed,
+            "dropped": result.dropped,
+            "empty_batches": result.empty,
+        }
     )
     return 0
 

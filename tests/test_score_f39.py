@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,25 @@ from feedkicker import bitable_lark, extract_llm, score_flow, score_llm, score_s
 from feedkicker.config_models import ProviderConf, ScoreConf
 
 _MM_FIELDS = ["话题名称", "可使用工具", "相关AI原理", "资讯链接", "出处来源", "MMax打分", "MMax理由"]
+
+
+def _stub_llm_echo(monkeypatch: pytest.MonkeyPatch) -> None:
+    def fake(conf, prompt):
+        names = re.findall(r"^\d+\. 话题名称：(.+)$", prompt, re.MULTILINE)
+        dims = {
+            "普适痛点强度": 4.0, "分层承载力": 4.0, "可演示性": 4.0,
+            "时效与稀缺": 4.0, "内容复用价值": 4.0, "讲解成本": 4.0,
+        }
+        results = [
+            {
+                "话题名称": n.strip(), "gate": "pass", "scores": dims, "weighted_total": 4.0,
+                "risk_flag": False, "source_flag": False, "reason": "依据字段",
+            }
+            for n in names
+        ]
+        return json.dumps({"results": results}, ensure_ascii=False)
+
+    monkeypatch.setattr(score_llm, "call_llm", fake)
 
 
 class FakeProc:
@@ -257,6 +277,7 @@ def test_run_apply_rc2(tmp_path, monkeypatch, caplog) -> None:
 def test_run_dry_run_prints_template_provider_sizes(tmp_path, monkeypatch, caplog) -> None:
     cfg = _write_cfg(tmp_path)
     _patch_lark(monkeypatch, pages=[_records(3)], field_names=_MM_FIELDS)
+    _stub_llm_echo(monkeypatch)
 
     with caplog.at_level(logging.INFO):
         rc = score_flow.main(["--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
@@ -271,6 +292,7 @@ def test_run_existing_scores_skipped_as_context(tmp_path, monkeypatch, caplog) -
     cfg = _write_cfg(tmp_path)
     page = _records(2, score="3.5") + _records(1, start=3)
     _patch_lark(monkeypatch, pages=[page], field_names=_MM_FIELDS)
+    _stub_llm_echo(monkeypatch)
 
     with caplog.at_level(logging.INFO):
         rc = score_flow.main(["--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])

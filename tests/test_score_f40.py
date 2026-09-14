@@ -1,0 +1,402 @@
+"""F40：契约解析 / 闸门与否决 / 缺失归一 / 分布校验 / 重试计数 / dry-run 报告（全离线）。"""
+
+from __future__ import annotations
+
+import json
+import logging
+from pathlib import Path
+
+import pytest
+
+from feedkicker import bitable_lark, score_flow, score_llm, score_parse, score_report
+
+_MM_FIELDS = ["话题名称", "可使用工具", "相关AI原理", "资讯链接", "出处来源", "MMax打分", "MMax理由"]
+
+_DIMS_4 = {
+    "普适痛点强度": 4.0, "分层承载力": 4.0, "可演示性": 4.0,
+    "时效与稀缺": 4.0, "内容复用价值": 4.0, "讲解成本": 4.0,
+}
+
+
+class FakeProc:
+    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _records(n: int, *, start: int = 1) -> list[dict[str, object]]:
+    return [
+        {
+            "record_id": f"rec{start + i}",
+            "fields": {"话题名称": f"话题{start + i}", "可使用工具": "工具X"},
+        }
+        for i in range(n)
+    ]
+
+
+def _patch_lark(
+    monkeypatch: pytest.MonkeyPatch,
+    *,
+    pages: list[list[dict[str, object]]] | None = None,
+    field_names: list[str] | None = None,
+    calls: list[list[str]] | None = None,
+) -> None:
+    def fake_run(args, stdin_text=None, timeout=120):
+        if calls is not None:
+            calls.append(list(args))
+        if "+field-list" in args:
+            payload = {"fields": [{"field_name": n} for n in (field_names or [])]}
+            return FakeProc(0, json.dumps({"data": payload}, ensure_ascii=False))
+        if "+record-list" in args:
+            offset = int(args[args.index("--offset") + 1])
+            idx = offset // bitable_lark._CHUNK
+            page = pages[idx] if pages and idx < len(pages) else []
+            return FakeProc(0, json.dumps({"data": {"records": page}}, ensure_ascii=False))
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+
+def _write_cfg(tmp_path: Path, *, batch_size: int = 100) -> Path:
+    path = tmp_path / "f40-cfg.yaml"
+    path.write_text(
+        "salon:\n"
+        "  app_token: \"appTest\"\n"
+        "  table_id: \"tblTest\"\n"
+        "score:\n"
+        "  enabled: true\n"
+        "  provider: minimax\n"
+        "  prompt_file: prompts/score.md\n"
+        f"  batch_size: {batch_size}\n"
+        "  providers:\n"
+        "    minimax:\n"
+        "      api_key: \"sk-test\"\n",
+        encoding="utf-8",
+    )
+    return path
+
+
+def _args(cfg: Path, tmp_path: Path, *extra: str) -> list[str]:
+    return [*extra, "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")]
+
+
+def _summary(out: str) -> dict:
+    return json.loads([ln for ln in out.splitlines() if ln.startswith("{")][-1])
+
+
+def _result(name: str, **over: object) -> dict[str, object]:
+    item: dict[str, object] = {
+        "话题名称": name, "gate": "pass", "scores": dict(_DIMS_4), "weighted_total": 4.0,
+        "risk_flag": False, "source_flag": False, "reason": "依据 可使用工具",
+    }
+    item.update(over)
+    return item
+
+
+def _results(names: list[str], **over: object) -> str:
+    return json.dumps({"results": [_result(n, **over) for n in names]}, ensure_ascii=False)
+
+
+def _stub_llm(monkeypatch: pytest.MonkeyPatch, responder) -> list[str]:
+    prompts: list[str] = []
+
+    def fake(conf, prompt):
+        prompts.append(prompt)
+        return responder(prompt)
+
+    monkeypatch.setattr(score_llm, "call_llm", fake)
+    return prompts
+
+
+def _echo_responder(prompt: str) -> str:
+    import re
+
+    names = [m.strip() for m in re.findall(r"^\d+\. 话题名称：(.+)$", prompt, re.MULTILINE)]
+    return _results(names)
+
+
+def test_parse_scores_plain_and_fence_and_thinking() -> None:
+    assert score_parse.parse_scores(_results(["A"]))[0]["话题名称"] == "A"
+    fenced = '说明\n```json\n{"results": [{"话题名称": "B"}]}\n```\n'
+    assert score_parse.parse_scores(fenced)[0]["话题名称"] == "B"
+    thinking = '<think foo="1">推导</think>{"results": [{"话题名称": "C"}]}'
+    assert score_parse.parse_scores(thinking)[0]["话题名称"] == "C"
+
+
+@pytest.mark.parametrize("raw", ['{}', '{"results": "x"}', '{"results": 3}', '{"scores": "x"}'])
+def test_parse_scores_invalid_raises(raw: str) -> None:
+    with pytest.raises(ValueError):
+        score_parse.parse_scores(raw)
+
+
+def test_parse_results_drops_invalid_items() -> None:
+    raw = json.dumps(
+        {
+            "results": [
+                "not-a-dict",
+                {"gate": "pass"},
+                {"话题名称": "  "},
+                {"话题名称": "好话题"},
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    items, dropped = score_parse.parse_results(raw)
+
+    assert [i["话题名称"] for i in items] == ["好话题"]
+    assert dropped == 3
+
+
+def test_weighted_total_with_all_dims() -> None:
+    total, missing = score_parse.weighted_total(dict(_DIMS_4))
+
+    assert total == 4.0 and missing == []
+
+
+def test_weighted_total_rounds_to_one_decimal() -> None:
+    scores = dict(_DIMS_4)
+    scores["普适痛点强度"] = 3.5
+
+    total, _ = score_parse.weighted_total(scores)
+
+    assert total == 3.9
+
+
+def test_gate_zero_sets_total_zero() -> None:
+    items, _ = score_parse.normalize([_result("A", gate=0)], [{"record_id": "rec1", "话题名称": "A"}])
+
+    assert items[0]["weighted_total"] == 0.0
+
+
+def test_veto_pain_zero_keeps_dimensions() -> None:
+    scores = dict(_DIMS_4)
+    scores["普适痛点强度"] = 0
+    items, _ = score_parse.normalize(
+        [_result("A", scores=scores)], [{"record_id": "rec1", "话题名称": "A"}]
+    )
+
+    assert items[0]["weighted_total"] == 0.0
+    assert items[0]["scores"]["分层承载力"] == 4.0
+
+
+def test_veto_layer_zero() -> None:
+    scores = dict(_DIMS_4)
+    scores["分层承载力"] = 0
+    items, _ = score_parse.normalize(
+        [_result("A", scores=scores)], [{"record_id": "rec1", "话题名称": "A"}]
+    )
+
+    assert items[0]["weighted_total"] == 0.0
+
+
+def test_missing_dim_renormalizes_remaining() -> None:
+    scores = dict(_DIMS_4)
+    scores["普适痛点强度"] = 5
+    scores["讲解成本"] = "缺失"
+    total, missing = score_parse.weighted_total(scores)
+
+    assert total == 4.3 and missing == ["讲解成本"]
+
+
+def test_all_missing_returns_none() -> None:
+    scores = {k: "缺失" for k in _DIMS_4}
+
+    total, missing = score_parse.weighted_total(scores)
+    items, _ = score_parse.normalize([_result("A", scores=scores)], [{"record_id": "rec1", "话题名称": "A"}])
+
+    assert total is None and len(missing) == 6
+    assert items[0]["weighted_total"] is None
+
+
+def test_model_total_deviation_warns(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
+        items, _ = score_parse.normalize(
+            [_result("A", weighted_total=1.0)], [{"record_id": "rec1", "话题名称": "A"}]
+        )
+
+    assert items[0]["weighted_total"] == 4.0
+    assert "偏差" in caplog.text
+
+
+def test_reason_truncated_over_100_chars(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
+        items, _ = score_parse.normalize(
+            [_result("A", reason="字" * 120)], [{"record_id": "rec1", "话题名称": "A"}]
+        )
+
+    assert len(items[0]["reason"]) == 101 and items[0]["reason"].endswith("…")
+    assert "截断" in caplog.text
+
+
+def test_flags_appended_when_absent() -> None:
+    items, _ = score_parse.normalize(
+        [_result("A", risk_flag=True, source_flag=True)],
+        [{"record_id": "rec1", "话题名称": "A"}],
+    )
+
+    assert items[0]["reason"].endswith("｜risk｜source")
+
+
+def test_flags_not_duplicated_when_present() -> None:
+    items, _ = score_parse.normalize(
+        [_result("A", risk_flag=True, reason="含 risk 标记")],
+        [{"record_id": "rec1", "话题名称": "A"}],
+    )
+
+    assert items[0]["reason"] == "含 risk 标记"
+
+
+def test_normalize_backfills_record_id(caplog) -> None:
+    items, dist, dropped = score_parse.normalize_results(
+        [_result("Ａ话题")], [{"record_id": "recX", "话题名称": "A话题"}]
+    )
+
+    assert items[0]["record_id"] == "recX"
+    assert dist.total == 1 and dropped == 0
+
+
+def test_normalize_extra_item_dropped(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
+        items, _, dropped = score_parse.normalize_results(
+            [_result("A"), _result("多余")], [{"record_id": "rec1", "话题名称": "A"}]
+        )
+
+    assert len(items) == 1 and dropped == 1 and "多余项" in caplog.text
+
+
+def test_normalize_missing_input_row_dropped(caplog) -> None:
+    with caplog.at_level(logging.WARNING):
+        items, _, dropped = score_parse.normalize_results(
+            [_result("A")], [{"record_id": "rec1", "话题名称": "A"}, {"record_id": "rec2", "话题名称": "B"}]
+        )
+
+    assert len(items) == 1 and dropped == 1 and "缺返回行" in caplog.text
+
+
+def test_check_distribution_ok() -> None:
+    items = [{"weighted_total": 4.0}] * 2 + [{"weighted_total": 1.0}] * 2 + [{"weighted_total": 3.0}] * 6
+
+    check = score_parse.check_distribution(items)
+
+    assert check.total == 10 and check.ge4_ratio == 0.2 and check.lt2_ratio == 0.2
+    assert check.violations == []
+
+
+def test_check_distribution_violations_numbers() -> None:
+    items = [{"weighted_total": 5.0} for _ in range(10)]
+
+    check = score_parse.check_distribution(items)
+
+    assert check.ge4_ratio == 1.0 and check.lt2_ratio == 0.0
+    assert any("≥4.0 占比 100% 超过 20%" in v for v in check.violations)
+    assert any("<2.0 占比 0% 少于 15%" in v for v in check.violations)
+
+
+def test_print_dry_run_and_summary(capsys) -> None:
+    planned = [{"话题名称": "A", "weighted_total": 3.5, "reason": "理由" * 40}]
+    skipped = [{"话题名称": "B"}]
+
+    score_report.print_dry_run(planned, skipped)
+    score_report.print_summary(
+        {
+            "mode": "dry-run", "batches": 1, "llm_calls": 1, "rows": 2, "scored": 1, "skipped": 1,
+            "failed_writes": 0, "failed_batches": 0, "dropped": 0, "empty_batches": 0,
+        }
+    )
+
+    out = capsys.readouterr().out
+    assert "[将写入] 1. A → 3.5 ｜ " in out
+    assert "[已存在跳过] 1. B" in out
+    assert "待写 1 / 跳过 1 / 分布校验" in out
+    summary = json.loads([ln for ln in out.splitlines() if ln.startswith("{")][-1])
+    assert summary["scored"] == 1 and summary["failed_writes"] == 0
+
+
+def test_run_results_not_list_retries_then_failed_batch(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    _patch_lark(monkeypatch, pages=[_records(2)], field_names=_MM_FIELDS)
+    _stub_llm(monkeypatch, lambda prompt: '{"results": "bad"}')
+
+    rc = score_flow.main(_args(cfg, tmp_path))
+
+    summary = _summary(capsys.readouterr().out)
+    assert rc == 0 and summary["failed_batches"] == 1 and summary["llm_calls"] == 2
+
+
+def test_run_empty_results_counts_empty_batch(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    _patch_lark(monkeypatch, pages=[_records(2)], field_names=_MM_FIELDS)
+    _stub_llm(monkeypatch, lambda prompt: '{"results": []}')
+
+    rc = score_flow.main(_args(cfg, tmp_path))
+
+    summary = _summary(capsys.readouterr().out)
+    assert rc == 0 and summary["empty_batches"] == 1 and summary["failed_batches"] == 0
+
+
+def test_run_max_calls_counts_failure(tmp_path, monkeypatch, capsys, caplog) -> None:
+    cfg = _write_cfg(tmp_path, batch_size=1)
+    _patch_lark(monkeypatch, pages=[_records(2)], field_names=_MM_FIELDS)
+
+    def boom(prompt):
+        raise RuntimeError("网络炸了")
+
+    _stub_llm(monkeypatch, boom)
+
+    with caplog.at_level(logging.WARNING):
+        rc = score_flow.main(_args(cfg, tmp_path, "--max-calls", "1"))
+
+    summary = _summary(capsys.readouterr().out)
+    assert rc == 0 and summary["llm_calls"] == 1 and summary["failed_batches"] == 1
+    assert "达到 max_calls=1 上限" in caplog.text
+
+
+def test_run_dry_run_listing_and_summary(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    _patch_lark(monkeypatch, pages=[_records(2)], field_names=_MM_FIELDS)
+    _stub_llm(monkeypatch, _echo_responder)
+
+    rc = score_flow.main(_args(cfg, tmp_path))
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "[将写入] 1. 话题1 → 4.0" in out
+    summary = _summary(out)
+    assert summary["mode"] == "dry-run" and summary["scored"] == 2 and summary["failed_writes"] == 0
+
+
+def test_run_distribution_violation_warning(tmp_path, monkeypatch, caplog) -> None:
+    cfg = _write_cfg(tmp_path)
+    _patch_lark(monkeypatch, pages=[_records(1)], field_names=_MM_FIELDS)
+    _stub_llm(monkeypatch, lambda prompt: _results(["话题1"], scores={k: 5.0 for k in _DIMS_4}))
+
+    with caplog.at_level(logging.WARNING):
+        rc = score_flow.main(_args(cfg, tmp_path))
+
+    assert rc == 0 and "分布校验违规" in caplog.text and "≥4.0" in caplog.text
+
+
+def test_run_prior_context_feeds_next_batch(tmp_path, monkeypatch) -> None:
+    cfg = _write_cfg(tmp_path, batch_size=1)
+    _patch_lark(monkeypatch, pages=[_records(2)], field_names=_MM_FIELDS)
+    prompts = _stub_llm(monkeypatch, _echo_responder)
+
+    rc = score_flow.main(_args(cfg, tmp_path))
+
+    assert rc == 0 and len(prompts) == 2
+    assert "### 已打分参考（供横向对比，不要重复打分）" not in prompts[0]
+    assert "### 已打分参考（供横向对比，不要重复打分）" in prompts[1]
+    assert "- 话题1：4.0" in prompts[1]
+
+
+def test_run_apply_rc2_no_llm(tmp_path, monkeypatch, caplog) -> None:
+    cfg = _write_cfg(tmp_path)
+    _patch_lark(monkeypatch, pages=[_records(1)], field_names=_MM_FIELDS)
+    prompts = _stub_llm(monkeypatch, _echo_responder)
+
+    with caplog.at_level(logging.ERROR):
+        rc = score_flow.main(_args(cfg, tmp_path, "--apply"))
+
+    assert rc == 2 and prompts == [] and "尚未实现" in caplog.text

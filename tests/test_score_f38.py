@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,27 @@ from feedkicker.config import load_config
 
 _MM_FIELDS = ["话题名称", "可使用工具", "相关AI原理", "资讯链接", "出处来源", "MMax打分", "MMax理由"]
 _DS_FIELDS = ["话题名称", "可使用工具", "相关AI原理", "资讯链接", "出处来源", "DS打分", "DS理由"]
+
+
+def _stub_llm_echo(monkeypatch: pytest.MonkeyPatch) -> None:
+    from feedkicker import score_llm
+
+    def fake(conf, prompt):
+        names = re.findall(r"^\d+\. 话题名称：(.+)$", prompt, re.MULTILINE)
+        dims = {
+            "普适痛点强度": 4.0, "分层承载力": 4.0, "可演示性": 4.0,
+            "时效与稀缺": 4.0, "内容复用价值": 4.0, "讲解成本": 4.0,
+        }
+        results = [
+            {
+                "话题名称": n.strip(), "gate": "pass", "scores": dims, "weighted_total": 4.0,
+                "risk_flag": False, "source_flag": False, "reason": "依据字段",
+            }
+            for n in names
+        ]
+        return json.dumps({"results": results}, ensure_ascii=False)
+
+    monkeypatch.setattr(score_llm, "call_llm", fake)
 
 
 class FakeProc:
@@ -102,6 +124,7 @@ def test_main_help_rc0(capsys) -> None:
 def test_default_dry_run_rc0_prints_plan(tmp_path, monkeypatch, capsys, caplog) -> None:
     cfg = _write_cfg(tmp_path)
     _patch_lark(monkeypatch, pages=[_records(3)], field_names=_MM_FIELDS)
+    _stub_llm_echo(monkeypatch)
 
     with caplog.at_level(logging.INFO):
         rc = score_flow.main(_args(cfg, tmp_path))
@@ -143,6 +166,7 @@ def test_missing_target_column_rc2(tmp_path, monkeypatch, caplog, provider, fiel
 def test_columns_present_rc0_after_read(tmp_path, monkeypatch) -> None:
     cfg = _write_cfg(tmp_path, provider="deepseek")
     _patch_lark(monkeypatch, pages=[_records(1)], field_names=_DS_FIELDS)
+    _stub_llm_echo(monkeypatch)
 
     assert score_flow.main(_args(cfg, tmp_path)) == 0
 
@@ -283,6 +307,7 @@ def test_read_rows_keeps_only_score_fields_and_record_id(monkeypatch) -> None:
 def test_entrypoint_silences_httpx_logger(tmp_path, monkeypatch) -> None:
     cfg = _write_cfg(tmp_path)
     _patch_lark(monkeypatch, pages=[_records(1)], field_names=_MM_FIELDS)
+    _stub_llm_echo(monkeypatch)
 
     assert score_flow.main(_args(cfg, tmp_path)) == 0
     assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING

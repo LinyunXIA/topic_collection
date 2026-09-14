@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from feedkicker import extract_llm
+from feedkicker import extract_llm, score_parse
 from feedkicker.config import PROJECT_ROOT
 from feedkicker.config_models import ProviderConf, ScoreConf
 from feedkicker.score_source import SCORE_FIELDS
@@ -73,3 +74,81 @@ def call_llm(conf: ProviderConf, prompt: str) -> str:
 def resolve_for_score(score_conf: ScoreConf, provider: str | None) -> ProviderConf:
     """按 score 段解析 provider；缺 key/占位 → RuntimeError（score_flow 映射 rc2）。"""
     return extract_llm.resolve_provider_conf(score_conf.providers, provider, score_conf.provider)
+
+
+@dataclass
+class BatchResult:
+    scored: list[dict[str, Any]] = field(default_factory=list)
+    violations: list[str] = field(default_factory=list)
+    calls: int = 0
+    failed: int = 0
+    empty: int = 0
+    dropped: int = 0
+
+
+def _score_text(total: float | None) -> str:
+    return "缺失" if total is None else str(total)
+
+
+def refine_batches(
+    conf: ProviderConf,
+    template: str,
+    batches: list[list[dict[str, Any]]],
+    prior_scores: list[tuple[str, str]],
+    max_calls: int,
+) -> BatchResult:
+    """逐批「调用+解析」共享重试预算（第 1 次失败重试 1 次，总 HTTP ≤2/批），返回 `BatchResult`。
+
+    两次都失败计 `failed`；`max_calls` 达限时当前批（已尝试未解析）计入失败并停止剩余批
+    （对齐 `extract_llm.refine_batches` 的 #334 教训）；空 results 计 `empty`；归一后 dropped
+    累计（解析侧 + 缺返回/多余行）；命中行回灌 `prior_scores` 作为下一批横向上文。
+    """
+    scored: list[dict[str, Any]] = []
+    violations: list[str] = []
+    prior = list(prior_scores)
+    calls = failed = empty = dropped = 0
+    for no, batch in enumerate(batches, 1):
+        prompt = build_prompt(template, batch, prior)
+        items: list[dict[str, Any]] | None = None
+        parsed_dropped = 0
+        limit_reached = False
+        tried = False
+        for attempt in (1, 2):
+            if max_calls and calls >= max_calls:
+                log.warning("达到 max_calls=%d 上限，停止剩余批", max_calls)
+                limit_reached = True
+                break
+            calls += 1
+            tried = True
+            try:
+                raw = call_llm(conf, prompt)
+            except Exception as e:  # noqa: BLE001
+                log.warning("第 %d/%d 批第 %d/2 次尝试失败（调用异常）: %s", no, len(batches), attempt, e)
+                continue
+            try:
+                items, parsed_dropped = score_parse.parse_results(raw)
+                break
+            except ValueError as e:
+                log.warning("第 %d/%d 批第 %d/2 次尝试失败（契约解析失败）: %s", no, len(batches), attempt, e)
+        if limit_reached:
+            if tried and items is None:
+                failed += 1
+                log.warning("第 %d/%d 批因达到 max_calls 上限中止重试，计失败批", no, len(batches))
+            break
+        if items is None:
+            failed += 1
+            log.warning("第 %d/%d 批两次尝试后仍失败，跳过", no, len(batches))
+            continue
+        if not items:
+            empty += 1
+            continue
+        normalized, dist, norm_dropped = score_parse.normalize_results(items, batch)
+        dropped += parsed_dropped + norm_dropped
+        if dist.violations:
+            log.warning("第 %d/%d 批分布校验违规：%s", no, len(batches), "；".join(dist.violations))
+        violations.extend(dist.violations)
+        scored.extend(normalized)
+        prior.extend((n["话题名称"], _score_text(n["weighted_total"])) for n in normalized)
+    return BatchResult(
+        scored=scored, violations=violations, calls=calls, failed=failed, empty=empty, dropped=dropped
+    )
