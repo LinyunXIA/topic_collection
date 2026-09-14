@@ -34,7 +34,7 @@
 
 ### 1.3 字段面（对齐 `config_models.py` dataclass）
 
-顶层 `Config`（12 字段）：
+顶层 `Config`（13 字段）：
 
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
@@ -50,6 +50,7 @@
 | `salon` | SalonConf | 见下 | AI 沙龙 |
 | `minimax` | MinimaxConf | 见下 | 大纲生成 |
 | `wiki` | WikiConf | 见下 | Wiki 归档 |
+| `extract` | ExtractConf | 见下 | 资讯→选题 LLM 提炼（`tc-extract`） |
 
 嵌套段：
 
@@ -59,8 +60,11 @@
 | `salon` | `enabled=False`、`app_token=""`、`table_id=""`、`wiki_space_id=""`、`wiki_parent_token=""`、`trigger_weekday=4`、`trigger_hour=10`、`trigger_minute=0` |
 | `minimax` | `api_key=""`、`model="MiniMax-M3"`、`base_url="https://api.minimaxi.com"` |
 | `wiki` | `space_id=""`、`parent_token=""`、`app_token=""`（未配置时回退 `salon.wiki_space_id`/`salon.wiki_parent_token`） |
+| `extract` | `enabled=False`、`since_days=7`、`batch_size=30`、`provider="minimax"`、`prompt_file="prompts/extract.md"`、`max_calls=0`（0=不限）、`providers=dict[str, ProviderConf]`（`base_url`/`model`/`api_key`/`tool_label`） |
 
 以 `feedkicker/config_models.py` 与 `feedkicker/config.py` 的 `load_config` 为准；未文档化别名（`salon.wiki_space`、`wiki.wiki_space_id` 等）已移除。
+
+`extract` 段补充：提示词文件默认 `prompts/extract.md`（仓库根相对路径，可配 `extract.prompt_file`）；provider 注册表默认值在 `feedkicker/extract_llm.py`（minimax：`https://api.minimaxi.com/v1` / `MiniMax-M3` / `MMX（MiniMax）`；deepseek：`https://api.deepseek.com/v1` / `deepseek-chat` / `DS（DeepSeek）`），yaml `providers.<name>` 非空字段覆盖默认；`providers.<name>.base_url` **须含 `/v1`**（endpoint 按 `{base_url}/chat/completions` 拼接，缺 `/v1` 会 404）。
 
 ### 1.4 db 分流
 
@@ -80,7 +84,8 @@
 |---|---|---|
 | `FEISHU_WEBHOOK` | `feishu_webhook` | 凭据可不落文件 |
 | `FEISHU_SECRET` | `feishu_secret` | 签名密钥 |
-| `MiniMax_Key`（或 `MINIMAX_API_KEY`） | `minimax.api_key` | 大纲生成；占位值（以 `<` 开头）会被清空 |
+| `MiniMax_Key`（或 `MINIMAX_API_KEY`） | `minimax.api_key`、`extract.providers.minimax.api_key` | 大纲生成 / 选题提炼；占位值（以 `<` 开头）会被清空 |
+| `DEEPSEEK_API_KEY` | `extract.providers.deepseek.api_key` | 选题提炼（DeepSeek provider）；占位值清空 |
 | `TC_SALON_TOKEN` | `salon.app_token` | 沙龙选题 Base |
 | `TC_FEISHU_HOST` | —（`feishu_host.feishu_host()`） | 飞书租户域名，默认 `web91vfvm7.feishu.cn`；换租户/测试注入 |
 | `TC_APP_ENV` | 运行环境 | `dev\|test\|prod`，默认 `prod` |

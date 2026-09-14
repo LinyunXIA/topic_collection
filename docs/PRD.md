@@ -37,8 +37,9 @@ v2 **重开 = 瘦身**。真正的起点比 v1 小一个数量级：**不是一�
 | Phase 2 | v0.3–v0.5 | F11–F16：多维表格归档（跨源去重、双分组视图） | 已交付 |
 | Phase 3 | v0.6–v0.7 | F17–F22：AI 沙龙每周大纲（salon）+ 365 天滚动保留（purge） | 已交付 |
 | Phase 3+ | v0.7+ | F23–F27：Wiki 首页自动索引 + 项目文档三件套（F24–F27 = README/CLI/OPS/一致性自检） | 已交付 |
+| Phase 4 | v0.8 | F28–F32：资讯→选题 LLM 提炼 | 进行中 |
 
-**当前所处阶段 = Phase 3+（v0.7+，F23–F27 已全部交付，当前无进行中增量）**；后续新增需求先落本映射，再落 §13 起的版本增量小节。
+**当前所处阶段 = Phase 4（v0.8，F28–F32 开发中）**；后续新增需求先落本映射，再落 §13 起的版本增量小节。
 
 ---
 
@@ -384,3 +385,35 @@ feeds:
 - 组织方式：按命令分节、节内嵌三环境示例；输出**示意化**（结构真实、值脱敏/截断并标注），**prod 示例一律 `--dry-run`**，真跑命令单列并标 ⚠️。
 - 凭据一律占位符（`<webhook>`/`<salon-app-token>`/`<space-id>`…），不落真实 token。
 - 设计见 DESIGN §23；F27 三件套一致性自检已于 2026-09-14 完成交付（自检结论见 DESIGN §23.3）。
+
+---
+
+## 21. v0.8 增量（2026-09-14）— 资讯→选题 LLM 提炼（F28–F32）
+
+把本地 sqlite 中**最近 7 天**（`extract.since_days` 可配）的 RSS 资讯，按提示词分批交给 LLM，**先整合去重、再提炼**候选话题，写入「AI 沙龙换题管理」的「沙龙话题清单」（`cfg.salon`）。落实提示词要求的「写前确认」：默认 **dry-run 打印完整待写清单**，`--apply` 才执行多维表格写操作。
+
+| # | 特性 | 验收要点 | 优先级 |
+|---|---|---|---|
+| F28 | 数据源与时间窗 | `extract_source.select_source`：`ppt_synced_at IS NULL`（排除 salon 占位行）、`COALESCE(published_at, first_seen) >= cutoff`（cutoff = UTC now − N 天，边界含当天）、时间升序 + `limit` | P1 |
+| F29 | LLM provider 抽象 + `extract:` 配置段 | `ExtractConf`（since_days/batch_size/provider/prompt_file/max_calls）+ `providers` 子段（base_url/model/api_key/tool_label）；`call_llm` 按 `extract.provider` 分派，MiniMax 首发、DeepSeek 预留；缺 key/占位 key 明确报错且**不发起调用** | P1 |
+| F30 | 批量提炼（提示词 + schema + 整合去重） | `prompts/extract.md`（用户提示词原文 + 输出 JSON schema）；按 `batch_size` 分批，每批一次 LLM 调用；`parse_topics` 容忍 ```json 围栏、非法 JSON/缺字段返回 `[]`（调用方 WARNING 跳过）；同话题多来源 `资讯链接`/`出处来源` 合并去重 | P1 |
+| F31 | 写入选题表（字段映射 + 去重跳过） | `extract_write`：按「话题名称」拉既有集合命中跳过（幂等）；字段 `话题名称`/`可使用工具`/`相关AI原理`=LLM、`资讯链接`/`出处来源`=换行拼接、`提炼日期`=运行日（上海）、`讨论状态=未讨论`、`提取工具`=provider 映射；`+record-batch-create` ≤200/批；dry-run **零写调用** | P1 |
+| F32 | CLI `tc-extract` + 文档/测试 | 默认 `--dry-run`、`--apply` 才写；`--since-days`/`--limit`/`--batch-size`/`--max-calls`/`--env`/`--config`/`--db`；串行 + 单批失败重试 1 次后跳过并汇总 WARNING；`max_calls` 达限停止；rc 2 配置错 / 1 异常 / 0 正常；CLI.md/OPS.md 补条目 | P1 |
+
+提示词（用户给定，原文，落 `prompts/extract.md`）：
+
+```
+* 如果用户提出提炼话题：
+  * 根据需求进行话题提炼，提炼必须要包含"话题名称、可使用工具、AI相关原理、资讯链接、出处来源"信息。
+  * 话题提炼需要过滤无工具的纯新闻信息和营销信息，例如模型降价，市场推广，投资，裁员招聘等等；
+  * 如果无法提炼明确的可使用工具、系统、平台、应用等信息，则跳过此条AI资讯。
+  * 当用户要求进行数据修改或者新增时，必须提供完整的数据列表，在用户确认后，才能进行多维表格写操作。
+```
+
+- 输出契约：JSON `{"topics":[{"话题名称":"","可使用工具":"","相关AI原理":"","资讯链接":[""],"出处来源":[""]}]}`；多源以换行拼接。
+- **窗口**：默认 7 天；`published_at` 优先、为空回退 `first_seen`；仅 RSS 行（`ppt_synced_at IS NULL`），salon 占位行绝不入选。
+- **批次**：`batch_size`（默认 30 条/批）；LLM「先整合去重、再提炼」，无话题即无输出、条数不固定。
+- **去重**：按**「话题名称」**比对目标表，命中跳过（重复运行不产生重复行）。
+- **模型**：provider 抽象 + `extract:` 配置选型；key 走 env（`MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`），占位值 `<...>` 清空。
+- **写前确认**：dry-run 清单 + `--apply` 两步；dry-run 不产生任何多维表格写调用。
+- 设计见 DESIGN §25。

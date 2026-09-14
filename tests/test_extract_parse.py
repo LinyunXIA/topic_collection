@@ -1,0 +1,182 @@
+"""F30：提炼提示词文件/批量注入/JSON 解析/多源合并（全离线）。"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+
+from feedkicker.config_models import PROJECT_ROOT
+from feedkicker.extract_llm import build_batch_prompt, merge_topics, parse_topics
+
+_PROMPT_FILE = PROJECT_ROOT / "prompts" / "extract.md"
+
+
+def _topic(name="话题A", tool="工具X", principle="原理Y", links=None, sources=None) -> dict:
+    return {
+        "话题名称": name,
+        "可使用工具": tool,
+        "相关AI原理": principle,
+        "资讯链接": links if links is not None else ["https://a/1"],
+        "出处来源": sources if sources is not None else ["量子位"],
+    }
+
+
+def test_prompt_file_contains_user_prompt_and_schema() -> None:
+    text = _PROMPT_FILE.read_text(encoding="utf-8")
+
+    assert "如果用户提出提炼话题" in text
+    assert "根据需求进行话题提炼，提炼必须要包含" in text
+    assert "话题提炼需要过滤无工具的纯新闻信息和营销信息" in text
+    assert "如果无法提炼明确的可使用工具、系统、平台、应用等信息，则跳过此条AI资讯" in text
+    assert "必须提供完整的数据列表，在用户确认后，才能进行多维表格写操作" in text
+    assert '"topics"' in text and "话题名称" in text and "资讯链接" in text and "出处来源" in text
+
+
+def test_build_batch_prompt_injects_numbered_items() -> None:
+    items = [
+        {"feed_id": "量子位", "title": " 标题一 ", "url": "https://a/1", "description": "摘要一"},
+        {"feed_id": "InfoQ", "title": "标题二", "url": "https://b/2", "description": ""},
+    ]
+
+    out = build_batch_prompt("模板正文", items)
+
+    assert out.startswith("模板正文")
+    assert "1. [量子位] 标题一" in out
+    assert "   链接: https://a/1" in out
+    assert "   摘要: 摘要一" in out
+    assert "2. [InfoQ] 标题二" in out
+    assert "摘要:" not in out.split("2. [InfoQ] 标题二")[1]
+
+
+def test_build_batch_prompt_truncates_long_summary() -> None:
+    out = build_batch_prompt("t", [{"title": "x", "url": "u", "description": "字" * 400}])
+
+    summary_line = [ln for ln in out.splitlines() if ln.startswith("   摘要: ")][0]
+    assert len(summary_line) == len("   摘要: ") + 300 + 1
+    assert summary_line.endswith("…")
+
+
+def test_parse_topics_normal() -> None:
+    raw = json.dumps({"topics": [_topic()]}, ensure_ascii=False)
+
+    got, dropped = parse_topics(raw)
+
+    assert got == [
+        {
+            "话题名称": "话题A",
+            "可使用工具": "工具X",
+            "相关AI原理": "原理Y",
+            "资讯链接": ["https://a/1"],
+            "出处来源": ["量子位"],
+        }
+    ]
+    assert dropped == 0
+
+
+def test_parse_topics_empty_list() -> None:
+    assert parse_topics('{"topics": []}') == ([], 0)
+
+
+def test_parse_topics_bad_json_raises() -> None:
+    with pytest.raises(ValueError):
+        parse_topics("抱歉，我无法提炼")
+    with pytest.raises(ValueError):
+        parse_topics('{"topics": [坏数据}')
+
+
+def test_parse_topics_fenced_json() -> None:
+    inner = json.dumps({"topics": [_topic()]}, ensure_ascii=False)
+
+    got, dropped = parse_topics(f"```json\n{inner}\n```")
+
+    assert len(got) == 1 and got[0]["话题名称"] == "话题A" and dropped == 0
+
+
+def test_parse_topics_with_surrounding_text() -> None:
+    inner = json.dumps({"topics": [_topic()]}, ensure_ascii=False)
+
+    got, _dropped = parse_topics(f"好的，结果如下：\n{inner}\n请确认。")
+
+    assert len(got) == 1
+
+
+def test_parse_topics_drops_bad_items_keeps_rest() -> None:
+    bad = {"话题名称": "A", "可使用工具": "T", "相关AI原理": "P", "资讯链接": []}
+    raw = json.dumps({"topics": [bad, "字符串", _topic("好话题")]}, ensure_ascii=False)
+
+    got, dropped = parse_topics(raw)
+
+    assert [t["话题名称"] for t in got] == ["好话题"]
+    assert dropped == 2
+
+
+def test_parse_topics_all_bad_items_returns_empty_dropped() -> None:
+    bad = {"话题名称": "A", "可使用工具": "T", "相关AI原理": "P", "资讯链接": []}
+
+    got, dropped = parse_topics(json.dumps({"topics": [bad, "字符串"]}, ensure_ascii=False))
+
+    assert got == [] and dropped == 2
+
+
+def test_parse_topics_topics_not_list_raises() -> None:
+    with pytest.raises(ValueError):
+        parse_topics('{"topics": {"a": 1}}')
+
+
+def test_parse_topics_str_links_normalized_and_deduped() -> None:
+    raw = json.dumps(
+        {"topics": [_topic(links="https://a/1", sources="量子位")]}, ensure_ascii=False
+    )
+
+    got, _dropped = parse_topics(raw)
+
+    assert got[0]["资讯链接"] == ["https://a/1"]
+    assert got[0]["出处来源"] == ["量子位"]
+
+
+def test_merge_topics_multi_source_dedup() -> None:
+    merged = merge_topics(
+        [
+            _topic(links=["https://a/1"], sources=["量子位"]),
+            _topic(tool="", principle="", links=["https://b/2", "https://a/1"], sources=["InfoQ", "量子位"]),
+        ]
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["可使用工具"] == "工具X"
+    assert merged[0]["相关AI原理"] == "原理Y"
+    assert merged[0]["资讯链接"] == ["https://a/1", "https://b/2"]
+    assert merged[0]["出处来源"] == ["量子位", "InfoQ"]
+
+
+def test_merge_topics_nfkc_casefold_name_keys() -> None:
+    merged = merge_topics(
+        [
+            _topic(name=" GPT-5 ", links=["https://a/1"]),
+            _topic(name="gpt-5", links=["https://b/2"]),
+            _topic(name="ＧＰＴ－５", links=["https://c/3"]),
+        ]
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["话题名称"] == "GPT-5"
+    assert merged[0]["资讯链接"] == ["https://a/1", "https://b/2", "https://c/3"]
+
+
+def test_parse_topics_merges_same_name_across_items() -> None:
+    raw = json.dumps(
+        {
+            "topics": [
+                _topic(links=["https://a/1"], sources=["量子位"]),
+                _topic(tool="", links=["https://a/1", "https://b/2"], sources=["量子位", "InfoQ"]),
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+    got, _dropped = parse_topics(raw)
+
+    assert len(got) == 1
+    assert got[0]["资讯链接"] == ["https://a/1", "https://b/2"]
+    assert got[0]["出处来源"] == ["量子位", "InfoQ"]

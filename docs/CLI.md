@@ -1,6 +1,6 @@
-# CLI 手册 — feedkicker 7 命令详解
+# CLI 手册 — feedkicker 8 命令详解
 
-本手册覆盖 `feedkicker` 全部 **7 个命令**：3 个 entry point（`tc-push` / `tc-salon` / `tc-purge`）+ 4 个 `python -m` 模块（`feedkicker.wiki_home` / `.bitable` / `.wiki` / `.topic`）。每命令给出用途、参数表、dev/test/prod 环境差异、三环境示例（示意输出 + 退出码 + 副作用）、`--dry-run` 输出与注意事项。
+本手册覆盖 `feedkicker` 全部 **8 个命令**：4 个 entry point（`tc-push` / `tc-salon` / `tc-purge` / `tc-extract`）+ 4 个 `python -m` 模块（`feedkicker.wiki_home` / `.bitable` / `.wiki` / `.topic`）。每命令给出用途、参数表、dev/test/prod 环境差异、三环境示例（示意输出 + 退出码 + 副作用）、`--dry-run` 输出与注意事项。
 
 所有 flag / 默认值 / `choices` / 退出码均取自源码 argparse 与各命令 `--help` 实跑；输出片段**示意化**（结构真实，值脱敏或截断），凭据一律占位符（`<webhook>`/`<salon-app-token>`/`<space-id>`…）。**prod 示例一律 `--dry-run`**，真跑命令单列并标 ⚠️。
 
@@ -10,6 +10,7 @@
 - [tc-push](#tc-push) — 抓取 → 归档 → 推飞书摘要卡
 - [tc-salon](#tc-salon) — 已选题 → 双大纲 → Wiki 归档
 - [tc-purge](#tc-purge) — 365 天滚动保留清理
+- [tc-extract](#tc-extract) — 近 N 天资讯 → LLM 提炼选题 → salon 表
 - [feedkicker.wiki_home](#wiki_home) — 重建 Wiki 首页索引
 - [feedkicker.bitable](#bitable) — 多维表格归档运维
 - [feedkicker.wiki](#wiki) — 单篇 Wiki docx 创建（联调）
@@ -34,9 +35,9 @@
 - 默认 db 路径 = `data/tc-{env}.sqlite3`；默认配置 = `<repo>/config-{env}.yaml`（锚定仓库根，不随 cwd 漂移）。
 - 未给任何环境参数时回落到 **prod**。
 
-**支持 `--env` 的命令**：全部 7 个。**支持 `--config`/`--db` 的命令**：`tc-push`、`tc-salon`、`tc-purge`、`feedkicker.wiki_home`、`feedkicker.bitable`（`feedkicker.wiki` 与 `feedkicker.topic` 无此二参数，靠 `--env` 或直接传 token）。
+**支持 `--env` 的命令**：全部 8 个。**支持 `--config`/`--db` 的命令**：`tc-push`、`tc-salon`、`tc-purge`、`tc-extract`、`feedkicker.wiki_home`、`feedkicker.bitable`（`feedkicker.wiki` 与 `feedkicker.topic` 无此二参数，靠 `--env` 或直接传 token）。
 
-**命令形态约定**：所有命令均支持 `-h/--help`。3 个 entry point 由 `.venv/bin/tc-*` 调用（等价 `.venv/bin/python -m feedkicker.push|salon_flow|purge`）；4 个模块用 `.venv/bin/python -m feedkicker.<name>`。
+**命令形态约定**：所有命令均支持 `-h/--help`。4 个 entry point 由 `.venv/bin/tc-*` 调用（等价 `.venv/bin/python -m feedkicker.push|salon_flow|purge|extract_flow`）；4 个模块用 `.venv/bin/python -m feedkicker.<name>`。
 
 **脱敏规则**：真实 webhook / 签名 secret / app_token / table_id / space_id / node_token 一律写占位符，如 `<webhook>`、`<salon-app-token>`、`<wiki-space-id>`、`<node_token>`；时间戳与计数保留真实结构。文档不落任何真实凭据。
 
@@ -303,6 +304,99 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 - dev/test 共享 Base：bitable 段仅删「环境」列等于当前 env 的过期行；prod 全表不过滤。存量无「环境」列的行不会被 dev/test 删除（保守方向）。
 - 绝不调 `ensure_initialized`，不误建 Base；只操作资讯归档 Base，不碰 salon 选题 Base。
 - 截止用上海日界，截止当天记录保留（保守方向）。
+
+---
+
+<a id="tc-extract"></a>
+
+## tc-extract
+
+**用途**：把最近 N 天（默认 7）的 RSS 资讯分批交给 LLM **先整合去重、再提炼**候选话题，写入 salon「沙龙话题清单」。**默认 dry-run 打印完整待写清单**，`--apply` 才写表（落实提示词「写前确认」）。对应 DESIGN §25。
+
+**入口**：`tc-extract = feedkicker.extract_flow:main`。
+
+### 参数表
+
+| flag | 类型 | 默认 | 覆盖关系 | 说明 |
+|---|---|---|---|---|
+| `--apply` | store_true | 关（即默认 dry-run） | 与 `--dry-run` 互斥 | 执行多维表格写入 |
+| `--dry-run` | store_true | 关（默认行为） | 与 `--apply` 互斥 | 仅打印待写清单，零写调用 |
+| `--since-days` | 正整数 | `None`（取 `extract.since_days=7`） | 覆盖配置 | 时间窗天数（边界含当天） |
+| `--limit` | 正整数 | `None`（不限） | — | 最多处理的 RSS 行数 |
+| `--batch-size` | 正整数 | `None`（取 `extract.batch_size=30`） | 覆盖配置 | 每批条数（每批一次 LLM 调用） |
+| `--max-calls` | 非负整数 | `None`（取 `extract.max_calls=0`） | 覆盖配置 | LLM 调用上限，`0`=不限；达限停止剩余批 |
+| `--config` | str | `None` | 覆盖 `--env` 推导 | 指定 `config-{env}.yaml` 路径 |
+| `--db` | str | `None` | 覆盖 `TC_DB` 与 `--env` 推导 | sqlite 路径 |
+| `--env` | choice `{dev,test,prod}` | `None`（回落 prod） | 覆盖 `TC_APP_ENV` | 决定默认配置与 db 路径 |
+
+### 环境差异
+
+| 环境 | 配置 / db | 写入目标 |
+|---|---|---|
+| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | `cfg.salon.app_token/table_id`（dev/test 常共享同一 salon Base，按配置而定） |
+| test | `config-test.yaml` / `data/tc-test.sqlite3` | 同上 |
+| prod | `config-prod.yaml` / `data/tc-prod.sqlite3` | 真实 prod salon 选题表 |
+
+provider key：`extract.providers.<name>.api_key`，为空或占位时按 provider 取 env（`MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`）；占位值（`<` 开头）清空。提示词文件默认 `prompts/extract.md`（仓库根相对）。
+
+### 示例
+
+**dev**（默认 dry-run，不写表）：
+
+```bash
+.venv/bin/tc-extract --env dev
+```
+
+示意输出（「示意」）：
+
+```
+2026-09-14 ... feedkicker.extract_flow tc-extract 运行开始：环境=dev，db=/.../data/tc-dev.sqlite3，mode=dry-run
+2026-09-14 ... feedkicker.extract_flow 近 7 天 RSS 行 12 条（limit=None）→ 批大小 30，provider=minimax
+2026-09-14 ... feedkicker.extract_flow 第 1/1 批提炼 2 个话题
+待写选题 2 个（dry-run，未写表；目标表已存在跳过 0 个）：
+1. 话题名A
+{"话题名称": "话题名A", "可使用工具": "…", "相关AI原理": "…", "资讯链接": "https://…", "出处来源": "量子位", "提炼日期": "2026-09-14", "讨论状态": "未讨论", "提取工具": "MMX（MiniMax）"}
+{"mode": "dry-run", "since_days": 7, "batches": 1, "llm_calls": 1, "topics": 2, "written": 0, "pending": 2, "skipped": 0, "failed_batches": 0, "empty_batches": 0}
+```
+
+退出码 `0`。副作用：读 sqlite 与 salon 表（只读 `+record-list` 去重查询），不写表。
+
+**test**（真写测试 Base，须确认）：
+
+```bash
+.venv/bin/tc-extract --env test --apply
+```
+
+示意输出：`提炼完成：… 写入=N 待写=0 跳过=M 失败批=0` 与统计 JSON（`"mode": "apply"`）。退出码 `0`（部分批失败仅汇总 WARNING，rc 不变；配置错 `2`，异常 `1`）。副作用：写 salon 选题表（≤200/批，`讨论状态=未讨论`）。
+
+**prod（仅 dry-run）**：
+
+```bash
+.venv/bin/tc-extract --env prod
+```
+
+⚠️ **prod 真跑**（写线上 salon 选题表，人工确认后执行）：
+
+```bash
+.venv/bin/tc-extract --env prod --apply
+```
+
+### `--dry-run` 示意输出
+
+见上 dev 段：逐条打印完整待写记录（人读行 + JSON 行），末尾一行统计 JSON，**零写调用**（仅对 salon 表做只读去重查询）。
+
+### 退出码
+
+`0` = 正常（含部分批失败跳过，结束汇总 WARNING）；`1` = 未捕获异常；`2` = 配置错（config 加载失败 / `prompts/extract.md` 缺失 / provider 未注册或缺 key / salon token 缺失或占位 / 参数非法 / 同时给 `--apply` 与 `--dry-run`）。
+
+### 注意 / 坑
+
+- **默认 dry-run**：真实写入必须显式 `--apply`；重复运行按「话题名称」精确匹配去重跳过（幂等）。
+- `讨论状态` 实际写入形态由 salon 表字段元数据决定（`field-list` 的 `multiple:true` → `["未讨论"]`，否则字符串 `"未讨论"`；元数据读取失败/字段缺失保守按字符串）；上方 dry-run 示意固定按单选字符串展示。
+- 时间窗 `COALESCE(published_at, first_seen) >= now − N 天`，边界含当天；仅 RSS 行（salon 占位行 `ppt_synced_at` 非空被排除）。
+- 单批 LLM 调用失败（超时/429/529/业务可重试码）重试 1 次（总 HTTP ≤2/批，单层重试）后跳过并汇总 WARNING，不阻断其余批；模型合法返回空话题列表计 `empty_batches` 不计失败，单条非法 topic 丢弃该条不丢整批；`--max-calls` 供联调限次。
+- 行为由 `prompts/extract.md` 定义（用户提示词原文 + 输出 JSON schema），改提示词即改提炼口径。
+- 绝不调 `ensure_initialized`，不改 salon 表结构。
 
 ---
 
