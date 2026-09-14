@@ -92,8 +92,7 @@ def backfill_empty_archive_dates(
 ) -> int:
     verb = bitable_lark._has_batch_verb()
     if not verb:
-        log.warning("lark-cli 未提供批量更新 verb（缺 +record-batch-update/+record-update），请改用 --reseed 重灌")
-        return 0
+        raise RuntimeError("lark-cli 不可用，无法 backfill")
     env_args = (
         ["--field-id", "环境", "--field-id", "归档日期", "--field-id", "推送时间"]
         if env_name is not None

@@ -630,7 +630,7 @@ https://<host>/wiki/wiki_dry_示例话题
 
 - 无 `--config`/`--db`；token 只能走 `--env` 配置或显式参数。
 - `--check-fields` 会校验「讨论状态」字段类型（select/multiSelect 等视为合法），字段缺失或类型异常仅 WARNING。
-- 分页有 offset 上限守卫（20000），`has_more` 恒真时不会死循环。
+- 分页与 bitable 路径统一：页指纹熔断（lark-cli 忽略 `--offset` 时第 2 页即报错）+ 20 万 offset 绝对兜底（`_CHUNK × _MAX_PAGES`），`has_more` 恒真时不会死循环（#245）。
 
 ---
 

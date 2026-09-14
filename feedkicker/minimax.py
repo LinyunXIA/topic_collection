@@ -20,9 +20,7 @@ _RETRY_CODES = {1002, 1004, 1039, "1002", "1004", "1039"}
 
 
 def _resolve_api_key(api_key: str | None) -> str:
-    if api_key:
-        return api_key
-    return os.environ.get("MiniMax_Key") or os.environ.get("MINIMAX_API_KEY") or ""
+    return api_key or os.environ.get("MiniMax_Key") or os.environ.get("MINIMAX_API_KEY") or ""
 
 
 def _extract_code(data: Any) -> str | int | None:
@@ -41,6 +39,11 @@ def _extract_code(data: Any) -> str | int | None:
             if isinstance(c, (str, int)):
                 return c
     return None
+
+
+def _norm_code(code: Any) -> Any:
+    """status_code 归一：数字串（含 "0"）转 int，成功/重试判定与解析路径同口径（#245）。"""
+    return int(code.strip()) if isinstance(code, str) and code.strip().isdigit() else code
 
 
 def call_minimax_chat(
@@ -95,9 +98,7 @@ def call_minimax_chat(
             if resp.status_code >= 400:
                 raise RuntimeError(f"MiniMax HTTP {resp.status_code}: {data}")
         base = data.get("base_resp") if isinstance(data, dict) else None
-        sc = base.get("status_code") if isinstance(base, dict) else None
-        if isinstance(sc, str) and sc.strip().isdigit():
-            sc = int(sc.strip())
+        sc = _norm_code(base.get("status_code") if isinstance(base, dict) else None)
         if sc is not None and sc != 0:
             if not isinstance(sc, (str, int)):
                 raise RuntimeError(
@@ -115,9 +116,7 @@ def call_minimax_chat(
 def _parse_outline_from_response(data: Any) -> dict[str, Any]:
     """从模型响应提取大纲对象。
 
-    非 dict 响应、choices/message/tool_calls/function 类型异常、或 arguments
-    可解析但非 JSON 对象时统一抛 RuntimeError（salon_flow 逐题捕获跳过，
-    不让 AttributeError/KeyError/TypeError 逃逸，#227）。
+    类型异常与解析失败统一抛 RuntimeError（salon_flow 逐题捕获跳过，#227）。
     """
     if not isinstance(data, dict):
         raise RuntimeError(f"MiniMax 响应非 dict: {type(data).__name__}: {str(data)[:200]}")
@@ -176,7 +175,8 @@ def _parse_outline_from_response(data: Any) -> dict[str, Any]:
                 return parsed
             raise RuntimeError(f"无法解析大纲JSON，content: {content[:500]}")
     base = data.get("base_resp")
-    if isinstance(base, dict) and base.get("status_code") not in (None, 0):
+    sc = _norm_code(base.get("status_code")) if isinstance(base, dict) else None
+    if sc is not None and sc != 0:
         raise RuntimeError(f"MiniMax 返回错误: {base}")
     raise RuntimeError(f"MiniMax 响应缺少 tool_calls/content: {str(data)[:500]}")
 

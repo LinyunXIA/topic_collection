@@ -30,3 +30,11 @@ def _isolated_test_config(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> No
         return path if app_env == "test" else real_config_path_for(app_env)
 
     monkeypatch.setattr(config, "config_path_for", injected_config_path_for)
+
+
+@pytest.fixture(autouse=True)
+def _stub_lark_bin(monkeypatch: pytest.MonkeyPatch) -> None:
+    """非 dry-run CLI 会实探 lark_bin；测试不依赖宿主机是否安装 lark-cli（#245）。"""
+    from feedkicker import bitable_lark
+
+    monkeypatch.setattr(bitable_lark, "lark_bin", lambda: "/usr/bin/fake-lark-cli")

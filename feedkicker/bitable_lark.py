@@ -27,15 +27,18 @@ log = logging.getLogger(__name__)
 
 _CHUNK = 200
 
-MAX_OFFSET = 20000
+_MAX_PAGES = 1000
 
-MAX_OFFSET_LAST = 200000
+MAX_OFFSET_LAST = _CHUNK * _MAX_PAGES
 
 _LARK_CANDIDATES = ("/opt/homebrew/bin/lark-cli", "/usr/local/bin/lark-cli")
 
 
 def _guard_offset(offset: int) -> None:
-    """绝对兜底（页指纹为主检测，#232）：正常大表可翻到 20 万 offset，仅防指纹失效。"""
+    """绝对兜底（页指纹为主检测，#232）：上限 = `_CHUNK × _MAX_PAGES` = 20 万 offset（1000 页）。
+
+    取飞书单表量级（十万行）之上、远离现实归档规模，仅防指纹失效；合法大表不误杀（#245）。
+    """
     if offset > MAX_OFFSET_LAST:
         raise RuntimeError(
             f"分页 offset 超过绝对兜底 {MAX_OFFSET_LAST}，疑似未按 --offset 翻页，中止以避免死循环"
