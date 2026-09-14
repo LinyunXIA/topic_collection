@@ -17,7 +17,7 @@
   RSS/Atom  │  (单进程，跑完即退)     │      (interactive 汇总卡片)
             └──────────┬────────────┘
                        ▼
-           data/tc.sqlite3（本地存档已下载新闻）
+           data/tc-{env}.sqlite3（本地存档已下载新闻）
 ```
 
 **核心约束**
@@ -32,8 +32,8 @@
 | 语言/运行时 | Python 3.12+ | 依赖全纯 Python（feedparser/httpx/PyYAML）+ stdlib sqlite3，无 C 扩展、无 wheel 风险 |
 | RSS 解析 | `feedparser` | 纯 Python；`entry.published_parsed` 给 struct_time，免额外时间库 |
 | HTTP | `httpx` sync | 抓 feed + 打飞书 webhook，统一设超时/UA |
-| 配置 | `PyYAML` | `config.yaml` + 环境变量覆盖 |
-| 存储 | stdlib `sqlite3` | `data/tc.sqlite3`，自动建表建目录 |
+| 配置 | `PyYAML` | `config-{env}.yaml` + 环境变量覆盖 |
+| 存储 | stdlib `sqlite3` | `data/tc-{env}.sqlite3`，自动建表建目录 |
 | 测试 | `pytest` | feedparser 本地 fixture + 内存 sqlite（`:memory:`） |
 | 调度 | cron（系统级） | 进程不由应用常驻，见 §9 |
 
@@ -52,7 +52,7 @@ topic_collection/
 │   ├── store_meta.py         # meta 键值表（叶子模块）
 │   ├── store_salon.py        # salon 选题 sqlite 状态（ppt 同步/last_status/落库）
 │   ├── feishu.py / feishu_card.py    # webhook 发送 / 卡片构建（facade，§21.2）
-│   ├── bitable.py            # 多维表格归档（subprocess 调 lark-cli，§16/§18；746 行遗留见 §21.4）
+│   ├── bitable.py            # 多维表格归档（subprocess 调 lark-cli，§16/§18；791 行遗留见 §21.4）
 │   ├── bitable_purge.py      # 滚动保留的 bitable 侧删除（§20）
 │   ├── minimax.py / minimax_schema.py  # MiniMax 调用 / prompt 与 schema（facade）
 │   ├── wiki.py / wiki_lark.py          # Wiki 归档编排 / lark-cli 调用层
@@ -77,7 +77,7 @@ feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/<token>"
 feishu_secret: "<签名密钥>"   # 机器人开启「签名校验」安全设置时的密钥；未开启则留空
 bootstrap_days: 3      # 冷启动窗口：新源首跑最多推最近 N 天
 site:
-  enabled: false       # GitHub Pages 详情页流程暂停（2026-08-25）
+  top_n: 5             # 摘要卡每源条数（site 段仅此项生效；enabled 已不再被读取）
 http:
   timeout_seconds: 20
   user_agent: "rss2feishu/0.2 (+local cron; private)"
@@ -86,7 +86,7 @@ feeds:
     url: "https://news.ycombinator.com/rss"
 ```
 
-环境变量（`feedkicker/config.py` 覆盖顺序：默认值 < config.yaml < 环境变量）：
+环境变量（`feedkicker/config.py` 覆盖顺序：默认值 < config-{env}.yaml < 环境变量）：
 - `FEISHU_WEBHOOK` —— 覆盖 webhook（凭据不进文件可选）
 - `FEISHU_SECRET` —— 覆盖签名密钥（同上）
 - `TC_APP_ENV` —— 运行环境 `dev|test|prod`（默认 `prod`），决定默认 db 路径
@@ -95,7 +95,11 @@ feeds:
 数据库按环境分流：默认 `data/tc-{env}.sqlite3`（dev/test/prod 各一库，互不污染；
 launchd 生产任务显式注入 `TC_APP_ENV=prod`）。CLI `--env` / `--db` 可覆盖。
 
-`config.py` 用 `dataclass` 类型化：`Config{feishu_webhook, feishu_secret, bootstrap_days, http: HttpConf{timeout_seconds,user_agent}, feeds: list[Feed{name,url}]}`。
+`config.py` 用 `dataclass` 类型化（以 `feedkicker/config.py` 为准，共 12 个顶层字段）：
+`Config{app_env, feishu_webhook, feishu_secret, bootstrap_days, http: HttpConf{timeout_seconds, user_agent}, feeds: list[Feed{name, url}], db_path, site: SiteConf{top_n}, bitable: BitableConf{enabled, app_token, table_id, url, retention_days}, salon: SalonConf{enabled, app_token, table_id, wiki_space_id, wiki_parent_token, trigger_weekday, trigger_hour, trigger_minute}, minimax: MinimaxConf{api_key, model, base_url}, wiki: WikiConf{space_id, parent_token, app_token}}`。
+
+配置键权威面（canonical）：`salon.wiki_space_id`/`salon.wiki_parent_token`、`minimax.api_key`/`model`/`base_url`、`wiki.space_id`/`parent_token`/`app_token`、`bitable.*`（`enabled`/`app_token`/`table_id`/`url`/`retention_days`）、`site.top_n`。
+**未文档化别名已移除**（#162）：`salon.wiki_space`、`salon.minimax_api_key`、`minimax.minimax_api_key`、`wiki.wiki_space_id`、`wiki.wiki_parent_token`；`wiki.space_id`/`parent_token` 未配置时回退 `salon.wiki_space_id`/`salon.wiki_parent_token`（§22.2）。
 
 ## 5. 数据模型（DDL）
 
@@ -123,6 +127,10 @@ CREATE INDEX IF NOT EXISTS idx_articles_pending ON articles (pushed_at)
   WHERE pushed_at IS NULL;
 ```
 
+运行期迁移列（非基线 DDL）：connect 时由 `store.py` 以 PRAGMA 检查并 `ALTER TABLE … ADD COLUMN` 补齐 `articles.bitable_synced_at`（多维表格归档打标，§16.3）与 `articles.ppt_synced_at`（沙龙大纲打标，§19/F18）；本 DDL 仅基线，schema 以 `store._SCHEMA` + 迁移为准。
+
+另有 `meta(key, value)` 键值表（`store_meta.py`，CREATE IF NOT EXISTS 对存量库透明）：`push_fail_streak`、`salon_fail_streak`、`purge_last_run_at` 等运行期状态（§15.5/§20）。
+
 ## 6. 核心流程（push.py 编排）
 
 ```
@@ -133,6 +141,7 @@ run(config):
        try:
          entries = fetch.feed(feed)              # 归一化，见 §6.1
          store.download(feed, entries, now)      # INSERT ON CONFLICT DO NOTHING
+         store.clear_fail(feed)                  # 抓取成功即清零该源 fail_streak（push.py）
          if store.is_first_run(feed):            # feeds 无该行
              cutoff = now - timedelta(days=config.bootstrap_days)
              store.promise_skip_old(feed, cutoff)  # 窗口外置 pushed_at，入档不推
@@ -145,7 +154,7 @@ run(config):
   6. payload = feishu.build_card(new_items, feed_fails, config.http)  # §7
   7. if config.dry_run: print(payload); return 0  (仅 --dry-run)
   8. ok = feishu.send(payload)                    # §8
-  9. if ok: store.mark_pushed(new_items); store.clear_fail(feed)
+  9. if ok: store.mark_pushed(new_items)          # 推送成功只打标 + 清零 meta push_fail_streak
      store.update_first_run_all(config, now)     # 首跑标记无论成败都记（防重复跑窗口）
      return 0 if ok else 1
 ```
@@ -294,7 +303,7 @@ v0.2 起 macOS 用 **launchd** 取代 cron：`StartCalendarInterval` 在机器�
 - WARNING：某源失败、webhook 为空、发送失败、超长截断
 - ERROR：未捕获异常（应基本不出现，顶层 try 兜底 `--` traceback）
 
-审计查询：`sqlite3 data/tc.sqlite3 "SELECT Count(*) FROM articles"` / `WHERE pushed_at IS NULL` 看待推存量。
+审计查询：`sqlite3 data/tc-{env}.sqlite3 "SELECT Count(*) FROM articles"` / `WHERE pushed_at IS NULL` 看待推存量。
 
 ## 11. 测试（tests/test_push.py）
 
@@ -433,7 +442,7 @@ v0.2 起 macOS 用 **launchd** 取代 cron：`StartCalendarInterval` 在机器�
 
 ```yaml
 site:
-  enabled: true        # TC_SITE_ENABLED=0 可整体关闭回退纯卡片模式
+  enabled: true        # 遗留字段：site.enabled 已不再被读取（§4 仅保留 top_n）
   base_url: "https://linyunxia.github.io/topic_collection"
   repo: "LinyunXIA/topic_collection"
   branch: "gh-pages"
@@ -615,7 +624,7 @@ wiki:
 
 - `config-{dev,test,prod}.yaml.example` 已补充 salon/minimax/wiki 段（dev/test/prod 各一，见仓库根）
 - 加载优先级：`--config` 显式路径 > `--env` > `TC_APP_ENV` > 默认 `prod`；`MiniMax_Key` / `TC_SALON_TOKEN` / `FEISHU_WEBHOOK` 环境变量覆盖文件
-- CLI 与 `push.py` 一致：`--dry-run` / `--env {dev,test,prod}` / `--config <path>` / `--db <path>`（`feedkicker/salon_flow.py:248` argparse 与 `push.py:127` 对齐）
+- CLI 与 `push.py` 一致：`--dry-run` / `--env {dev,test,prod}` / `--config <path>` / `--db <path>`（argparse 定义见 `salon_flow.main`，与 `push.main` 对齐）
 
 ### 19.3 调度（launchd，周五 10:00）
 
@@ -669,7 +678,7 @@ wiki:
 - 截止时点：`cutoff_iso(days)` = UTC `now - days` 的 `%Y-%m-%dT%H:%M:%SZ`（字典序可比，先例 `promise_skip_old`）；bitable 侧用 `cutoff_date_shanghai(days)` = 上海时区 `%Y-%m-%d` 日期串。
 - **sqlite**（`purge_sqlite`）：选 `pushed_at IS NOT NULL AND pushed_at < cutoff`；其中仅 `bitable_synced_at IS NOT NULL`（已在线归档）的行可删，超期未归档只计数 WARNING；dry-run 只计数，apply 才 `DELETE` + commit。salon 占位行 `pushed_at` 为 NULL，天然不匹配。
 - **bitable**（`purge_expired_records`）：`+record-list --json --limit 200 --offset N` 分页拉全表（records 包装 / fields+data 行式双形态兼容，范本 backfill），「推送时间」经 `bitable._cell_str` + `bitable._shanghai_date`（epoch 毫秒/ISO/纯日期兼容）归一成上海日期串，**客户端过滤** `d < cutoff_date`（字典序；截止当天的记录保留，保守方向）；apply 按 200/批 `+record-delete --json '{"record_id_list":[...]}' --yes`，批失败即终止。返回 `(deleted, expired, scanned)`。
-- **安全条件**：bitable 段仅在 `enabled` 且 app_token/table_id 非空且不含 `<`（占位守卫）时执行；**绝不调 `ensure_initialized`**（防误建 Base）；只操作 `cfg.bitable` 资讯归档 Base，不碰 salon 选题 Base；首屏 list 失败返回 `(0,0,0)` 零删除；apply 成功才写 meta `purge_last_run_at`。
+- **安全条件**：bitable 段仅在 `enabled` 且 app_token/table_id 非空且不含 `<`（占位守卫）时执行；**绝不调 `ensure_initialized`**（防误建 Base）；只操作 `cfg.bitable` 资讯归档 Base，不碰 salon 选题 Base；首屏 list 失败返回 `(0,0,0)` 零删除；apply 成功才写 meta `purge_last_run_at`。同一守卫将扩展到 bitable 运维 CLI（`python -m feedkicker.bitable`）：仅对既有 Base 操作 / 显式确认（`--init`/`--reseed`），`--dry-run` 已支持；余下代码改动随后续 commit 落地（见本轮 PR / #168）。
 
 ### 20.3 调度（launchd，每月 1 号 dry-run 巡检）
 
@@ -732,7 +741,7 @@ salon_md（标题/大纲 markdown/stub）、salon_notify（卡片 + 连败 SOS�
 
 - **facade 约定**：被搬走的公共函数在原模块以 `from x import y as y` 显式 re-export（抑制 ruff F401 且表明是刻意重导），全部既有调用点（`store.get_ppt_last_status`、`feishu.build_card`、`mm.PROMPT_TEMPLATES` 等 ~25 处）与测试 monkeypatch 目标零改动。
 - **monkeypatch 约定**：跨模块调用必须走模块属性访问（`feishu.send`、`bitable._run`、`wiki_lark.time.sleep`），不可 `from x import y` 解包后调用，否则 patch 不生效。唯一的 patch 点迁移：`wk.time.sleep` → `wiki_lark.time.sleep`（node-get 重试在 wiki_lark 内）。
-- 拆分后行数（`wc -l feedkicker/*.py`）：除 bitable.py（746，见 21.4）外全部 ≤200；最大 feishu_card.py 195。
+- 拆分后行数（`wc -l feedkicker/*.py`，2026-09-14 实测）：除 bitable.py（791，见 §21.4）外全部 ≤200；最大 feishu_card.py 195，config.py 194（#162 移除别名后回落、逼近 200 行门；如需拆分按 follow-up issue 跟踪）。
 
 ### 21.3 质量门配置
 
@@ -742,7 +751,7 @@ salon_md（标题/大纲 markdown/stub）、salon_notify（卡片 + 连败 SOS�
 
 ### 21.4 已知遗留
 
-- **bitable.py 746 行未拆分**：本次审核范围外、且是风险最高的 lark-cli 写路径（含 reseed/backfill/sync），强拆风险大于收益；新逻辑一律不进 bitable.py（如 #120 清理进 `bitable_purge.py`）。follow-up tech-debt issue **#135** 跟踪拆分（建议边界：lark-cli 进程层 / Base 与表结构初始化 / 记录读写与回填）。
+- **bitable.py 791 行未拆分**（2026-09-14 实测）：本次审核范围外、且是风险最高的 lark-cli 写路径（含 reseed/backfill/sync），强拆风险大于收益；新逻辑一律不进 bitable.py（如 #120 清理进 `bitable_purge.py`）。follow-up tech-debt issue **#135** 跟踪拆分（建议边界：lark-cli 进程层 / Base 与表结构初始化 / 记录读写与回填）。
 
 ### 21.5 清单
 
@@ -808,4 +817,4 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 - [x] salon_flow 卡片后接入，失败仅 WARNING；dry-run 预览
 - [x] tests/test_wiki_home.py（13 用例，subprocess 全 mock）；既有 sf.run 测试 autouse 打桩 update_homepage 防真实子进程
 - [x] ruff / basedpyright 0 errors，150 用例全绿，模块 ≤200 行
-- [ ] 合并后人工执行一次 `wiki_home --env prod` 存量回填并核对主页渲染（3 篇，2026年9月表格）
+- [ ] 合并后人工执行一次 `wiki_home --env prod` 存量回填并核对主页渲染（3 篇，2026年9月表格）—— 执行状态待用户确认（截至本次裁决未核实）
