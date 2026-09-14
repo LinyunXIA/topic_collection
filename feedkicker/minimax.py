@@ -25,7 +25,9 @@ def _resolve_api_key(api_key: str | None) -> str:
     return os.environ.get("MiniMax_Key") or os.environ.get("MINIMAX_API_KEY") or ""
 
 
-def _extract_code(data: dict[str, Any]) -> str | int | None:
+def _extract_code(data: Any) -> str | int | None:
+    if not isinstance(data, dict):
+        return None
     br = data.get("base_resp")
     if isinstance(br, dict):
         c = br.get("status_code")
@@ -96,8 +98,9 @@ def call_minimax_chat(
                 raise RuntimeError(f"MiniMax 错误 {code}: {data}")
             if resp.status_code >= 400:
                 raise RuntimeError(f"MiniMax HTTP {resp.status_code}: {data}")
-        if isinstance(data, dict) and data.get("base_resp", {}).get("status_code") not in (None, 0):
-            sc = data["base_resp"]["status_code"]
+        base = data.get("base_resp") if isinstance(data, dict) else None
+        if isinstance(base, dict) and base.get("status_code") not in (None, 0):
+            sc = base["status_code"]
             if sc in _RETRY_CODES and attempt == 0:
                 continue
             if sc != 0:
