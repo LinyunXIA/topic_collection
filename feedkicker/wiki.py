@@ -188,7 +188,7 @@ def main(argv: list[str] | None = None) -> int:
 
     try:
         url = create_wiki_doc_from_md(app_token, space_id, parent, args.title, md, dry_run=False)
-    except RuntimeError as e:
+    except (RuntimeError, OSError) as e:
         log.error("%s", e)
         return 2
     print(url)

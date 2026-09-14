@@ -23,6 +23,11 @@ log = logging.getLogger(__name__)
 TITLE_RE = re.compile(r"^(?P<topic>.+)_(?P<date>\d{4}-\d{2}-\d{2})_大纲$")
 
 
+def _placeholder(v: str) -> bool:
+    """空值或 `<...>` 占位（与 wiki/salon_flow 同口径，#237）。"""
+    return not v or "<" in v
+
+
 def list_outline_docs(space_id: str, parent_node_token: str) -> list[dict[str, str]]:
     """列首页节点下的大纲 docx：过滤标题符合 {话题}_{日期}_大纲 ，按日期降序（同日按话题升序）。
 
@@ -159,8 +164,8 @@ def main(argv: list[str] | None = None) -> int:
         return 2
     space_id = cfg.wiki.space_id or cfg.salon.wiki_space_id
     parent = cfg.wiki.parent_token or cfg.salon.wiki_parent_token
-    if not space_id or not parent:
-        log.error("wiki.space_id / wiki.parent_token 未配置，无法更新首页")
+    if _placeholder(space_id) or _placeholder(parent):
+        log.error("wiki.space_id / wiki.parent_token 未配置或为占位，无法更新首页")
         return 2
     try:
         ok = update_homepage(space_id, parent, dry_run=args.dry_run)

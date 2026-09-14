@@ -82,6 +82,7 @@
 | `FEISHU_SECRET` | `feishu_secret` | 签名密钥 |
 | `MiniMax_Key`（或 `MINIMAX_API_KEY`） | `minimax.api_key` | 大纲生成；占位值（以 `<` 开头）会被清空 |
 | `TC_SALON_TOKEN` | `salon.app_token` | 沙龙选题 Base |
+| `TC_FEISHU_HOST` | —（`feishu_host.feishu_host()`） | 飞书租户域名，默认 `web91vfvm7.feishu.cn`；换租户/测试注入 |
 | `TC_APP_ENV` | 运行环境 | `dev\|test\|prod`，默认 `prod` |
 | `TC_DB` | db 路径 | 显式指定时高于环境推导 |
 

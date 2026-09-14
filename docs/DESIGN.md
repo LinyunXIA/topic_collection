@@ -55,9 +55,12 @@ topic_collection/
 │   ├── config_models.py      # 路径常量与全部配置 dataclass（叶子模块，§21.2）
 │   ├── fetch.py              # feedparser 抓取 + 归一化
 │   ├── store.py              # sqlite 主表 + facade re-export（§21.2）
+│   ├── store_conn.py         # sqlite 连接/schema 迁移：WAL + busy_timeout（§21.2/#239）
 │   ├── store_meta.py         # meta 键值表（叶子模块）
 │   ├── store_salon.py        # salon 选题 sqlite 状态（ppt 同步/last_status/落库）
 │   ├── feishu.py / feishu_card.py    # webhook 发送 / 卡片构建（facade，§21.2）
+│   ├── feishu_card_body.py   # 卡片 body 组装与截断提示（自 feishu_card 抽出，§21.2）
+│   ├── feishu_host.py        # 飞书租户域名单点（TC_FEISHU_HOST 覆盖）
 │   ├── bitable.py            # 多维表格 CLI + facade re-export（§21.2/§21.4）
 │   ├── bitable_lark.py       # lark-cli 进程层：_run/_parse/_json_arg/SHANGHAI（§21.4）
 │   ├── bitable_schema.py     # Base/数据表初始化：字段、建库、ensure_initialized（§21.4）
@@ -65,10 +68,12 @@ topic_collection/
 │   ├── bitable_records.py    # 记录读写：去重建链、批量写、清空重灌、sync_env（§21.4）
 │   ├── bitable_backfill.py   # 归档日期解析与存量回填 backfill_empty_archive_dates（§21.4）
 │   ├── bitable_purge.py      # 滚动保留的 bitable 侧删除（§20）
+│   ├── bitable_reseed.py     # --reseed 前置清空 purge_all_records（bitable_records re-export，§21.4）
 │   ├── minimax.py / minimax_schema.py  # MiniMax 调用 / prompt 与 schema（facade）
 │   ├── wiki.py / wiki_lark.py          # Wiki 归档编排 / lark-cli 调用层
 │   ├── wiki_home.py          # Wiki「首页」自动索引：node-list → 月块表格 → overwrite（§22）
-│   ├── topic.py              # 已选题分页拉取
+│   ├── topic.py              # 已选题分页拉取（facade）
+│   ├── topic_records.py      # topic 响应记录归一（自 topic 抽出，§21.2）
 │   ├── salon_flow.py         # 沙龙编排主流程（§19）
 │   ├── salon_md.py / salon_notify.py  # 大纲 markdown/stub / 卡片与连败 SOS
 │   ├── push.py               # push 编排主流程
@@ -740,28 +745,33 @@ wiki:
 ### 21.2 模块拆分（依赖单向无环）
 
 ```
+store_conn（叶子：sqlite 连接/schema 迁移，WAL + busy_timeout，#239）
+  ↑
 store_meta（叶子：meta 键值表）
   ↑
 store_salon（ppt 同步标记 / last_status / mark_topic_archived）
   ↑
-store（articles/feeds 主表 + facade re-export store_meta、store_salon）
+store（articles/feeds 主表 + facade re-export store_conn、store_meta、store_salon）
 
 config_models（叶子：PROJECT_ROOT/DEFAULT_DB_PATH/VALID_ENVS + 全部 dataclass）
   ↑
 config（读 config-{env}.yaml + env 覆盖；db_path_for/config_path_for/load_config 仍定义于此）
 
-feishu_card（卡片构建/转义/strip_actions）→ feishu（HTTP 发送 + facade re-export）
+feishu_host（叶子：租户域名单点）→ feishu_card_body（body 组装）→ feishu_card（构建/转义/strip_actions）→ feishu（HTTP 发送 + facade re-export）
 minimax_schema（PROMPT_TEMPLATES / function-calling schema）→ minimax（调用 + facade）
 wiki_lark（lark-cli docs/wiki 调用与响应解析）→ wiki（编排 + __main__ CLI）
-salon_md（标题/大纲 markdown/stub）、salon_notify（卡片 + 连败 SOS）→ salon_flow（编排）
+salon_md（标题/大纲 markdown/stub/状态归一）、salon_notify（卡片 + 连败 SOS）→ salon_flow（编排）
+topic_records（响应记录归一）→ topic（分页拉取 + facade re-export）
 
-bitable_lark（叶子：lark-cli 进程层 _run/_parse/_json_arg/_has_batch_verb/SHANGHAI）
+bitable_lark（叶子：lark-cli 进程层 _run/_parse/_json_arg/_has_batch_verb/SHANGHAI/页指纹）
   ↑
 bitable_schema（Base/表初始化：fields_for/create_base/ensure_initialized）
 bitable_views（视图/字段/分享：setup_view/create_date_view/set_tenant_readonly）
 bitable_backfill（归档日期解析 _cell_str/_shanghai_date + 回填）
   ↑
-bitable_records（记录读写：existing_links/sync_records/purge_all_records/sync_env，编排 schema）
+bitable_reseed（--reseed 前置清空 purge_all_records）
+  ↑
+bitable_records（记录读写：existing_links/sync_records/sync_env，re-export purge_all_records）
   ↑
 bitable（CLI + facade re-export，§21.2）
 ```
@@ -781,12 +791,14 @@ bitable（CLI + facade re-export，§21.2）
 ### 21.4 拆分记录
 
 - **bitable.py 拆分完成**（#135，2026-09-14）：原 830 行单文件按边界拆为 6 个 ≤200 行模块，行为逐字节保留（240 用例全绿，<1s 全离线），`bitable.py` 收敛为 CLI + facade re-export。边界与函数归属：
-  - `bitable_lark.py`（进程层）：`SHANGHAI`/`_shanghai_tz`、`lark_bin`、`_run`、`_parse`、`_ok`、`_data`、`_json_arg`、`_has_batch_verb`、`_markdown_record_ids`、`_CHUNK`。
+  - `bitable_lark.py`（进程层）：`SHANGHAI`/`_shanghai_tz`、`lark_bin`、`_run`、`_parse`、`_ok`、`_data`、`_json_arg`、`_has_batch_verb`、`_markdown_record_ids`、`_guard_offset`/`_page_fingerprint`/`_page_guard`（页指纹防误杀，#232）、`_CHUNK`。
   - `bitable_schema.py`（Base/表初始化）：`BASE_TITLES`/`TABLE_NAME`/`VIEW_NAME` 等常量、`fields_for`、`base_url`、`find_base_by_title`、`create_base`、`get_table_id`、`create_table`、`ensure_initialized`。
   - `bitable_views.py`（视图/字段/分享）：`_view_id`、`setup_view`、`set_tenant_readonly`、`ensure_archive_date_field`、`create_date_view`。
-  - `bitable_records.py`（记录读写）：`_cell`、`existing_links`、`sync_records`、`purge_all_records`、`sync_env`。
+  - `bitable_reseed.py`（reseed 前置清空）：`_delete_batches`、`_env_record_ids`、`purge_all_records`（#197/#218；`bitable_records` 以 `from … import … as …` re-export）。
+  - `bitable_records.py`（记录读写）：`_cell`、`existing_links`、`sync_records`、`sync_env`（+ `purge_all_records` re-export）。
   - `bitable_backfill.py`（日期解析/回填）：`_cell_str`、`_shanghai_date`、`backfill_empty_archive_dates`。
   - `bitable.py`：`_tokens_ready`、`_dry_run_plan`、`main` + 全量 facade re-export；`bitable.X` 访问与既有调用点保持不变。
+- 拆分后新增子模块登记：`feishu_card_body.py`（#222，body 组装/截断提示，`feishu_card` 引用）、`feishu_host.py`（租户域名单点，`bitable_schema`/`wiki` 引用）、`store_conn.py`（#239，连接/WAL/迁移，`store` re-export）、`topic_records.py`（#237，`_extract_records` 容器校验，`topic` re-export）。
 - 跨模块调用一律模块属性访问（`bitable_lark._run`、`bitable_schema.ensure_initialized`）；monkeypatch 目标按 §21.2 迁移到 owner 模块。
 - **后续新逻辑**：一律进对应子模块，不再堆进 `bitable.py`（如 #120 清理进 `bitable_purge.py`）。
 
@@ -896,8 +908,18 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 ### 24.1 已知取舍（明示语义，不改变行为）
 
 - **并发 `--reseed` 无互斥**：两个操作员同时跑会在清理窗口互抢（重复行/半清）；本机单进程运维，按运维纪律单点执行，不加锁（`bitable.main` docstring 同注）。
-- **卡片 20KB 裁剪跨源语义**：按「源分组、组内最旧在前」的拼接序 `pop(0)` 丢最旧，跨源时先丢完前面的源；单源内语义正确，跨源为近似（`feishu_card.build_card` docstring 同注）。
+- **卡片 20KB 裁剪语义**：先剥 description，再丢**全局 time_key 最小（最旧）**者，与源分组拼接顺序无关；footer「已截断 N 条旧条目」方向正确（`feishu_card.build_card` docstring 同注，#233 修正 §24.1 原 `pop(0)` 近似）。
 - **`existing_links` 跨环境去重**：共享 Base 下不按「环境」过滤链接 → 另一环境已归档的同一 URL 不在本环境重复写（test 视图缺行，非数据丢失）；按环境 `--reseed` 后收敛。
 - **`canonicalize` 键规则漂移**：省略默认端口/保留 userinfo 等归一变更会让 guid-less 源旧行 `entry_key` 与新 key 不一致，升级首轮可能重复推卡一次（一次性影响）。
 - **`is_ppt_synced` 无 feed 过滤**：仅按 `entry_key` 判定，理论碰撞才误伤；实际 `entry_key` 为 URL/guid，不会跨源碰撞。
-- **salon 全失败返回码不变**：`selected` 非空但 0 条成功时仅 `log.warning`（salon_flow + salon_notify），rc 仍 0，不触发 SOS。
+- **salon 全失败返回码不变**：`selected` 非空且**有尝试**但 0 条成功时仅 `log.warning`（salon_flow），rc 仍 0，不触发 SOS；稳态全跳过（去重命中）不再误报（#237）。
+
+### 24.2 第五轮审计修复语义补充（#231–#239，2026-09-14）
+
+- **分页防死循环改为页指纹**（#232）：`bitable_lark._page_guard` 以本页 id 集合/行数据指纹比对上一页，相同即判 `--offset` 被忽略并中止；原 20000 offset 天花板抬高为 20 万绝对兜底（仅防指纹失效），合法大表（≥20200 行）不再误杀。`bitable --backfill` 异常捕获后 log.error + rc 2（不再冒 traceback）。
+- **salon 逐题隔离**（#234）：`build_combined_md` 纳入逐题 try，`outline_to_md` 对 `slides`/`bullets`/`speaker_note` 类型归一（slides 非列表显式 raise 由逐题 try 跳过），单条坏 LLM 响应只 WARNING，不拖垮整批、不丢通知。
+- **reseed/markdown/existing_links 健壮性**（#235）：dev/test reseed 对「环境」为空/不匹配行保守保留并 WARNING（§20）；prod markdown 路径「输出非空但解析零 id」判 `ok=False` 中止；fields+data 行式缺「链接」字段且有行时 raise（不静默空集）。
+- **脱敏 canary 哈希化**（#236）：真实 prod record id 不再以明文（含拼接）留在 tracked；测试改为 sha256 比对 + 长 token 无匹配断言，非 git 工作树显式失败（OPS §2.2 同口径记录）。
+- **边界**（#237）：topic 响应容器校验（顶层非 dict / records 非 list[dict] → 空页 + WARNING）；salon 记录 skipped/attempted 计数；缺 lark-cli 时 `_run` 返回 None、`wiki.main` 统一 rc 2 不 traceback；`wiki_home` space/parent 复用「空或含 `<`」占位守卫 rc 2；minimax 成功码 `"0"` 归一为 0。
+- **配置/并发**（#239）：`feishu_webhook`/`feishu_secret` 的 `<...>` 占位在 `load_config` 统一清空（send 层判空即跳过）；`store_conn.connect` 设 `busy_timeout=5000` + `journal_mode=WAL`，ALTER 迁移容忍 duplicate column。
+- **接受项（记录不修）**：① 超大 `detail_url` 时 `build_card` 不保证 ≤20KB（`detail_url` 由 config 控制、现实值远小于预算；本轮只保证常规条目路径 ≤20KB，#239）；② `is_ppt_synced` 无 feed 过滤（理论碰撞，见 §24.1）。

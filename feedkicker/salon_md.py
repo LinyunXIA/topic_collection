@@ -19,6 +19,15 @@ def topic_title(rec: dict[str, Any]) -> str:
     return rid or "未命名话题"
 
 
+def record_status(rec: dict[str, Any]) -> str:
+    """「讨论状态」归一：list 取首个字符串，str 直取，其余空串（salon_flow 过滤用）。"""
+    fields = rec.get("fields")
+    v = fields.get("讨论状态") if isinstance(fields, dict) else None
+    if isinstance(v, list):
+        return v[0] if v and isinstance(v[0], str) else ""
+    return v if isinstance(v, str) else ""
+
+
 def _slides_of(outline: Any) -> list[dict[str, Any]]:
     """slides 归一：缺省/None → 空；非 list 显式 raise（由 salon_flow 逐题捕获跳过）；非 dict 项跳过。"""
     if not isinstance(outline, dict):

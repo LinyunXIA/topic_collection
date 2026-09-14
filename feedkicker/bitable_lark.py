@@ -86,14 +86,15 @@ def _run(
     """执行 lark-cli 子进程。
 
     launchd 的 PATH 只有 /usr/bin:/bin，lark-cli 是 env node 脚本会以 rc=127 失败；
-    显式增补 homebrew 与二进制所在目录（#123）。
+    显式增补 homebrew 与二进制所在目录（#123）。lark_bin 缺失一并返回 None，
+    由调用方按其「无返回」语义降级（#237）。
     """
-    bin_path = lark_bin()
-    cmd = [bin_path] + args
-    env = os.environ.copy()
-    extra = [os.path.dirname(bin_path), "/opt/homebrew/bin", "/usr/local/bin"]
-    env["PATH"] = os.pathsep.join([p for p in extra if p] + [env.get("PATH", "")])
     try:
+        bin_path = lark_bin()
+        cmd = [bin_path] + args
+        env = os.environ.copy()
+        extra = [os.path.dirname(bin_path), "/opt/homebrew/bin", "/usr/local/bin"]
+        env["PATH"] = os.pathsep.join([p for p in extra if p] + [env.get("PATH", "")])
         proc = subprocess.run(
             cmd,
             input=stdin_text,
