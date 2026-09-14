@@ -1,4 +1,4 @@
-"""bitable 自动建库集群（#166）：mock bitable._run，离线断言 lark-cli argv 与 ok:false 分流。
+"""bitable 自动建库集群（#166）：mock bitable_lark._run，离线断言 lark-cli argv 与 ok:false 分流。
 
 覆盖 find_base_by_title / create_base / create_table / get_table_id /
 set_tenant_readonly / ensure_initialized / fields_for，不触网、不跑真实 lark-cli。
@@ -10,7 +10,7 @@ import json
 
 import pytest
 
-from feedkicker import bitable
+from feedkicker import bitable, bitable_lark, bitable_schema
 
 
 class FakeProc:
@@ -51,19 +51,19 @@ def test_find_base_by_title_truncates_and_matches(monkeypatch: pytest.MonkeyPatc
             {"bases": [{"base_token": "appOther", "name": "别的表"}, {"base_token": "appHit", "name": title}]}
         )
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     found = bitable.find_base_by_title(title)
     assert calls == [["base", "+title-resolve", "--title", title[:30]]]
     assert found == {"app_token": "appHit", "url": bitable.base_url("appHit")}
 
 
 def test_find_base_by_title_ok_false_returns_none(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: _fail("not found"))
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: _fail("not found"))
     assert bitable.find_base_by_title("资讯归档") is None
 
 
 def test_find_base_by_title_token_fallback(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: _ok({"token": "appTok"}))
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: _ok({"token": "appTok"}))
     found = bitable.find_base_by_title("资讯归档")
     assert found == {"app_token": "appTok", "url": bitable.base_url("appTok")}
 
@@ -75,7 +75,7 @@ def test_create_base_sends_fields_and_returns_url(monkeypatch: pytest.MonkeyPatc
         calls.append((list(args), timeout))
         return _ok({"base": {"base_token": "appNew", "url": ""}})
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     created = bitable.create_base("dev 归档", app_env="dev")
 
     args, timeout = calls[0]
@@ -88,10 +88,10 @@ def test_create_base_sends_fields_and_returns_url(monkeypatch: pytest.MonkeyPatc
 
 
 def test_create_base_failures(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: _fail("bad request"))
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: _fail("bad request"))
     with pytest.raises(RuntimeError, match="创建 Base 失败"):
         bitable.create_base("X")
-    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: _ok({"base": {}}))
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: _ok({"base": {}}))
     with pytest.raises(RuntimeError, match="缺少 token"):
         bitable.create_base("X")
 
@@ -105,15 +105,15 @@ def test_get_table_id_matches_by_name(monkeypatch: pytest.MonkeyPatch):
             {"tables": [{"name": "其他", "id": "tblOther"}, {"name": bitable.TABLE_NAME, "id": "tblHit"}]}
         )
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     assert bitable.get_table_id("app1") == "tblHit"
     assert calls == [["base", "+table-list", "--base-token", "app1"]]
 
 
 def test_get_table_id_missing_or_failed_returns_none(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: _ok({"tables": [{"name": "别的", "id": "x"}]}))
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: _ok({"tables": [{"name": "别的", "id": "x"}]}))
     assert bitable.get_table_id("app1") is None
-    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: _fail())
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: _fail())
     assert bitable.get_table_id("app1") is None
 
 
@@ -124,7 +124,7 @@ def test_create_table_returns_id_and_fields(monkeypatch: pytest.MonkeyPatch):
         calls.append(list(args))
         return _ok({"table_id": "tblNew"})
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     assert bitable.create_table("app1", app_env="test") == "tblNew"
     args = calls[0]
     assert args[:5] == ["base", "+table-create", "--base-token", "app1", "--name"]
@@ -133,10 +133,10 @@ def test_create_table_returns_id_and_fields(monkeypatch: pytest.MonkeyPatch):
 
 
 def test_create_table_failures(monkeypatch: pytest.MonkeyPatch):
-    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: _fail())
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: _fail())
     with pytest.raises(RuntimeError, match="创建数据表失败"):
         bitable.create_table("app1")
-    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: _ok({}))
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: _ok({}))
     with pytest.raises(RuntimeError, match="缺少 table_id"):
         bitable.create_table("app1")
 
@@ -148,7 +148,7 @@ def test_set_tenant_readonly_two_patches(monkeypatch: pytest.MonkeyPatch):
         calls.append(list(args))
         return FakeProc(0, "{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     assert bitable.set_tenant_readonly("appX") is True
     assert len(calls) == 2
     assert calls[0] == [
@@ -166,7 +166,7 @@ def test_set_tenant_readonly_business_failure(monkeypatch: pytest.MonkeyPatch):
         calls.append(list(args))
         return _fail() if len(calls) == 2 else FakeProc(0, "{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     assert bitable.set_tenant_readonly("appX") is False
 
 
@@ -174,7 +174,7 @@ def test_ensure_initialized_uses_configured_tokens(monkeypatch: pytest.MonkeyPat
     def forbid(*a, **kw):
         raise AssertionError("已配置 token 不得调 lark-cli")
 
-    monkeypatch.setattr(bitable, "_run", forbid)
+    monkeypatch.setattr(bitable_lark, "_run", forbid)
     info = bitable.ensure_initialized(_bt("appCfg", "tblCfg", "https://x/base"))
     assert info == {"app_token": "appCfg", "table_id": "tblCfg", "url": "https://x/base"}
 
@@ -182,19 +182,19 @@ def test_ensure_initialized_uses_configured_tokens(monkeypatch: pytest.MonkeyPat
 def test_ensure_initialized_creates_base_then_table(monkeypatch: pytest.MonkeyPatch):
     steps: list[tuple] = []
     monkeypatch.setattr(
-        bitable, "find_base_by_title", lambda title: steps.append(("find", title)) or None
+        bitable_schema, "find_base_by_title", lambda title: steps.append(("find", title)) or None
     )
     monkeypatch.setattr(
-        bitable,
+        bitable_schema,
         "create_base",
         lambda title, env: steps.append(("create_base", title, env))
         or {"app_token": "appNew", "url": "https://new"},
     )
     monkeypatch.setattr(
-        bitable, "get_table_id", lambda tok: steps.append(("get_table", tok)) or None
+        bitable_schema, "get_table_id", lambda tok: steps.append(("get_table", tok)) or None
     )
     monkeypatch.setattr(
-        bitable,
+        bitable_schema,
         "create_table",
         lambda tok, env: steps.append(("create_table", tok, env)) or "tblNew",
     )
@@ -214,10 +214,10 @@ def test_ensure_initialized_reuses_found_base(monkeypatch: pytest.MonkeyPatch):
         raise AssertionError("已找到 Base 不得重复创建")
 
     monkeypatch.setattr(
-        bitable, "find_base_by_title", lambda title: {"app_token": "appFound", "url": "https://found"}
+        bitable_schema, "find_base_by_title", lambda title: {"app_token": "appFound", "url": "https://found"}
     )
-    monkeypatch.setattr(bitable, "create_base", no_create)
-    monkeypatch.setattr(bitable, "get_table_id", lambda tok: "tblFound")
+    monkeypatch.setattr(bitable_schema, "create_base", no_create)
+    monkeypatch.setattr(bitable_schema, "get_table_id", lambda tok: "tblFound")
     info = bitable.ensure_initialized(_bt(), app_env="prod")
     assert info["app_token"] == "appFound"
     assert info["table_id"] == "tblFound"
@@ -225,12 +225,12 @@ def test_ensure_initialized_reuses_found_base(monkeypatch: pytest.MonkeyPatch):
 
 def test_ensure_initialized_writes_resolved_tokens_back(monkeypatch: pytest.MonkeyPatch):
     # A1：自动找到/创建的 Base 必须把 token/url 回写到调用方配置，否则卡片详情按钮丢失 token
-    monkeypatch.setattr(bitable, "create_base", lambda *a, **kw: (_ for _ in ()).throw(
+    monkeypatch.setattr(bitable_schema, "create_base", lambda *a, **kw: (_ for _ in ()).throw(
         AssertionError("已找到 Base 不得重复创建")))
     monkeypatch.setattr(
-        bitable, "find_base_by_title", lambda title: {"app_token": "appAuto", "url": ""}
+        bitable_schema, "find_base_by_title", lambda title: {"app_token": "appAuto", "url": ""}
     )
-    monkeypatch.setattr(bitable, "get_table_id", lambda tok: "tblAuto")
+    monkeypatch.setattr(bitable_schema, "get_table_id", lambda tok: "tblAuto")
     bt = _bt()
     info = bitable.ensure_initialized(bt, app_env="prod")
     assert info["app_token"] == "appAuto"
@@ -243,7 +243,7 @@ def test_ensure_initialized_writes_resolved_tokens_back(monkeypatch: pytest.Monk
 
 def test_parse_top_level_array_does_not_crash(monkeypatch: pytest.MonkeyPatch):
     # A4：顶层 JSON 数组不得让 _parse 的 .get 抛 AttributeError
-    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: FakeProc(0, stdout="[1, 2]"))
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: FakeProc(0, stdout="[1, 2]"))
     assert bitable._parse(FakeProc(0, stdout="[1, 2]")) == (True, {})
     assert bitable.find_base_by_title("任意标题") is None
     assert bitable.get_table_id("appToken") is None

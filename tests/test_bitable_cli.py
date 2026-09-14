@@ -2,7 +2,7 @@
 
 dry-run 必须零写：不建 Base（不调 ensure_initialized）、不清空（不调
 +record-delete）、不写入（不调 sync_env）；lark-cli 子进程全部经
-monkeypatch bitable._run 拦截，不触网、不碰真实库/Base。
+monkeypatch bitable_lark._run 拦截，不触网、不碰真实库/Base。
 """
 
 from __future__ import annotations
@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from feedkicker import bitable
+from feedkicker import bitable, bitable_lark, bitable_records, bitable_schema, bitable_views
 from feedkicker.config import (
     BitableConf,
     Config,
@@ -55,7 +55,7 @@ def install_cfg_and_lark(monkeypatch, tmp_path, calls, **bt_kw) -> Config:
             return FakeProc(0, stdout=PAGE)
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     return cfg
 
 
@@ -66,8 +66,16 @@ def forbid(monkeypatch, *names):
 
         return _fail
 
+    owners = {
+        "ensure_initialized": bitable_schema,
+        "sync_env": bitable_records,
+        "ensure_archive_date_field": bitable_views,
+        "setup_view": bitable_views,
+        "create_date_view": bitable_views,
+        "set_tenant_readonly": bitable_views,
+    }
     for name in names:
-        monkeypatch.setattr(bitable, name, boom(name))
+        monkeypatch.setattr(owners[name], name, boom(name))
 
 
 def test_purge_all_records_dry_run_counts_without_delete(monkeypatch):
@@ -77,7 +85,7 @@ def test_purge_all_records_dry_run_counts_without_delete(monkeypatch):
         calls.append(list(args))
         return FakeProc(0, stdout=PAGE)
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     assert bitable.purge_all_records("app", "tbl", dry_run=True) == 2
     assert not any("+record-delete" in c for c in calls)
 
@@ -124,12 +132,12 @@ def test_reseed_without_dry_run_keeps_purge_and_sync(monkeypatch, tmp_path):
     calls: list[list[str]] = []
     install_cfg_and_lark(monkeypatch, tmp_path, calls)
     monkeypatch.setattr(
-        bitable,
+        bitable_schema,
         "ensure_initialized",
         lambda bt, env: {"app_token": "appReal", "table_id": "tblReal", "url": "https://x"},
     )
     synced: list[str] = []
-    monkeypatch.setattr(bitable, "sync_env", lambda bt, env, conn: synced.append(env) or 2)
+    monkeypatch.setattr(bitable_records, "sync_env", lambda bt, env, conn: synced.append(env) or 2)
 
     assert bitable.main(["--reseed", "--env", "test"]) == 0
     assert any("+record-delete" in c for c in calls)
@@ -145,7 +153,7 @@ def test_main_accepts_config_and_db(monkeypatch, tmp_path):
         return cfg
 
     monkeypatch.setattr("feedkicker.config.load_config", fake_load)
-    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: FakeProc(0, stdout=PAGE))
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: FakeProc(0, stdout=PAGE))
     cfg_file = tmp_path / "config-test.yaml"
     db_file = tmp_path / "custom.sqlite3"
 
@@ -176,7 +184,7 @@ def test_reseed_rejected_without_configured_base(
 def test_reseed_dry_run_placeholder_still_previews(monkeypatch, tmp_path):
     cfg = make_cfg(tmp_path, enabled=True, app_token="<app>", table_id="<tbl>")
     monkeypatch.setattr("feedkicker.config.load_config", lambda *a, **kw: cfg)
-    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: FakeProc(0, "{}"))
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: FakeProc(0, "{}"))
     forbid(monkeypatch, "ensure_initialized", "sync_env")
 
     assert bitable.main(["--reseed", "--dry-run", "--env", "test"]) == 0
@@ -188,16 +196,16 @@ def test_init_with_placeholder_warns_before_create(monkeypatch, tmp_path, caplog
     monkeypatch.setattr("feedkicker.config.load_config", lambda *a, **kw: cfg)
     ensure_calls: list[str] = []
     monkeypatch.setattr(
-        bitable,
+        bitable_schema,
         "ensure_initialized",
         lambda bt, env: ensure_calls.append(env)
         or {"app_token": "appNew", "table_id": "tblNew", "url": "u"},
     )
-    monkeypatch.setattr(bitable, "ensure_archive_date_field", lambda a, t: True)
-    monkeypatch.setattr(bitable, "setup_view", lambda a, t: True)
-    monkeypatch.setattr(bitable, "create_date_view", lambda a, t: True)
-    monkeypatch.setattr(bitable, "set_tenant_readonly", lambda a: True)
-    monkeypatch.setattr(bitable, "sync_env", lambda bt, env, conn: 0)
+    monkeypatch.setattr(bitable_views, "ensure_archive_date_field", lambda a, t: True)
+    monkeypatch.setattr(bitable_views, "setup_view", lambda a, t: True)
+    monkeypatch.setattr(bitable_views, "create_date_view", lambda a, t: True)
+    monkeypatch.setattr(bitable_views, "set_tenant_readonly", lambda a: True)
+    monkeypatch.setattr(bitable_records, "sync_env", lambda bt, env, conn: 0)
 
     with caplog.at_level(logging.WARNING, logger="feedkicker.bitable"):
         assert bitable.main(["--init", "--env", "test"]) == 0

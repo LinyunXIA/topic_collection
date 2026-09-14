@@ -22,7 +22,7 @@ def test_lark_node_list_builds_page_all_argv(monkeypatch) -> None:
         calls.append((list(args), timeout))
         return proc
 
-    monkeypatch.setattr(wiki_lark.bitable, "_run", fake_run)
+    monkeypatch.setattr(wiki_lark.bitable_lark, "_run", fake_run)
     got = wiki_lark.lark_node_list("spc1", "parent1")
     assert got is proc
     assert calls == [

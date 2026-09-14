@@ -343,7 +343,7 @@ def test_salon_flow_non_selected_skipped(monkeypatch):
 
 
 def test_salon_flow_full_chain_via_httpx_subprocess(monkeypatch):
-    from feedkicker import bitable as bt
+    from feedkicker import bitable_lark
     from feedkicker import salon_flow as sf
 
     cfg = _cfg(monkeypatch)
@@ -363,10 +363,10 @@ def test_salon_flow_full_chain_via_httpx_subprocess(monkeypatch):
             return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"node_token": "wik_low_node", "obj_token": "docx_low_001", "obj_type": "docx"}}, ensure_ascii=False))
         return FakeProc(0, stdout=json.dumps({"data": {}}, ensure_ascii=False))
 
-    monkeypatch.setattr(bt, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     # also patch salon_flow's bitable via same module object (topic import)
     import feedkicker.topic as tp_mod
-    monkeypatch.setattr(tp_mod.bitable, "_run", fake_run)
+    monkeypatch.setattr(tp_mod.bitable_lark, "_run", fake_run)
 
     call_log = []
 
@@ -435,7 +435,7 @@ def test_salon_flow_minimax_tool_calls_real_parse_via_httpx(monkeypatch):
 def test_salon_flow_wiki_docx_create_path(monkeypatch):
     """docs +create 在 wiki 节点下建 docx，node-get 反查 node_token 拼 /wiki/ 链接（#133）"""
     import feedkicker.wiki as wk
-    from feedkicker import bitable as bt
+    from feedkicker import bitable_lark
 
     seen = []
 
@@ -453,7 +453,7 @@ def test_salon_flow_wiki_docx_create_path(monkeypatch):
             return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"node_token": "wiknode_001", "obj_token": "docx_new_001", "obj_type": "docx"}}, ensure_ascii=False))
         raise AssertionError(f"未预期的 lark-cli 调用: {args}")
 
-    monkeypatch.setattr(bt, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题/Wiki\\检验", "# md\n", dry_run=False, date_str="2026-09-04")
     assert url == "https://web91vfvm7.feishu.cn/wiki/wiknode_001"
     # 不得再走 drive upload / httpx move 的旧 file 路径
@@ -468,9 +468,9 @@ def test_salon_flow_wiki_docx_create_path(monkeypatch):
 def test_salon_flow_wiki_docx_create_business_failure_raises(monkeypatch):
     """docs +create 业务失败（rc=0 但 ok:false）必须抛错，不得静默返回假链接（#133）"""
     import feedkicker.wiki as wk
-    from feedkicker import bitable as bt
+    from feedkicker import bitable_lark
 
-    monkeypatch.setattr(bt, "_run", lambda args, stdin_text=None, timeout=120: FakeProc(
+    monkeypatch.setattr(bitable_lark, "_run", lambda args, stdin_text=None, timeout=120: FakeProc(
         0, stdout=json.dumps({"ok": False, "error": {"message": "no permission on parent"}}, ensure_ascii=False)))
     raised = False
     try:
@@ -485,7 +485,7 @@ def test_salon_flow_wiki_nodeget_retry_then_success(monkeypatch):
     """node-get 首次 131005（新建传播延迟），重试成功 → 返回 /wiki/ 规范链接（#133）"""
     import feedkicker.wiki as wk
     import feedkicker.wiki_lark as wl
-    from feedkicker import bitable as bt
+    from feedkicker import bitable_lark
 
     seq = {"n": 0}
     monkeypatch.setattr(wl.time, "sleep", lambda *_: None)
@@ -500,7 +500,7 @@ def test_salon_flow_wiki_nodeget_retry_then_success(monkeypatch):
             return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"node_token": "wiknode_rt", "obj_type": "docx"}}, ensure_ascii=False))
         raise AssertionError(f"未预期的 lark-cli 调用: {args}")
 
-    monkeypatch.setattr(bt, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题", "# md\n", dry_run=False)
     assert url == "https://web91vfvm7.feishu.cn/wiki/wiknode_rt"
     assert seq["n"] == 2
@@ -510,7 +510,7 @@ def test_salon_flow_wiki_nodeget_failure_fallback_docx_url(monkeypatch):
     """docx 已建成但 node-get 重试仍失败：回退 /docx/ 链接保证可用，不丢已建文档（#133）"""
     import feedkicker.wiki as wk
     import feedkicker.wiki_lark as wl
-    from feedkicker import bitable as bt
+    from feedkicker import bitable_lark
 
     monkeypatch.setattr(wl.time, "sleep", lambda *_: None)
 
@@ -521,7 +521,7 @@ def test_salon_flow_wiki_nodeget_failure_fallback_docx_url(monkeypatch):
             return FakeProc(0, stdout=json.dumps({"ok": False, "error": {"message": "node 131005 not_found"}}, ensure_ascii=False))
         raise AssertionError(f"未预期的 lark-cli 调用: {args}")
 
-    monkeypatch.setattr(bt, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题", "# md\n", dry_run=False)
     assert url == "https://web91vfvm7.feishu.cn/docx/docx_fb_002"
 
@@ -591,8 +591,8 @@ def test_salon_flow_dry_run_no_db_write_and_no_httpx(monkeypatch):
     import feedkicker.minimax as mm
     monkeypatch.setattr(mm.httpx, "post", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not hit minimax httpx")))
     # dry-run 不应 spawn 任何 lark-cli 子进程（topic/wiki 均已 mock 或早退）
-    from feedkicker import bitable as bt
-    monkeypatch.setattr(bt, "_run", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not spawn lark-cli")))
+    from feedkicker import bitable_lark
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run must not spawn lark-cli")))
 
     rc = sf.run(cfg, conn, dry_run=True)
     assert rc == 0
@@ -695,15 +695,15 @@ def test_salon_flow_mark_ppt_synced_bulk_and_subprocess_mock(monkeypatch):
     assert rows[0][0] == "recM1"
     # subprocess mock：确保 topic 的 record-list 不打真网
     import feedkicker.topic as tp
-    from feedkicker import bitable as bt
+    from feedkicker import bitable_lark
 
     def fake_run(args, stdin_text=None, timeout=120):
         assert "--filter-json" in args
         assert "已选题" in args[args.index("--filter-json") + 1]
         return FakeProc(0, stdout=json.dumps({"data": {"records": [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"]}}]}}, ensure_ascii=False))
 
-    monkeypatch.setattr(bt, "_run", fake_run)
-    monkeypatch.setattr(tp.bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    monkeypatch.setattr(tp.bitable_lark, "_run", fake_run)
     recs = tp.fetch_selected_topics("app", "tbl")
     assert recs[0]["record_id"] == "recGWg8Kb9kUDI"
     conn.close()

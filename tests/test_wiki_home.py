@@ -10,7 +10,7 @@ import json
 from datetime import datetime
 from pathlib import Path
 
-from feedkicker import bitable, feishu, store, wiki, wiki_home
+from feedkicker import bitable_lark, feishu, store, wiki, wiki_home
 from feedkicker.config import Config, load_config
 
 
@@ -53,7 +53,7 @@ def install_fake_lark(monkeypatch, nodes, update_stdout="updated"):
             return FakeProc(0, stdout=update_stdout)
         return FakeProc(1, stderr=f"unexpected args: {args}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     return calls, contents
 
 
@@ -143,7 +143,7 @@ def test_update_homepage_node_list_failure_returns_false(monkeypatch):
         calls.append(list(args))
         return FakeProc(1, stderr="boom")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     assert wiki_home.update_homepage("spc", "parent", dry_run=False) is False
     assert not any("+update" in c for c in calls)
 

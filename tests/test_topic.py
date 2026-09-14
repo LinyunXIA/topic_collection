@@ -39,7 +39,7 @@ def test_fetch_selected_server_side_filter(monkeypatch):
         data = {"records": [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "T1"}}]}
         return FakeProc(0, stdout=json.dumps({"data": data}, ensure_ascii=False))
 
-    monkeypatch.setattr(topic_mod.bitable, "_run", fake_run)
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
     records = fetch_selected_topics("appTokenTest", "tblTest", limit=200)
     assert len(records) == 1
     assert records[0]["record_id"] == "recGWg8Kb9kUDI"
@@ -69,7 +69,7 @@ def test_fetch_selected_pagination_merge(monkeypatch):
             ], "has_more": False}
             return FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False))
 
-    monkeypatch.setattr(topic_mod.bitable, "_run", fake_run)
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
     records = fetch_selected_topics("app", "tbl", limit=2)
     assert len(records) == 3
     assert calls == ["0", "2"]
@@ -83,7 +83,7 @@ def test_fetch_selected_limit_under_threshold_no_more(monkeypatch):
         ]}
         return FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False))
 
-    monkeypatch.setattr(topic_mod.bitable, "_run", fake_run)
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
     records = fetch_selected_topics("app", "tbl", limit=200)
     assert len(records) == 1
 
@@ -96,7 +96,7 @@ def test_fetch_selected_fields_data_shape(monkeypatch):
         ]}
         return FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False))
 
-    monkeypatch.setattr(topic_mod.bitable, "_run", fake_run)
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
     records = fetch_selected_topics("app", "tbl")
     assert len(records) == 1
     assert records[0]["fields"]["话题名称"] == "话题A"
@@ -106,7 +106,7 @@ def test_fetch_selected_failure_127_raises(monkeypatch):
     def fake_run(args, stdin_text=None, timeout=120):
         return FakeProc(127, stdout="", stderr="command not found: lark-cli")
 
-    monkeypatch.setattr(topic_mod.bitable, "_run", fake_run)
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
     with pytest.raises(RuntimeError, match="127"):
         fetch_selected_topics("app", "tbl")
 
@@ -115,13 +115,13 @@ def test_fetch_selected_not_found_raises(monkeypatch):
     def fake_run(args, stdin_text=None, timeout=120):
         return FakeProc(0, stdout=json.dumps({"ok": False, "error": {"type": "not_found", "message": "table not_found"}}, ensure_ascii=False))
 
-    monkeypatch.setattr(topic_mod.bitable, "_run", fake_run)
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
     with pytest.raises(RuntimeError):
         fetch_selected_topics("app", "tbl")
 
 
 def test_fetch_selected_proc_none_raises(monkeypatch):
-    monkeypatch.setattr(topic_mod.bitable, "_run", lambda *a, **kw: None)
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", lambda *a, **kw: None)
     with pytest.raises(RuntimeError):
         fetch_selected_topics("app", "tbl")
 
@@ -142,7 +142,7 @@ def test_fetch_selected_empty_pages_with_has_more_terminates(monkeypatch):
         assert calls["n"] < 300, "分页未在安全上限内终止（死循环）"
         return FakeProc(0, stdout=json.dumps({"data": {"records": [], "has_more": True}}))
 
-    monkeypatch.setattr(topic_mod.bitable, "_run", fake_run)
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
     with pytest.raises(RuntimeError, match="分页"):
         fetch_selected_topics("app", "tbl")
     assert calls["n"] < 300
@@ -157,17 +157,17 @@ def test_fetch_topic_fields_validates_select(monkeypatch):
         ]}
         return FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False))
 
-    monkeypatch.setattr(topic_mod.bitable, "_run", fake_run)
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
     fields = fetch_topic_fields("app", "tbl")
     assert any(f.get("field_name") == "讨论状态" for f in fields)
 
 
 def test_fetch_topic_fields_failure_raises(monkeypatch):
-    monkeypatch.setattr(topic_mod.bitable, "_run", lambda *a, **kw: FakeProc(127, stdout="", stderr="127"))
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", lambda *a, **kw: FakeProc(127, stdout="", stderr="127"))
     with pytest.raises(RuntimeError):
         fetch_topic_fields("app", "tbl")
 
-    monkeypatch.setattr(topic_mod.bitable, "_run", lambda *a, **kw: FakeProc(0, stdout=json.dumps({"ok": False, "error": {"message": "not_found"}})))
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", lambda *a, **kw: FakeProc(0, stdout=json.dumps({"ok": False, "error": {"message": "not_found"}})))
     with pytest.raises(RuntimeError):
         fetch_topic_fields("app", "tbl")
 
@@ -184,7 +184,7 @@ def test_no_full_scan_memory_filter(monkeypatch):
             raise AssertionError("必须服务端 --filter-json 下推，禁止全量拉内存过滤")
         return FakeProc(0, stdout=json.dumps({"data": {"records": []}}, ensure_ascii=False))
 
-    monkeypatch.setattr(topic_mod.bitable, "_run", fake_run)
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
     records = fetch_selected_topics("app", "tbl")
     assert records == []
 
@@ -196,7 +196,7 @@ def test_cli_dry_run_stub(monkeypatch, capsys):
         payload = {"records": [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"]}}]}
         return FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False))
 
-    monkeypatch.setattr(topic_mod.bitable, "_run", fake_run)
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
     try:
         # run main via exec of module's __main__ logic using runpy
         import runpy

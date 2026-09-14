@@ -15,7 +15,7 @@ import sys
 import tempfile
 from datetime import datetime
 
-from feedkicker import bitable, wiki, wiki_lark
+from feedkicker import bitable_lark, wiki, wiki_lark
 from feedkicker.config import load_config
 
 log = logging.getLogger(__name__)
@@ -29,7 +29,7 @@ def list_outline_docs(space_id: str, parent_node_token: str) -> list[dict[str, s
     node-list 失败（rc≠0 / ok:false / 无 lark-cli）抛 RuntimeError，由调用方决定降级。
     """
     proc = wiki_lark.lark_node_list(space_id, parent_node_token)
-    ok, _ = bitable._parse(proc)
+    ok, _ = bitable_lark._parse(proc)
     if not ok:
         raw = ""
         if proc is not None:
@@ -121,7 +121,7 @@ def update_homepage(
         return True
     with _home_temp_file(md) as rel:
         proc = wiki_lark.lark_doc_overwrite_md(parent_node_token, rel)
-    ok, _ = bitable._parse(proc)
+    ok, _ = bitable_lark._parse(proc)
     if not ok:
         raw = ""
         if proc is not None:

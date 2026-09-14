@@ -51,4 +51,4 @@
 - 多维表格是唯一在线档案：prod 与 dev-test 双 Base（dev/test 共享文件用「环境」列区分），按来源/按日期双分组视图。
 - `sheets_archive` / gh-pages(`publish`) 链路已废弃移除（DESIGN §16/§17 有记录）；`site` 配置段只剩 `top_n`（摘要卡每源条数），`site.enabled` 已移除且不被读取——不要复活。
 - 代码零整行注释风格（`feedkicker/*.py` 无整行 `#` 注释，inline `# noqa` 允许）；踩坑理由写进函数 docstring，新逻辑靠命名与 tests 表达意图。
-- 模块 ≤200 行（`wc -l feedkicker/*.py`）；唯一例外 bitable.py（746 行，拆分跟进 #135，DESIGN §21.4），新逻辑不要往里加。
+- 模块 ≤200 行（`wc -l feedkicker/*.py`，含 `bitable.py`）；bitable 已拆为 `bitable_{lark,schema,views,records,backfill}.py` 子模块，`bitable.py` 仅 CLI + facade（DESIGN §21.4），新逻辑加入对应子模块，不堆进 facade。

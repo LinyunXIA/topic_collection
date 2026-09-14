@@ -1,0 +1,194 @@
+from __future__ import annotations
+
+import json
+import logging
+from datetime import UTC, datetime
+from typing import Any
+
+from feedkicker import bitable_lark
+
+log = logging.getLogger(__name__)
+
+
+def _cell_str(v) -> str:
+    if v is None:
+        return ""
+    if isinstance(v, dict):
+        for k in ("link", "text", "value", "title"):
+            if k in v and isinstance(v[k], str):
+                return v[k]
+            if k in v and v[k] is not None:
+                return str(v[k])
+        vals = [str(x) for x in v.values() if isinstance(x, str) and x]
+        return vals[0] if vals else ""
+    if isinstance(v, list):
+        if v and isinstance(v[0], str):
+            return v[0]
+        if v and isinstance(v[0], dict):
+            for k in ("link", "text", "value"):
+                if k in v[0]:
+                    return str(v[0][k])
+        return ""
+    return str(v)
+
+
+def _shanghai_date(s: str) -> str | None:
+    if not s or not s.strip():
+        return None
+    s = s.strip()
+    if s.isdigit():
+        try:
+            iv = int(s)
+            if iv > 1_000_000_000_000:
+                iv = iv // 1000
+            dt = datetime.fromtimestamp(iv, tz=UTC).astimezone(bitable_lark.SHANGHAI)
+            return dt.strftime("%Y-%m-%d")
+        except (ValueError, OSError, OverflowError):
+            return None
+    try:
+        if "T" in s or s.endswith("Z") or "+" in s[10:]:
+            dt = datetime.fromisoformat(s)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=bitable_lark.SHANGHAI)
+            else:
+                dt = dt.astimezone(bitable_lark.SHANGHAI)
+            return dt.strftime("%Y-%m-%d")
+        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
+            try:
+                dt = datetime.strptime(s, fmt)  # noqa: DTZ007
+                dt = dt.replace(tzinfo=bitable_lark.SHANGHAI)
+                return dt.strftime("%Y-%m-%d")
+            except ValueError:
+                continue
+        dt = datetime.fromisoformat(s)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=bitable_lark.SHANGHAI)
+        else:
+            dt = dt.astimezone(bitable_lark.SHANGHAI)
+        return dt.strftime("%Y-%m-%d")
+    except (ValueError, OSError, OverflowError):
+        return None
+
+
+def backfill_empty_archive_dates(app_token: str, table_id: str, env_name: str | None = None, dry_run: bool = False) -> int:
+    verb = bitable_lark._has_batch_verb()
+    if not verb:
+        log.warning("lark-cli 未提供批量更新 verb（缺 +record-batch-update/+record-update），请改用 --reseed 重灌")
+        return 0
+    offset = 0
+    to_fix: list[tuple[str, str]] = []
+    total_scanned = 0
+    while True:
+        proc = bitable_lark._run(
+            [
+                "base", "+record-list",
+                "--base-token", app_token,
+                "--table-id", table_id,
+                "--limit", "200",
+                "--offset", str(offset),
+                "--json",
+            ],
+            timeout=120,
+        )
+        if not bitable_lark._ok(proc):
+            break
+        data = bitable_lark._data(proc)
+        fields: list[str] = data.get("fields") or []
+        rows: list[Any] = data.get("data") or []
+        records: list[dict[str, Any]] = data.get("records") or []
+        if records:
+            for rec in records:
+                total_scanned += 1
+                rid = rec.get("record_id") or rec.get("id") or rec.get("recordId") or ""
+                fds = rec.get("fields") or rec.get("record") or {}
+                arch = _cell_str(fds.get("归档日期"))
+                if arch.strip():
+                    continue
+                cand = _cell_str(fds.get("推送时间"))
+                d = _shanghai_date(cand) if cand else None
+                if not d:
+                    continue
+                if rid:
+                    to_fix.append((rid, d))
+            if len(records) < 200:
+                break
+            offset += 200
+            continue
+        if not fields or not rows:
+            break
+        idx_arch = fields.index("归档日期") if "归档日期" in fields else -1
+        idx_push = fields.index("推送时间") if "推送时间" in fields else -1
+        rids = data.get("record_ids") or data.get("recordIds") or data.get("ids") or []
+        for i, r in enumerate(rows):
+            total_scanned += 1
+            if isinstance(r, dict):
+                rid = r.get("record_id") or r.get("id") or (rids[i] if i < len(rids) else "")
+                vals = r.get("fields") or r.get("values") or r
+                if isinstance(vals, dict):
+                    arch = _cell_str(vals.get("归档日期"))
+                    if arch.strip():
+                        continue
+                    cand = _cell_str(vals.get("推送时间"))
+                else:
+                    arch = _cell_str(r[idx_arch]) if idx_arch >= 0 and idx_arch < len(r) else ""
+                    if arch.strip():
+                        continue
+                    cand = (
+                        _cell_str(r[idx_push])
+                        if idx_push >= 0 and idx_push < len(r)
+                        else ""
+                    )
+                d = _shanghai_date(cand) if cand else None
+                if not d or not rid:
+                    continue
+                to_fix.append((rid, d))
+                continue
+            if not isinstance(r, list):
+                continue
+            rid = rids[i] if i < len(rids) else ""
+            if not rid and idx_arch == -1:
+                continue
+            arch = _cell_str(r[idx_arch]) if idx_arch >= 0 and idx_arch < len(r) else ""
+            if arch.strip():
+                continue
+            cand = (
+                _cell_str(r[idx_push])
+                if idx_push >= 0 and idx_push < len(r)
+                else ""
+            )
+            d = _shanghai_date(cand) if cand else None
+            if not d or not rid:
+                continue
+            to_fix.append((rid, d))
+        if len(rows) < 200:
+            break
+        offset += 200
+    if dry_run:
+        log.info("backfill dry-run：扫描 %d 条，待修复 %d 条（未写入）", total_scanned, len(to_fix))
+        return len(to_fix)
+    fixed = 0
+    for i in range(0, len(to_fix), bitable_lark._CHUNK):
+        chunk = to_fix[i : i + bitable_lark._CHUNK]
+        if verb == "+record-batch-update":
+            payload = json.dumps({"update_records": {rid: {"归档日期": d} for rid, d in chunk}}, ensure_ascii=False)
+            proc = bitable_lark._run(
+                ["base", verb, "--base-token", app_token, "--table-id", table_id, "--json", payload],
+                timeout=300,
+            )
+            if bitable_lark._ok(proc):
+                fixed += len(chunk)
+            else:
+                log.warning("Bitable 批量回填失败（第 %d 批 %d 条）", i // bitable_lark._CHUNK + 1, len(chunk))
+        else:
+            for rid, d in chunk:
+                payload = json.dumps({"record_id": rid, "fields": {"归档日期": d}}, ensure_ascii=False)
+                proc = bitable_lark._run(
+                    ["base", verb, "--base-token", app_token, "--table-id", table_id, "--json", payload],
+                    timeout=60,
+                )
+                if bitable_lark._ok(proc):
+                    fixed += 1
+                else:
+                    log.warning("Bitable 单条回填失败 %s", rid)
+    log.info("backfill 完成：扫描 %d 条，修复 %d 条", total_scanned, fixed)
+    return fixed
