@@ -118,13 +118,18 @@ def load_config(
     )
 
     feeds: list[Feed] = []
+    seen_names: dict[str, str] = {}
     for i, item in enumerate(raw.get("feeds") or []):
         item = item or {}
         url = str(item.get("url") or "").strip()
         name = str(item.get("name") or "").strip()
         if not url:
             raise ValueError(f"feeds[{i}] 缺少 url")
-        feeds.append(Feed(name=name or url, url=url))
+        name = name or url
+        if name in seen_names:
+            raise ValueError(f"feeds 名称重复: {name}（{seen_names[name]} 与 {url}），name 必须唯一")
+        seen_names[name] = url
+        feeds.append(Feed(name=name, url=url))
     cfg.feeds = feeds
 
     site_raw = raw.get("site") or {}
