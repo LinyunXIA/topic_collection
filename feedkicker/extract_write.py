@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import logging
+import re
 from typing import Any
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from feedkicker import bitable_lark
 from feedkicker.extract_parse import _str_list, topic_key
@@ -12,14 +14,58 @@ from feedkicker.topic_records import _extract_records
 
 log = logging.getLogger(__name__)
 
+_MD_LINK = re.compile(r"\[(?P<inner>.*)\]\((?P<target>.*)\)", re.DOTALL)
+_TRACKING = {"spm", "from", "fbclid", "gclid", "ref", "ref_src", "source", "mc_cid", "mc_eid"}
+
+
+def _link_key(url: str) -> str:
+    """单 URL 去重键：`canonicalize`（去 fragment/host 小写）后再剥 tracking 参数。"""
+    canon = canonicalize(url).strip()
+    if not canon:
+        return ""
+    parts = urlsplit(canon)
+    if not parts.query:
+        return canon
+    try:
+        pairs = parse_qsl(parts.query, keep_blank_values=True)
+    except ValueError:
+        return canon
+    kept = sorted(
+        (k, v)
+        for k, v in pairs
+        if not k.lower().startswith("utm_") and k.lower() not in _TRACKING
+    )
+    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(kept), ""))
+
+
+def link_keys(raw: Any) -> set[str]:
+    """把表内/候选的 `资讯链接` 原值归一为去重键集合（`existing_index` 与 `write_topics` 共用）。
+
+    真实数据形态（live-verified）：表内 `资讯链接` 常是 **markdown 链接包裹 + 换行拼接** 的单
+    字符串且带 tracking 参数（`[<url1>\n<url2>](<url1>\n<url2>)`）；而 LLM 输出的是不含 utm
+    的裸 URL 列表。旧 `canonicalize(str)` 把整串（含 `[...](...)`、换行、utm）当一个 URL →
+    永不命中（真跑 skipped=0 已证）。故：markdown 包裹取 inner → 按空白（含换行）拆成多个
+    URL → `_link_key` 去 tracking；tracking 参数（`utm_*` 与 `spm`/`from`/`fbclid`/`gclid`/
+    `ref`/`ref_src`/`source`/`mc_cid`/`mc_eid`）不承载内容差异，保留会漏去重；有意义 query
+    （如 `?id=123`）按名排序保留，仍可区分。
+    """
+    keys: set[str] = set()
+    for item in _str_list(raw):
+        m = _MD_LINK.search(item)
+        text = m.group("inner") if m else item
+        for url in text.split():
+            if key := _link_key(url):
+                keys.add(key)
+    return keys
+
 
 def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
     """分页拉目标表已有索引 `(归一话题名集合, 归一链接集合)`；拉取失败/容器异常 raise（不静默空集）。
 
     双键去重之因：LLM 命名非确定性——同一新闻重跑会产出不同「话题名称」，仅按名去重会
     漏判并重复落表（真跑已证）；故并列按 `资讯链接` 兜底。名称归一沿用 `topic_key`
-    （NFKC+strip+casefold），链接归一用 `feedkicker.fetch.canonicalize`（去 fragment、
-    host 小写、保留 query）。
+    （NFKC+strip+casefold），链接归一用 `link_keys`（去 markdown 包裹 + 拆行 + 去 tracking
+    参数，真跑表内值形态与理由见 `link_keys` docstring）。
     响应兼容 records/items 包装与 fields+data 行式（topic_records._extract_records 归一）；
     fields+data 形态缺「话题名称」列 → raise 中止（不得静默空集，PRV-4）。
     翻页走 offset 兜底 + 页指纹守卫（#245）。
@@ -62,10 +108,7 @@ def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
             fields = rec.get("fields") or {}
             for name in _str_list(fields.get("话题名称")):
                 names.add(topic_key(name))
-            for link in _str_list(fields.get("资讯链接")):
-                key = canonicalize(link).strip()
-                if key:
-                    links.add(key)
+            links |= link_keys(fields.get("资讯链接"))
         if len(records) < bitable_lark._CHUNK:
             break
         offset += bitable_lark._CHUNK
@@ -108,7 +151,7 @@ def write_topics(
     """按「资讯链接 OR 话题名称」双键查重跳过（幂等）；dry_run 仅返回 (待写数, 跳过数)，零写调用。
 
     双键是 LLM 命名非确定性下的真幂等兜底：话题名归一命中，或该 topic 任一 `资讯链接`
-    经 `canonicalize` 归一后命中表内/本批已见链接 → 跳过；两者皆无才写。本批内同样按
+    经 `link_keys` 归一后命中表内/本批已见链接 → 跳过；两者皆无才写。本批内同样按
     name 或 link 任一已见即跳过，避免同链接在批内重复落表。
     真写走 +record-batch-create ≤200/批；块失败 WARNING 后继续，返回实际成功数。
     """
@@ -121,8 +164,7 @@ def write_topics(
     skipped = 0
     for topic in topics:
         key = topic_key(topic.get("话题名称"))
-        links = {canonicalize(link).strip() for link in _str_list(topic.get("资讯链接"))}
-        links.discard("")
+        links = link_keys(topic.get("资讯链接"))
         if (
             not key
             or key in existing_names

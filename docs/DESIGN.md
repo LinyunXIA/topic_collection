@@ -1002,8 +1002,9 @@ extract:
 
 ### 25.5 去重
 
-- 写入前 `existing_index` 分页拉目标表 **`话题名称` + `资讯链接`** 两列（同页一次拉取），返回 `(归一话题名集合, 归一链接集合)`；名称按 `topic_key`（NFKC+strip+casefold）、链接按 `canonicalize`（去 fragment、host 小写、保留 query）归一（`_page_guard` 防死循环；响应兼容 records 与 fields+data 两形态，容器异常 raise 中止写入而非静默空集）。
-- **按 资讯链接 OR 话题名称 双键去重**：命中任一既有键（或本批已出现）→ 跳过；两者皆无才写，重复运行不新增重复行（幂等）。动机：LLM 命名非确定性——同一新闻重跑会产出不同「话题名称」，仅按名去重会漏判并重复落表（真跑已证）；链接键是跨命名的稳定兜底，且 `canonicalize` 保证 `#frag`/host 大小写等形态差异不逃逸。`--update` 刷新既有行本期不做。
+- 写入前 `existing_index` 分页拉目标表 **`话题名称` + `资讯链接`** 两列（同页一次拉取），返回 `(归一话题名集合, 归一链接集合)`；名称按 `topic_key`（NFKC+strip+casefold）、链接按 `link_keys` 归一（`_page_guard` 防死循环；响应兼容 records 与 fields+data 两形态，容器异常 raise 中止写入而非静默空集）。
+- **链接归一 = 去 markdown 包裹 + 拆行 + 去 tracking 参数**（`link_keys`，`existing_index` 与 `write_topics` 共用）：表内 `资讯链接` 真实值常是 **markdown 链接包裹 + 换行拼接** 的单字符串且带 tracking 参数（如 `[<url1?utm_source=rss>\n<url2>](<url1?utm_source=rss>\n<url2>)`），而 LLM 输出的是不含 utm 的裸 URL 列表——旧 `canonicalize(整串)` 把 `[...](...)`+换行+utm 当一个 URL → 永不命中（真跑 `skipped=0` 已证）。故先取 markdown 链接 inner、按空白（含换行）拆成多个 URL，再对每个 URL `canonicalize` 后剥 tracking 参数（键名小写以 `utm_` 开头或属 `{spm,from,fbclid,gclid,ref,ref_src,source,mc_cid,mc_eid}`），其余 query 按名排序重建；无法解析则原样 canonicalize。
+- **按 资讯链接 OR 话题名称 双键去重**：命中任一既有键（或本批已出现）→ 跳过；两者皆无才写，重复运行不新增重复行（幂等）。动机：LLM 命名非确定性——同一新闻重跑会产出不同「话题名称」，仅按名去重会漏判并重复落表（真跑已证）；链接键是跨命名的稳定兜底，且 `link_keys` 保证 `#frag`/host 大小写/tracking 参数等形态差异不逃逸。`--update` 刷新既有行本期不做。
 - `讨论状态` / `提取工具` 均为单选 select，按 lark-cli select CellValue 协议**一律写单元素数组**：`["未讨论"]` / `[provider_label]`（`base +record-batch-create --help` Tips 明确 select CellValue 恒为数组，`multiple=false` 时也须数组；写字符串会被服务端拒）。取值须为表内已有选项（`讨论状态`：`未讨论`/`已选题`/`不选择`/`待继续评估`；`提取工具`：`MMax`/`DS`），写表外新值被拒 `800030005 Provide an existing option value`（真跑已证）。不再读 `+field-list` 字段元数据判形态（真跑已证伪，PRV-1）。
 
 ### 25.6 CLI（`tc-extract`）

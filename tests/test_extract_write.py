@@ -14,6 +14,7 @@ from feedkicker.extract_llm import resolve_provider
 from feedkicker.extract_write import (
     build_record,
     existing_index,
+    link_keys,
     write_topics,
 )
 
@@ -405,3 +406,60 @@ def test_provider_registry_tool_labels_are_table_options() -> None:
 
     assert PROVIDERS["minimax"].tool_label == "MMax"
     assert PROVIDERS["deepseek"].tool_label == "DS"
+
+
+_MARKDOWN_WRAP = (
+    "[https://www.ifanr.com/1678637?utm_source=rss&utm_medium=rss"
+    "\nhttps://www.qbitai.com/2026/09/485431.html]"
+    "(https://www.ifanr.com/1678637?utm_source=rss&utm_medium=rss"
+    "\nhttps://www.qbitai.com/2026/09/485431.html)"
+)
+
+
+def test_link_keys_unwraps_markdown_and_splits_lines() -> None:
+    assert link_keys(_MARKDOWN_WRAP) == {
+        "https://www.ifanr.com/1678637",
+        "https://www.qbitai.com/2026/09/485431.html",
+    }
+
+
+def test_link_keys_strips_tracking_and_matches_bare_candidate() -> None:
+    table = "https://www.ifanr.com/1678637?utm_source=rss&utm_medium=rss"
+    candidate = "https://www.ifanr.com/1678637"
+
+    assert link_keys(table) == link_keys(candidate) == {"https://www.ifanr.com/1678637"}
+
+
+def test_link_keys_keeps_meaningful_query() -> None:
+    assert link_keys("https://e.com/p?id=123") == {"https://e.com/p?id=123"}
+    assert link_keys("https://e.com/p?id=123") != link_keys("https://e.com/p?id=456")
+
+
+def test_link_keys_normalizes_fragment_and_host_case() -> None:
+    assert link_keys("https://Example.com/a#frag") == {"https://example.com/a"}
+
+
+def test_apply_skips_when_markdown_wrapped_tracking_link_matches(monkeypatch) -> None:
+    created: list[list[dict]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+record-list" in args:
+            return _link_records_resp([_MARKDOWN_WRAP])
+        created.append(_json_from_args(args)["create_records"])
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    topic = {"话题名称": "全新命名", "资讯链接": ["https://www.ifanr.com/1678637"]}
+
+    assert write_topics("app", "tbl", [topic], "MMax", "2026-09-14") == (0, 1)
+    assert created == []
+
+
+def test_existing_index_normalizes_markdown_wrapped_links(monkeypatch) -> None:
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **k: _link_records_resp([_MARKDOWN_WRAP]))
+
+    assert existing_index("app", "tbl") == (
+        set(),
+        {"https://www.ifanr.com/1678637", "https://www.qbitai.com/2026/09/485431.html"},
+    )
