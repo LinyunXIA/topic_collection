@@ -18,11 +18,13 @@ from feedkicker.config_models import (
     MinimaxConf as MinimaxConf,
     ProviderConf as ProviderConf,
     SalonConf as SalonConf,
+    ScoreConf as ScoreConf,
     SiteConf as SiteConf,
     WikiConf as WikiConf,
     env_key_for as env_key_for,
     warn_unknown_keys as warn_unknown_keys,
 )
+from feedkicker.score_config import parse_score as parse_score
 
 
 def db_path_for(app_env: str) -> Path:
@@ -159,6 +161,9 @@ def load_config(
         max_calls=max(0, int(extract_raw.get("max_calls", cfg.extract.max_calls))),
         providers=_providers_conf(extract_raw.get("providers") or {}),
     )
+
+    score_raw = raw.get("score") or {}
+    cfg.score = parse_score(score_raw, cfg.score, _providers_conf(score_raw.get("providers") or {}))
 
     env_minimax = os.environ.get("MiniMax_Key") or os.environ.get("MINIMAX_API_KEY")
     if env_minimax:

@@ -26,6 +26,7 @@ tc-push = "feedkicker.push:main"
 tc-salon = "feedkicker.salon_flow:main"
 tc-purge = "feedkicker.purge:main"
 tc-extract = "feedkicker.extract_flow:main"
+tc-score = "feedkicker.score_flow:main"
 
 [tool.setuptools.packages.find]
 include = ["feedkicker*"]

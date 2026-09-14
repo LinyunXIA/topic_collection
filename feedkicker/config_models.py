@@ -12,7 +12,7 @@ log = logging.getLogger(__name__)
 
 _KNOWN_TOP_KEYS = frozenset([
     "feishu_webhook", "feishu_secret", "bootstrap_days", "http", "feeds",
-    "site", "bitable", "salon", "minimax", "wiki", "extract",
+    "site", "bitable", "salon", "minimax", "wiki", "extract", "score",
 ])
 
 _KNOWN_SECTION_KEYS = {
@@ -28,6 +28,7 @@ _KNOWN_SECTION_KEYS = {
     "extract": (
         "enabled", "since_days", "batch_size", "provider", "prompt_file", "max_calls", "providers",
     ),
+    "score": ("enabled", "prompt_file", "batch_size", "provider", "max_calls", "providers"),
 }
 
 _KNOWN_PROVIDER_KEYS = frozenset(("base_url", "model", "api_key", "tool_label"))
@@ -54,14 +55,17 @@ def warn_unknown_keys(raw: dict[str, Any]) -> None:
         if spec.get("enabled") is False:
             log.warning("配置段 %s.enabled=false，该功能已关闭", section)
     extract = raw.get("extract")
-    providers = extract.get("providers") if isinstance(extract, dict) else None
-    if isinstance(providers, dict):
+    score = raw.get("score")
+    for section, spec in (("extract", extract), ("score", score)):
+        providers = spec.get("providers") if isinstance(spec, dict) else None
+        if not isinstance(providers, dict):
+            continue
         for name, pconf in providers.items():
             if not isinstance(pconf, dict):
                 continue
             for key in pconf:
                 if key not in _KNOWN_PROVIDER_KEYS:
-                    log.warning("配置未知键：extract.providers.%s.%s（已忽略）", name, key)
+                    log.warning("配置未知键：%s.providers.%s.%s（已忽略）", section, name, key)
     feeds = raw.get("feeds")
     if isinstance(feeds, list):
         for i, item in enumerate(feeds):
@@ -75,6 +79,8 @@ def warn_unknown_keys(raw: dict[str, Any]) -> None:
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "tc-prod.sqlite3"
 VALID_ENVS = ("dev", "test", "prod")
+
+MAX_SCORE_BATCH = 100
 
 PROVIDER_KEY_ENVS: dict[str, tuple[str, ...]] = {
     "minimax": ("MiniMax_Key", "MINIMAX_API_KEY"),
@@ -165,6 +171,16 @@ class ExtractConf:
 
 
 @dataclass
+class ScoreConf:
+    enabled: bool = False
+    prompt_file: str = "prompts/score.md"
+    batch_size: int = 100
+    provider: str = "minimax"
+    max_calls: int = 0
+    providers: dict[str, ProviderConf] = field(default_factory=dict)
+
+
+@dataclass
 class Config:
     app_env: str = "prod"
     feishu_webhook: str = ""
@@ -179,3 +195,4 @@ class Config:
     minimax: MinimaxConf = field(default_factory=MinimaxConf)
     wiki: WikiConf = field(default_factory=WikiConf)
     extract: ExtractConf = field(default_factory=ExtractConf)
+    score: ScoreConf = field(default_factory=ScoreConf)
