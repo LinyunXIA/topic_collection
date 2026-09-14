@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from feedkicker import feishu, store
+from feedkicker import feishu, feishu_card, store
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +26,13 @@ def send_wiki_card(
     """
     if not wiki_urls:
         return True
-    payload = feishu.build_card([], 0, [], wiki_urls=wiki_urls)
+    payload = feishu.build_card(
+        [],
+        0,
+        [],
+        max_bytes=feishu_card._MAX_BODY_BYTES - feishu.SIGN_RESERVE_BYTES,
+        wiki_urls=wiki_urls,
+    )
     if dry_run:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         log.info("dry-run 卡片预览已打印（含 %d 个 Wiki 链接）", len(wiki_urls))

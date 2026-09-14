@@ -63,6 +63,7 @@ def _list_records(
         else []
     )
     while True:
+        bitable_lark._guard_offset(offset)
         proc = bitable_lark._run(
             [
                 "base", "+record-list",

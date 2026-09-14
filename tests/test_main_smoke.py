@@ -98,10 +98,11 @@ def test_wiki_home_main_smoke_dry_run_rc0(
 ) -> None:
     cfg = tmp_path / "wiki.yaml"
     cfg.write_text("wiki:\n  space_id: spcSmoke\n  parent_token: pnodeSmoke\n", encoding="utf-8")
+    nodes = [{"node_token": "nod1", "obj_type": "docx", "title": "话题_2026-09-08_大纲"}]
     monkeypatch.setattr(
         wiki_lark,
         "lark_node_list",
-        lambda space_id, parent: FakeProc(0, json.dumps({"ok": True, "data": {"nodes": []}})),
+        lambda space_id, parent: FakeProc(0, json.dumps({"ok": True, "data": {"nodes": nodes}})),
     )
     argv = ["tc-wiki-home", "--dry-run", "--config", str(cfg)]
     with pytest.raises(SystemExit) as ei:

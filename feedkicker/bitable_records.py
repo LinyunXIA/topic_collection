@@ -46,6 +46,7 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
     links: set[str] = set()
     offset = 0
     while True:
+        bitable_lark._guard_offset(offset)
         proc = bitable_lark._run(
             [
                 "base", "+record-list",

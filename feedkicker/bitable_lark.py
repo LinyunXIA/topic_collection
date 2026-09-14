@@ -26,7 +26,17 @@ log = logging.getLogger(__name__)
 
 _CHUNK = 200
 
+MAX_OFFSET = 20000
+
 _LARK_CANDIDATES = ("/opt/homebrew/bin/lark-cli", "/usr/local/bin/lark-cli")
+
+
+def _guard_offset(offset: int) -> None:
+    """分页 offset 上限守卫：lark-cli 忽略 --offset 恒返满页时避免死循环（#223）。"""
+    if offset > MAX_OFFSET:
+        raise RuntimeError(
+            f"分页 offset 超过上限 {MAX_OFFSET}，疑似未按 --offset 翻页，中止以避免死循环"
+        )
 
 
 def lark_bin() -> str:

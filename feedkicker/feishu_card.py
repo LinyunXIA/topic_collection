@@ -4,88 +4,17 @@ from __future__ import annotations
 
 import json
 import re
-from datetime import datetime
 from typing import Any
-from zoneinfo import ZoneInfo
+
+from feedkicker.feishu_card_body import _assemble
 
 _MAX_BODY_BYTES = 20000
 _MD_SPECIAL = re.compile(r"([\\`*_\[\]()#])")
 
 
-_CARD_TZ = ZoneInfo("Asia/Shanghai")
-
-
 def escape_inline(text: str | None) -> str:
     text = (text or "").replace("\r", "").replace("\n", " ")
     return _MD_SPECIAL.sub(r"\\\1", text)
-
-
-def local_now() -> datetime:
-    return datetime.now(_CARD_TZ)
-
-
-def _assemble(
-    content: str,
-    feed_fails: int,
-    dropped: int,
-    total: int = 0,
-    detail_url: str | None = None,
-    detail_label: str = "📰 详情见多维表格",
-    wiki_urls: list[str] | None = None,
-    wiki_label: str = "📖 查看大纲",
-) -> dict[str, Any]:
-    wiki_urls = [u for u in (wiki_urls or []) if u]
-    if not (content or "").strip() and wiki_urls:
-        content = f"📖 已生成 {len(wiki_urls)} 份大纲"
-    elements: list[dict[str, Any]] = [
-        {"tag": "div", "text": {"tag": "lark_md", "content": content}}
-    ]
-    if feed_fails:
-        elements += [
-            {"tag": "hr"},
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"⚠ {feed_fails} 个源失败"}},
-        ]
-    if detail_url and total:
-        elements += [
-            {
-                "tag": "action",
-                "actions": [
-                    {
-                        "tag": "button",
-                        "text": {"tag": "plain_text", "content": detail_label},
-                        "url": detail_url,
-                        "type": "default",
-                    }
-                ],
-            },
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"[{detail_label}]({detail_url})"}},
-        ]
-    if wiki_urls:
-        for idx, url in enumerate(wiki_urls, 1):
-            label = f"{wiki_label} {idx}" if len(wiki_urls) > 1 else wiki_label
-            btn = {"tag": "button", "text": {"tag": "plain_text", "content": label},
-                   "url": url, "type": "default"}
-            elements += [
-                {"tag": "action", "actions": [btn]},
-                {"tag": "div", "text": {"tag": "lark_md", "content": f"[{label}]({url})"}},
-            ]
-    if dropped:
-        elements += [
-            {"tag": "div", "text": {"tag": "lark_md", "content": f"… 已截断 {dropped} 条旧条目"}}
-        ]
-    return {
-        "msg_type": "interactive",
-        "card": {
-            "header": {
-                "title": {
-                    "tag": "plain_text",
-                    "content": f"Feeds 汇总  {local_now():%H:%M}",
-                },
-                "template": "blue",
-            },
-            "elements": elements,
-        },
-    }
 
 
 def strip_actions(payload: dict[str, Any]) -> dict[str, Any]:
@@ -107,7 +36,11 @@ def build_card(
     wiki_urls: list[str] | None = None,
     wiki_label: str = "📖 查看大纲",
 ) -> dict[str, Any]:
-    """每源保最新 `top_n` 条（`top_n<=0` 全取，时效键=published_at/first_seen），`selected` 最旧在前（#200）。"""
+    """每源保最新 `top_n` 条（`top_n<=0` 全取，时效键=published_at/first_seen），`selected` 最旧在前（#200）。
+
+    超限裁剪（#222）：先剥 description → 再从 selected 头部丢最旧条目（按源分组序，
+    跨源为近似全局丢最旧）→ 最后从 wiki_urls 尾部丢链接并在卡片提示截断数。
+    """
     def time_key(item: dict[str, Any]) -> str:
         return item.get("published_at") or item.get("first_seen") or ""
 
@@ -161,7 +94,7 @@ def build_card(
 
     total = sum(len(v) for v in by_feed.values())
 
-    def fits(show_desc: bool, dropped: int) -> bool:
+    def fits(show_desc: bool, dropped: int, wiki_dropped: int) -> bool:
         body = json.dumps(
             _assemble(
                 render(show_desc),
@@ -172,6 +105,7 @@ def build_card(
                 detail_label,
                 wiki_urls,
                 wiki_label,
+                wiki_dropped,
             ),
             ensure_ascii=False,
         )
@@ -179,14 +113,20 @@ def build_card(
 
     show_desc = True
     dropped = 0
-    while not fits(show_desc, dropped):
+    wiki_dropped = 0
+    while not fits(show_desc, dropped, wiki_dropped):
         if show_desc:
             show_desc = False
             continue
-        if not selected:
-            break
-        selected.pop(0)
-        dropped += 1
+        if selected:
+            selected.pop(0)
+            dropped += 1
+            continue
+        if wiki_urls:
+            wiki_urls = wiki_urls[:-1]
+            wiki_dropped += 1
+            continue
+        break
 
     return _assemble(
         render(show_desc),
@@ -197,4 +137,5 @@ def build_card(
         detail_label,
         wiki_urls,
         wiki_label,
+        wiki_dropped,
     )

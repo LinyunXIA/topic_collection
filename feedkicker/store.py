@@ -116,13 +116,13 @@ def promise_skip_old(
 
 
 def select_pending(conn: sqlite3.Connection) -> list[dict[str, Any]]:
-    """待推送真实资讯行，排除 salon 占位行（占位行必有 ppt_synced_at，#196）。"""
+    """待推送真实资讯行；排除 salon 占位行（占位行必有 ppt_synced_at，#196），返 first_seen 供 top_n 时效键（#220）。"""
     rows = conn.execute(
-        "SELECT feed_id, entry_key, title, url, description, published_at"
+        "SELECT feed_id, entry_key, title, url, description, published_at, first_seen"
         " FROM articles WHERE pushed_at IS NULL AND ppt_synced_at IS NULL"
         " ORDER BY feed_id, first_seen, entry_key"
     ).fetchall()
-    keys = ("feed_id", "entry_key", "title", "url", "description", "published_at")
+    keys = ("feed_id", "entry_key", "title", "url", "description", "published_at", "first_seen")
     return [dict(zip(keys, r)) for r in rows]
 
 

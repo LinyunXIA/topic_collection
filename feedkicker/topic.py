@@ -10,7 +10,7 @@ from feedkicker import bitable_lark
 log = logging.getLogger(__name__)
 
 FILTER_JSON = json.dumps({"logic": "and", "conditions": [["讨论状态", "intersects", ["已选题"]]]}, ensure_ascii=False)
-MAX_OFFSET = 20000
+MAX_OFFSET = bitable_lark.MAX_OFFSET
 
 
 def _positive_int(value: str) -> int:

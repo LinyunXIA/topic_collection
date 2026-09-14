@@ -116,6 +116,11 @@ def main(argv: list[str] | None = None) -> int:
         _dry_run_plan(cfg, args)
         return 0
 
+    if not (args.init or args.reseed) and not _tokens_ready(cfg.bitable):
+        log.error(
+            "拒绝执行：Base 未配置或为占位 token（仅 --init/--reseed 可创建/修复 Base，其余动作需既有 Base）"
+        )
+        return 2
     if args.reseed and not _tokens_ready(cfg.bitable):
         log.error(
             "拒绝 --reseed：Base 未配置或为占位 token（需既有且非占位 app_token/table_id），不执行先建后清"

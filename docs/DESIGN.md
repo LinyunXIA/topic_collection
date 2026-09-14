@@ -802,7 +802,7 @@ bitable（CLI + facade re-export，§21.2）
 
 ## 22. v0.7+ — Wiki 首页自动索引（#137 / F23，2026-09-08）
 
-Wiki「首页」节点（space `7681556911359085522`，parent/home node `X9J7wLI0QixYP3kO3RDcy1OPnVf`）原本是知识空间模板占位内容；沙龙大纲 docx 虽是其子节点，但主页无任何入口。本特性把主页**整篇 overwrite** 为程序生成的索引页（用户明确：原模板内容抹去、不保留、不做局部区块替换）。
+Wiki「首页」节点（space `<wiki-space-id>`，parent/home node `<node_token>`）原本是知识空间模板占位内容；沙龙大纲 docx 虽是其子节点，但主页无任何入口。本特性把主页**整篇 overwrite** 为程序生成的索引页（用户明确：原模板内容抹去、不保留、不做局部区块替换）。
 
 ### 22.1 数据流与版式
 
