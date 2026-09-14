@@ -204,6 +204,14 @@ def test_cutoff_date_shanghai_boundary(monkeypatch):
     assert expired == 1
 
 
+def test_pushed_date_falls_back_to_archive_date():
+    """#198：存量行「推送时间」为空时以「归档日期」作截止键。"""
+    assert bitable_purge._pushed_date({"推送时间": "2026-01-01"}) == "2026-01-01"
+    assert bitable_purge._pushed_date({"推送时间": "", "归档日期": "2025-01-02"}) == "2025-01-02"
+    assert bitable_purge._pushed_date({"归档日期": "2025-01-02T10:00:00+08:00"}) == "2025-01-02"
+    assert bitable_purge._pushed_date({}) is None
+
+
 # ── run() 编排 ──
 
 

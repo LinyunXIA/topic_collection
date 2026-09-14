@@ -29,7 +29,7 @@ def _cell(
         "来源": item.get("feed_id") or "",
         "摘要": item.get("description") or "",
         "发布时间": fmt_dt(item.get("published_at")),
-        "推送时间": fmt_dt(item.get("pushed_at")),
+        "推送时间": fmt_dt(item.get("pushed_at")) or fmt_dt(now_iso),
         "归档日期": (fmt_dt(item.get("pushed_at")) or fmt_dt(now_iso) or fmt_dt(item.get("first_seen")) or "")[:10],
     }
     if env_name:

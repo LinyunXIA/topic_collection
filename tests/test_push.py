@@ -812,6 +812,30 @@ def test_bitable_cell_fields(monkeypatch):
     assert "环境" not in prod_cell
 
 
+def test_bitable_cell_pushed_time_falls_back_to_now():
+    """#198：归档在 mark_pushed 之前，待推行 pushed_at 为空时用 now_iso 回退。"""
+    from feedkicker import bitable
+
+    cell = bitable._cell(
+        {
+            "feed_id": "F", "title": "t", "url": "https://e.com/1",
+            "description": "", "published_at": None, "pushed_at": None,
+        },
+        now_iso="2026-08-25T01:30:00Z",
+    )
+    assert cell["推送时间"] == "2026-08-25 09:30"
+    assert cell["推送时间"].startswith(cell["归档日期"])
+
+    pushed = bitable._cell(
+        {
+            "feed_id": "F", "title": "t", "url": "https://e.com/2",
+            "description": "", "published_at": None, "pushed_at": "2026-08-25T01:30:00Z",
+        },
+        now_iso="2026-09-01T00:00:00Z",
+    )
+    assert pushed["推送时间"] == "2026-08-25 09:30"
+
+
 @pytest.mark.parametrize("scenario", ["cross_midnight", "pushed_at_priority", "first_seen_chain", "dedup_batch"])
 def test_bitable_cell_archive_date_fallback(monkeypatch, scenario):
     import inspect

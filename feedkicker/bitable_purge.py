@@ -30,9 +30,18 @@ def cutoff_date_shanghai(days: int, now: datetime | None = None) -> str:
 
 
 def _pushed_date(fields: dict[str, Any]) -> str | None:
-    """fields 中「推送时间」→ 上海 %Y-%m-%d；兼容 epoch 毫秒/ISO/纯日期。"""
+    """fields 「推送时间」→ 上海 %Y-%m-%d；为空回退「归档日期」（#198 存量行）。
+
+    兼容 epoch 毫秒/ISO/纯日期；归档早于 mark_pushed 时推送时间为空，
+    无回退则这些行永不进入保留窗口（F22 契约失效）。
+    """
     raw = bitable_backfill._cell_str(fields.get("推送时间"))
-    return bitable_backfill._shanghai_date(raw) if raw else None
+    if raw:
+        d = bitable_backfill._shanghai_date(raw)
+        if d:
+            return d
+    arch = bitable_backfill._cell_str(fields.get("归档日期"))
+    return bitable_backfill._shanghai_date(arch) if arch else None
 
 
 def _list_records(

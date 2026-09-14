@@ -8,10 +8,11 @@ from __future__ import annotations
 import json
 import runpy
 import sys
+from pathlib import Path
 
 import pytest
 
-from feedkicker import wiki_lark
+from feedkicker import bitable_lark, wiki_lark
 
 
 class FakeProc:
@@ -60,6 +61,32 @@ def test_salon_flow_main_smoke_dry_run_rc0(monkeypatch: pytest.MonkeyPatch, tmp_
 def test_wiki_main_smoke_dry_run_prints(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
     run_main(monkeypatch, "feedkicker.wiki", ["tc-wiki", "--dry-run", "--env", "test", "--title", "冒烟"])
     assert "wiki_url" in capsys.readouterr().out
+
+
+def test_wiki_main_file_creates_doc_with_file_content(monkeypatch: pytest.MonkeyPatch, tmp_path, capsys) -> None:
+    """#199：--file 必须真正建 docx 并打印链接，且内容取自文件。"""
+    captured: dict[str, str] = {}
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if list(args[:2]) == ["docs", "+create"]:
+            rel = args[args.index("--content") + 1]
+            captured["md"] = Path(rel[1:]).read_text(encoding="utf-8")
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"document": {"document_id": "docX"}}}))
+        if list(args[:2]) == ["wiki", "+node-get"]:
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"node": {"node_token": "nodX", "obj_type": "docx"}}}))
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    md_file = tmp_path / "draft.md"
+    md_file.write_text("# 草稿\n- 要点\n", encoding="utf-8")
+    run_main(
+        monkeypatch,
+        "feedkicker.wiki",
+        ["tc-wiki", "--file", str(md_file), "--title", "草稿",
+         "--app-token", "app", "--space-id", "spc", "--parent-token", "parent"],
+    )
+    assert captured["md"] == "# 草稿\n- 要点\n"
+    assert "wiki/nodX" in capsys.readouterr().out
 
 
 def test_wiki_home_main_smoke_dry_run_rc0(
