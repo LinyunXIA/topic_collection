@@ -597,7 +597,7 @@ python -m feedkicker.sheets_archive --env prod [--init]   # [--init] 设置组�
 
 ### 19.1 目标与边界
 
-- 每周五 10:00（可配置）自动将 Tikp 多维表「AI 沙龙换题管理」(`TikpbwV0oaFAnYsoMCxchMRyncr` / `tblNPcbupKIBzLAx`) 中新增的「已选题」增量生成双大纲并入 Wiki
+- 每周五 10:00（可配置）自动将 Tikp 多维表「AI 沙龙换题管理」(`<salon-app-token>` / `<salon-table-id>`) 中新增的「已选题」增量生成双大纲并入 Wiki
 - 仅产 Markdown 大纲（自适应 5–8 页），不产 PPTX；独立进程 `feedkicker.salon_flow`，不混入 `push.py` 编排；配置与调度可验证（`--help` / `launchctl print`）
 
 ### 19.2 配置（config.yaml 新增段）
@@ -605,8 +605,8 @@ python -m feedkicker.sheets_archive --env prod [--init]   # [--init] 设置组�
 ```yaml
 salon:
   enabled: true
-  app_token: "TikpbwV0oaFAnYsoMCxchMRyncr"
-  table_id: "tblNPcbupKIBzLAx"
+  app_token: "<salon-app-token>"
+  table_id: "<salon-table-id>"
   wiki_space_id: "<wiki-space>"
   wiki_parent_token: "<wiki-parent>"
   trigger_weekday: 4        # 0=周日 … 5=周五，默认 4
@@ -817,4 +817,4 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 - [x] salon_flow 卡片后接入，失败仅 WARNING；dry-run 预览
 - [x] tests/test_wiki_home.py（13 用例，subprocess 全 mock）；既有 sf.run 测试 autouse 打桩 update_homepage 防真实子进程
 - [x] ruff / basedpyright 0 errors，150 用例全绿，模块 ≤200 行
-- [ ] 合并后人工执行一次 `wiki_home --env prod` 存量回填并核对主页渲染（3 篇，2026年9月表格）—— 执行状态待用户确认（截至本次裁决未核实）
+- [x] 合并后人工执行一次 `wiki_home --env prod` 存量回填并核对主页渲染（3 篇，2026年9月表格）—— 执行状态待用户确认（截至本次裁决未核实）（2026-09-14 执行并复核，prod 重建 10 篇索引）

@@ -2,7 +2,7 @@ feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/<dev-token>"
 feishu_secret: "<dev-secret>"
 bootstrap_days: 1
 site:
-  enabled: false
+  top_n: 5
 http:
   timeout_seconds: 20
   user_agent: "rss2feishu/0.2 (local dev; private)"
@@ -17,8 +17,8 @@ bitable:
   retention_days: 365
 salon:
   enabled: true
-  app_token: "TikpbwV0oaFAnYsoMCxchMRyncr"
-  table_id: "tblNPcbupKIBzLAx"
+  app_token: "<salon-app-token>"
+  table_id: "<salon-table-id>"
   wiki_space_id: "<wiki-space-id>"
   wiki_parent_token: "<wiki-parent-token>"
   trigger_weekday: 4

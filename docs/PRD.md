@@ -321,7 +321,7 @@ feeds:
 
 ## 17. v0.6 增量（2026-09-03）— AI 沙龙每周大纲（salon_flow）
 
-每周五 10:00 自动把「AI 沙龙换题管理」多维表（Base `TikpbwV0oaFAnYsoMCxchMRyncr` / 表 `tblNPcbupKIBzLAx`）中新增的已选题，分别生成工具类与原理类两份大纲（自适应 5–8 页），以 Markdown 写入飞书 Wiki，并用同一机器人推一张带 Wiki 链接的卡片通知。
+每周五 10:00 自动把「AI 沙龙换题管理」多维表（Base `<salon-app-token>` / 表 `<salon-table-id>`）中新增的已选题，分别生成工具类与原理类两份大纲（自适应 5–8 页），以 Markdown 写入飞书 Wiki，并用同一机器人推一张带 Wiki 链接的卡片通知。
 
 | # | 特性 | 验收要点 | 优先级 |
 |---|---|---|---|

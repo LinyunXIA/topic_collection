@@ -27,7 +27,7 @@
 - 配置三份：`config-{dev,test,prod}.yaml`，**全部 gitignored**，真实 webhook/signature secret 只存本地文件或 env（`FEISHU_WEBHOOK`/`FEISHU_SECRET`）。
 - 覆盖顺序：`--db` > `TC_DB` > `--env` > `TC_APP_ENV` > prod；db 按 env 分流 `data/tc-{env}.sqlite3`。
 - prod 由 launchd 拉起（plist 均在 `~/Library/LaunchAgents/`，内含 `TC_APP_ENV=prod`）：push 每日 8:30/16:00（`com.feedkicker.push.plist`）、salon 周五 10:00（`com.feedkicker.salon.plist`）、purge 每月 1 号 10:30 **仅 dry-run 巡检**（`com.feedkicker.purge.plist`，不带 `--apply`；真删由人工跑 `tc-purge --apply`，见 DESIGN §20）。改完 plist 要 `launchctl bootout && bootstrap`。
-- 运行时依赖两个已登录的外部 CLI：`lark-cli`（飞书）、`gh`（GitHub）。测试中必须 mock 其 subprocess/httpx 调用——曾发生过测试数据误写到线上文档的事故。
+- 运行时依赖一个已登录的外部 CLI：`lark-cli`（飞书）。gh-pages(`publish`) 链路已废弃移除（DESIGN §16/§17），`gh` 不再是运行时依赖。测试中必须 mock 其 subprocess/httpx 调用——曾发生过测试数据误写到线上文档的事故。
 
 ## 编排顺序（不可调换）
 
@@ -49,6 +49,6 @@
 
 - 卡片「详情」按钮经 `detail_label` 参数化；发送失败时 `strip_actions` 去按钮降级重试一次。
 - 多维表格是唯一在线档案：prod 与 dev-test 双 Base（dev/test 共享文件用「环境」列区分），按来源/按日期双分组视图。
-- `sheets_archive` / gh-pages(`publish`) 链路已废弃移除（DESIGN §16/§17 有记录），`site.enabled=false` 全环境——不要复活。
+- `sheets_archive` / gh-pages(`publish`) 链路已废弃移除（DESIGN §16/§17 有记录）；`site` 配置段只剩 `top_n`（摘要卡每源条数），`site.enabled` 已移除且不被读取——不要复活。
 - 代码零整行注释风格（`feedkicker/*.py` 无整行 `#` 注释，inline `# noqa` 允许）；踩坑理由写进函数 docstring，新逻辑靠命名与 tests 表达意图。
 - 模块 ≤200 行（`wc -l feedkicker/*.py`）；唯一例外 bitable.py（746 行，拆分跟进 #135，DESIGN §21.4），新逻辑不要往里加。
