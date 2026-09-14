@@ -88,7 +88,7 @@ def test_apply_skips_existing_topic_names(monkeypatch) -> None:
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert write_topics("app", "tbl", [_topic("话题A"), _topic("话题B")], "MMax", "2026-09-14") == (1, 1)
+    assert write_topics("app", "tbl", [_topic("话题A"), _topic("话题B")], "MMax", "2026-09-14") == (1, 1, 0)
     assert [[r["话题名称"] for r in chunk] for chunk in created] == [["话题B"]]
 
 
@@ -103,7 +103,7 @@ def test_apply_in_batch_duplicate_skipped(monkeypatch) -> None:
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert write_topics("app", "tbl", [_topic("A"), _topic("A"), _topic("B")], "MMax", "2026-09-14") == (2, 1)
+    assert write_topics("app", "tbl", [_topic("A"), _topic("A"), _topic("B")], "MMax", "2026-09-14") == (2, 1, 0)
     assert [r["话题名称"] for r in created[0]] == ["A", "B"]
 
 
@@ -121,7 +121,7 @@ def test_apply_skips_when_link_matches_existing(monkeypatch) -> None:
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     topic = {"话题名称": "全新命名", "资讯链接": ["https://e.com/a"]}
-    assert write_topics("app", "tbl", [topic], "MMax", "2026-09-14") == (0, 1)
+    assert write_topics("app", "tbl", [topic], "MMax", "2026-09-14") == (0, 1, 0)
     assert created == []
     assert "--field-id" in calls[0]
 
@@ -151,7 +151,7 @@ def test_apply_writes_when_both_keys_miss(monkeypatch) -> None:
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     topic = {"话题名称": "新话题", "资讯链接": ["https://new/1"]}
-    assert write_topics("app", "tbl", [topic], "MMax", "2026-09-14") == (1, 0)
+    assert write_topics("app", "tbl", [topic], "MMax", "2026-09-14") == (1, 0, 0)
     assert [r["话题名称"] for r in created[0]] == ["新话题"]
 
 
@@ -170,7 +170,7 @@ def test_apply_in_batch_same_link_writes_once(monkeypatch) -> None:
         {"话题名称": "命名甲", "资讯链接": ["https://same/1"]},
         {"话题名称": "命名乙", "资讯链接": ["https://same/1"]},
     ]
-    assert write_topics("app", "tbl", topics, "MMax", "2026-09-14") == (1, 1)
+    assert write_topics("app", "tbl", topics, "MMax", "2026-09-14") == (1, 1, 0)
     assert [r["话题名称"] for r in created[0]] == ["命名甲"]
 
 
@@ -230,7 +230,7 @@ def test_apply_writes_status_as_single_element_array(monkeypatch) -> None:
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert write_topics("app", "tbl", [_topic("A")], "MMax", "2026-09-14") == (1, 0)
+    assert write_topics("app", "tbl", [_topic("A")], "MMax", "2026-09-14") == (1, 0, 0)
     assert created[0][0]["讨论状态"] == ["未讨论"]
     assert [c for c in calls if "+field-list" in c] == []
 
@@ -247,7 +247,7 @@ def test_batch_create_chunks_at_200(monkeypatch) -> None:
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     topics = [_topic(f"话题{i}") for i in range(205)]
-    assert write_topics("app", "tbl", topics, "MMax", "2026-09-14") == (205, 0)
+    assert write_topics("app", "tbl", topics, "MMax", "2026-09-14") == (205, 0, 0)
     assert chunks == [200, 5]
 
 
@@ -265,7 +265,7 @@ def test_partial_chunk_failure_counts_success(monkeypatch) -> None:
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     topics = [_topic(f"话题{i}") for i in range(205)]
-    assert write_topics("app", "tbl", topics, "MMax", "2026-09-14") == (200, 0)
+    assert write_topics("app", "tbl", topics, "MMax", "2026-09-14") == (200, 0, 5)
     assert calls["n"] == 2
 
 
@@ -335,7 +335,7 @@ def test_write_skips_existing_after_nfkc_normalization(monkeypatch) -> None:
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert write_topics("app", "tbl", [_topic("gpt-5")], "MMax", "2026-09-14") == (0, 1)
+    assert write_topics("app", "tbl", [_topic("gpt-5")], "MMax", "2026-09-14") == (0, 1, 0)
     assert [c for c in calls if "+record-batch-create" in c] == []
 
 
@@ -354,7 +354,7 @@ def test_write_in_batch_dedup_after_nfkc_keeps_original_value(monkeypatch) -> No
         "app", "tbl", [_topic("ＧＰＴ－５"), _topic("gpt-5")], "MMax", "2026-09-14"
     )
 
-    assert got == (1, 1)
+    assert got == (1, 1, 0)
     assert [r["话题名称"] for r in created[0]] == ["ＧＰＴ－５"]
 
 
@@ -487,7 +487,7 @@ def test_apply_skips_when_markdown_wrapped_tracking_link_matches(monkeypatch) ->
 
     topic = {"话题名称": "全新命名", "资讯链接": ["https://www.ifanr.com/1678637"]}
 
-    assert write_topics("app", "tbl", [topic], "MMax", "2026-09-14") == (0, 1)
+    assert write_topics("app", "tbl", [topic], "MMax", "2026-09-14") == (0, 1, 0)
     assert created == []
 
 

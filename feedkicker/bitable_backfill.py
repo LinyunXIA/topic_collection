@@ -121,11 +121,13 @@ def backfill_empty_archive_dates(
             break
         data = bitable_lark._data(proc)
         prev_fp = bitable_lark._page_guard(prev_fp, data)
-        records: list[dict[str, Any]] = data.get("records") or []
+        records: list[Any] = data.get("records") or []
         fields: list[str] = data.get("fields") or []
         rows: list[Any] = data.get("data") or []
         rids: list[Any] = data.get("record_ids") or data.get("recordIds") or data.get("ids") or []
         pairs: list[tuple[str, dict[str, Any]]] = []
+        if records and not all(isinstance(rec, dict) for rec in records):
+            raise RuntimeError(f"backfill：records 子项非 dict，中止以免误判: {str(records)[:200]}")
         if records:
             for rec in records:
                 fds = rec.get("fields") or rec.get("record") or {}

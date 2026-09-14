@@ -67,7 +67,10 @@ def _post(
             log.warning("推送失败：HTTP %d", resp.status_code)
             return False
         data = resp.json()
-        code = data.get("StatusCode", data.get("code", 0))
+        if not isinstance(data, dict) or ("StatusCode" not in data and "code" not in data):
+            log.warning("推送响应缺少 StatusCode/code 业务码，视为失败：%s", data)
+            return False
+        code = data["StatusCode"] if "StatusCode" in data else data["code"]
         if code != 0:
             log.warning("推送被飞书拒绝，业务码非 0：%s", data)
             return False

@@ -99,7 +99,7 @@ def run(
     collected, calls, failed, empty = extract_llm.refine_batches(ex, template, batches, max_calls)
     merged = extract_llm.merge_topics(collected)
     if apply:
-        written, skipped = extract_write.write_topics(
+        written, skipped, failed_writes = extract_write.write_topics(
             cfg.salon.app_token, cfg.salon.table_id, merged, provider_conf.tool_label, run_date
         )
     else:
@@ -107,7 +107,7 @@ def run(
         planned, skipped_records = extract_write.plan_writes(
             merged, provider_conf.tool_label, run_date, names, links
         )
-        written, skipped = len(planned), len(skipped_records)
+        written, skipped, failed_writes = len(planned), len(skipped_records), 0
         print_dry_run(planned, skipped_records)
     print_summary(
         {
@@ -119,6 +119,7 @@ def run(
             "written": written if apply else 0,
             "pending": 0 if apply else written,
             "skipped": skipped,
+            "failed_writes": failed_writes,
             "failed_batches": failed,
             "empty_batches": empty,
         }

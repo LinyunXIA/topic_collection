@@ -29,6 +29,9 @@ def db_path_for(app_env: str) -> Path:
     return PROJECT_ROOT / "data" / f"tc-{app_env}.sqlite3"
 
 
+MAX_BOOTSTRAP_DAYS = 3650
+
+
 def config_path_for(app_env: str) -> Path:
     """默认配置锚定仓库根，不随调用方 cwd 漂移（#163）。"""
     return PROJECT_ROOT / f"config-{app_env}.yaml"
@@ -72,7 +75,10 @@ def load_config(
     cfg = Config(app_env=env)
     cfg.feishu_webhook = str(raw.get("feishu_webhook") or "")
     cfg.feishu_secret = str(raw.get("feishu_secret") or "")
-    cfg.bootstrap_days = max(1, int(raw.get("bootstrap_days", cfg.bootstrap_days)))
+    boot_days = max(1, int(raw.get("bootstrap_days", cfg.bootstrap_days)))
+    if boot_days > MAX_BOOTSTRAP_DAYS:
+        raise ValueError(f"bootstrap_days={boot_days} 超过上界 {MAX_BOOTSTRAP_DAYS}（对齐 extract_source.MAX_SINCE_DAYS）")
+    cfg.bootstrap_days = boot_days
 
     http_raw = raw.get("http") or {}
     cfg.http = HttpConf(

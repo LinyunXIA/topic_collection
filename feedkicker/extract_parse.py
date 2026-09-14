@@ -40,7 +40,8 @@ def parse_topics(raw: str) -> tuple[list[dict[str, Any]], int]:
     """解析 LLM 原始文本，返回 `(topics, dropped)`。
 
     JSON 非法 / 顶层非对象 / `topics` 非列表 → raise ValueError（调用方计失败批）；
-    单个 topic 非对象或缺 5 键 → 丢弃该条、dropped 计数并 WARNING，不整批弃（PRV-6）。
+    单个 topic 非对象 / 缺 5 键 / 名称 NFKC 归一后为空 → 丢弃该条、dropped 计数并 WARNING，
+    不整批弃（PRV-6）；空白名同样计 dropped，不得静默丢弃（#294）。
     """
     obj = _load_json_obj(raw)
     if obj is None:
@@ -54,9 +55,13 @@ def parse_topics(raw: str) -> tuple[list[dict[str, Any]], int]:
         if not isinstance(item, dict) or any(k not in item for k in _REQUIRED_KEYS):
             dropped += 1
             continue
+        name = str(item.get("话题名称") or "").strip()
+        if not topic_key(name):
+            dropped += 1
+            continue
         parsed.append(
             {
-                "话题名称": str(item.get("话题名称") or "").strip(),
+                "话题名称": name,
                 "可使用工具": str(item.get("可使用工具") or "").strip(),
                 "相关AI原理": str(item.get("相关AI原理") or "").strip(),
                 "资讯链接": _str_list(item.get("资讯链接")),
@@ -64,7 +69,7 @@ def parse_topics(raw: str) -> tuple[list[dict[str, Any]], int]:
             }
         )
     if dropped:
-        log.warning("丢弃 %d 条非法 topic（非对象或缺 5 键）", dropped)
+        log.warning("丢弃 %d 条非法 topic（非对象/缺 5 键/空白名）", dropped)
     return merge_topics(parsed), dropped
 
 

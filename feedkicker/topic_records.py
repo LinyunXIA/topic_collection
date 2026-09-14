@@ -6,11 +6,12 @@ from typing import Any
 
 
 def _extract_records(data: Any) -> list[dict[str, Any]]:
-    """记录提取：容器异常（顶层非 dict / records 非空但非 list[dict] / data 非 list）抛 RuntimeError。
+    """记录提取：容器异常（顶层非 dict / records 非空但非 list[dict] / data 非 list / fields 非 list）抛 RuntimeError。
 
-    对齐 existing_links 的「必须中止」：上游 schema 漂移不得被静默当作「无已选题」（#244）。
-    真正空页（records 缺失/空 list、fields+data 空）才返回 []；响应兼容
-    records/items 包装与 data.fields+data.data 行式两种形态。
+    对齐 existing_links 的「必须中止」：上游 schema 漂移不得被静默当作「无已选题」（#244）；
+    fields 为 dict/str 等非 list 语义时同样 raise，不得静默降级空列（#301）。真正空页
+    （records 缺失/空 list、fields+data 空）才返回 []；响应兼容 records/items 包装与
+    data.fields+data.data 行式两种形态。
     """
     if not isinstance(data, dict):
         raise RuntimeError(f"topic 响应顶层非对象: {type(data).__name__}")
@@ -20,6 +21,8 @@ def _extract_records(data: Any) -> list[dict[str, Any]]:
             raise RuntimeError(f"topic records 非 list[dict]: {type(records).__name__}")
         return list(records)
     fields_raw = data.get("fields")
+    if fields_raw is not None and not isinstance(fields_raw, list):
+        raise RuntimeError(f"topic fields 容器非 list: {type(fields_raw).__name__}")
     fields: list[Any] = fields_raw if isinstance(fields_raw, list) else []
     rows_raw = data.get("data")
     if rows_raw is not None and not isinstance(rows_raw, list):

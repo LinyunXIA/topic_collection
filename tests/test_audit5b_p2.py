@@ -106,14 +106,23 @@ def _shuffled_rows_run(ids: list[str] | None, calls: dict[str, int]):
     return fake_run
 
 
-@pytest.mark.parametrize("with_ids", [True, False])
-def test_backfill_shuffled_row_order_ignoring_offset_raises_on_second_page(monkeypatch, with_ids):
+def test_backfill_shuffled_row_order_ignoring_offset_raises_on_second_page(monkeypatch):
     calls = {"n": 0}
-    ids = [f"recR{i:03d}" for i in range(200)] if with_ids else None
+    ids = [f"recR{i:03d}" for i in range(200)]
     monkeypatch.setattr(bitable_lark, "_run", _shuffled_rows_run(ids, calls))
     with pytest.raises(RuntimeError, match="分页|offset"):
         bitable_backfill.backfill_empty_archive_dates("app", "tbl")
-    assert calls["n"] == 2, "打乱行序 + 忽略 offset 必须第 2 页熔断，不得跑到 1001 次兜底"
+    assert calls["n"] == 2, "有 record id 时打乱行序 + 忽略 offset 必须第 2 页熔断"
+
+
+def test_backfill_idless_shuffled_rows_bounded_by_page_cap(monkeypatch):
+    """#303：无 id 时不再按值内容哈希误熔断，改由 guard_pages 页数上限兜底终止。"""
+    calls = {"n": 0}
+    monkeypatch.setattr(bitable_lark, "_MAX_PAGES", 3)
+    monkeypatch.setattr(bitable_lark, "_run", _shuffled_rows_run(None, calls))
+    with pytest.raises(RuntimeError, match="分页|offset|页数"):
+        bitable_backfill.backfill_empty_archive_dates("app", "tbl")
+    assert 2 < calls["n"] <= 5
 
 
 # ── #244 topic 容器异常必须 raise，真正空页仍返回 [] ──

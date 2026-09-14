@@ -80,8 +80,10 @@ topic_collection/
 │   ├── salon_md.py / salon_notify.py  # 大纲 markdown/stub / 卡片与连败 SOS
 │   ├── extract_source.py     # 近 N 天 RSS 行选源（F28，§25）
 │   ├── extract_llm.py        # LLM provider 抽象 / 批量提示词 / JSON 解析与多源合并（F29–F30，§25）
+│   ├── extract_parse.py      # 提示词构建与 JSON 解析（自 extract_llm 拆出，§25.4/#250）
 │   ├── extract_write.py      # 选题表字段映射 + 「资讯链接 OR 话题名称」双键去重写入（F31，§25）
 │   ├── extract_flow.py       # tc-extract 编排 + CLI（F32，§25）
+│   ├── extract_report.py     # dry-run 清单与运行统计输出（自 extract_flow 拆出，§25.6/#252）
 │   ├── push.py               # push 编排主流程
 │   └── purge.py              # tc-purge 编排：365 天滚动保留（§20）
 └── tests/                    # 全离线，subprocess/httpx 一律 mock（test_push/test_salon_*/test_purge 等）
@@ -930,7 +932,7 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 
 ### 24.2 第五轮审计修复语义补充（#231–#239，2026-09-14）
 
-- **分页防死循环改为页指纹**（#232/#243/#245）：`bitable_lark._page_guard` 以本页 id 集合的 sorted 指纹、无 id 时按行内容排序哈希比对上一页，相同即判 `--offset` 被忽略并中止（行序抖动不再漏检）；兜底为**页数上限与 offset 双保险**——`bitable_lark.guard_pages` 以 `_MAX_PAGES`=1000 做页数上限（与 `--limit` 无关，各分页路径统一调用）叠加 `_guard_offset` 的 `_CHUNK × _MAX_PAGES` = 20 万 offset 天花板，`topic.fetch_selected_topics` 与 bitable 各路径统一使用，合法大表不再误杀；`topic` 另对「空页 + `has_more` 恒真」第 2 页即熔断（#290）。`bitable --backfill` 异常捕获后 log.error + rc 2（不再冒 traceback）；缺 lark-cli 时 `bitable.main` 非 dry-run 路径提前 rc 2、`backfill_empty_archive_dates` 直接 raise（不再静默 rc0，dry-run 预览降级 WARNING）。
+- **分页防死循环改为页指纹**（#232/#243/#245）：`bitable_lark._page_guard` 以本页 record id 集合的 sorted 指纹比对上一页，相同即判 `--offset` 被忽略并中止（行序抖动不再漏检）；（#290 起）`bitable_lark.guard_pages` 以 `_MAX_PAGES`=1000 做页数上限（与 `--limit` 无关，各分页路径统一调用）叠加 `_guard_offset` 的 `_CHUNK × _MAX_PAGES` = 20 万 offset 天花板；`topic.fetch_selected_topics` 另对「空页 + `has_more` 恒真」第 2 页即熔断。（#303）指纹**仅基于 record id**（`records`/`items`/顶层 ids），无 id 返回 `""` 不熔断——原先的 `data` 行内容哈希会让「同值满页」的均匀表被误判为未翻页而永久无法归档/清理，有界性交给 `guard_pages`。`bitable --backfill` 异常捕获后 log.error + rc 2（不再冒 traceback）；缺 lark-cli 时 `bitable.main` 非 dry-run 路径提前 rc 2、`backfill_empty_archive_dates` 直接 raise（不再静默 rc0，dry-run 预览降级 WARNING）。
 - **salon 逐题隔离**（#234）：`build_combined_md` 纳入逐题 try，`outline_to_md` 对 `slides`/`bullets`/`speaker_note` 类型归一（slides 非列表显式 raise 由逐题 try 跳过），单条坏 LLM 响应只 WARNING，不拖垮整批、不丢通知。
 - **reseed/markdown/existing_links 健壮性**（#235/#242）：dev/test reseed 对「环境」为空/不匹配行保守保留并 WARNING（§20）；prod markdown 路径仅当存在数据行却解析零 record id 时判 `ok=False` 中止（整页删净后重拉只剩表头属正常空表，`ok=True` 不再误阻断，#242）；fields+data 行式缺「链接」字段且有行时 raise（不静默空集）。
 - **脱敏 canary 哈希化**（#236）：真实 prod record id 不再以明文（含拼接）留在 tracked；测试改为 sha256 比对 + 长 token 无匹配断言，非 git 工作树显式失败（OPS §2.2 同口径记录）。
@@ -962,9 +964,11 @@ select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(p
 | 模块 | 职责 | 关键接口 |
 |---|---|---|
 | `extract_source.py` | sqlite 选源 | `select_source(conn, since_days, limit=None, now=None)` |
-| `extract_llm.py` | provider 抽象 + 提示词/解析 + 批量提炼编排 | `call_llm(cfg, prompt) -> str`、`build_batch_prompt(template, items)`、`parse_topics(raw) -> (list[dict], dropped)`、`merge_topics(topics) -> list[dict]`、`refine_batches(ex, template, batches, max_calls) -> (topics, calls, failed, empty)`、`resolve_provider(cfg, name=None)` |
-| `extract_write.py` | 字段映射与写入 | `existing_index(app_token, table_id) -> tuple[set[str], set[str]]`、`build_record(topic, provider_label, run_date, status="未讨论") -> dict`、`write_topics(...) -> tuple[int, int]` |
+| `extract_parse.py` | 提示词构建与 JSON 解析（自 extract_llm 拆出，#250） | `build_batch_prompt(template, items)`、`parse_topics(raw) -> (list[dict], dropped)`、`merge_topics(topics) -> list[dict]` |
+| `extract_llm.py` | provider 抽象 + 批量提炼编排 | `call_llm(cfg, prompt) -> str`、`refine_batches(ex, template, batches, max_calls) -> (topics, calls, failed, empty)`、`resolve_provider(cfg, name=None)` |
+| `extract_write.py` | 字段映射与写入 | `existing_index(app_token, table_id) -> tuple[set[str], set[str]]`、`build_record(topic, provider_label, run_date, status="未讨论") -> dict`、`write_topics(...) -> tuple[int, int, int]` |
 | `extract_flow.py` | 编排 + CLI | `run(cfg, conn, *, apply, since_days=None, limit=None, batch_size=None, max_calls=None, provider=None) -> int`、`main(argv) -> int` |
+| `extract_report.py` | dry-run 清单与运行统计输出（自 extract_flow 拆出，#252） | `print_dry_run(planned, skipped)`、`print_summary(stats)` |
 
 - provider 注册表（`extract_llm.PROVIDERS`）：`minimax`（base_url `https://api.minimaxi.com/v1`、model `MiniMax-M3`、key env `MiniMax_Key`/`MINIMAX_API_KEY`、tool_label `MMax`）、`deepseek`（base_url `https://api.deepseek.com/v1`、model `deepseek-chat`、key env `DEEPSEEK_API_KEY`、tool_label `DS`）；`tool_label` 必须是 salon 表 `提取工具` select 字段的**表内已有选项**（`MMax`/`DS`，`飞书` 留给人工路径）；yaml `providers.<name>` 非空字段覆盖注册表默认。
 - 调用形态统一 OpenAI 兼容 `POST {base_url}/chat/completions`，取 `choices[0].message.content` 原始文本返回；`_post_chat` **单次尝试**：超时/HTTP 429/529/业务可重试码（1002/1004/1039）抛可重试 `RuntimeError`，重试仅由 `refine_batches` 外层做 1 次（总 HTTP ≤2/批，单层重试，PRV-8）；缺 key/占位 key 抛 `RuntimeError` 且**不发起 HTTP**。

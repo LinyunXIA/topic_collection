@@ -692,8 +692,8 @@ def test_salon_flow_wiki_nodeget_fails_nodelist_objtoken_fallback(monkeypatch):
     assert any(a[:2] == ["wiki", "+node-list"] for a in seen)
 
 
-def test_salon_flow_wiki_nodeget_fails_nodelist_title_fallback(monkeypatch):
-    """node-list 无 obj_token 匹配时按 title 命中（含 nodeToken 驼峰字段），仍回规范 /wiki/ 链接（#140）"""
+def test_salon_flow_wiki_nodeget_fails_nodelist_title_only_falls_back_docx(monkeypatch):
+    """#306：node-list 仅 title 同名（obj_token 不匹配）不得采信旧节点，回退新 docx 链接。"""
     import feedkicker.wiki as wk
     import feedkicker.wiki_lark as wl
     from feedkicker import bitable_lark
@@ -713,7 +713,8 @@ def test_salon_flow_wiki_nodeget_fails_nodelist_title_fallback(monkeypatch):
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
     url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题", "# md\n", dry_run=False, date_str="2026-09-04")
-    assert url == "https://web91vfvm7.feishu.cn/wiki/wiknode_title"
+    assert url == "https://web91vfvm7.feishu.cn/docx/docx_nl_002"
+    assert "wiknode_title" not in url
 
 
 def test_salon_flow_wiki_nodeget_fails_nodelist_failure_fallback_docx_url(monkeypatch):

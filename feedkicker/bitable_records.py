@@ -71,6 +71,10 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
         prev_fp = bitable_lark._page_guard(prev_fp, data)
         records = data.get("records")
         if isinstance(records, list):
+            if not all(isinstance(rec, dict) for rec in records):
+                raise RuntimeError(
+                    f"多维表格已有链接 records 子项非 dict，中止本次同步: {str(records)[:200]}"
+                )
             for rec in records:
                 fds = rec.get("fields") or rec.get("record") or {}
                 v = fds.get("链接")
