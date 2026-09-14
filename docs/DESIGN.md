@@ -794,7 +794,7 @@ bitable（CLI + facade re-export，§21.2）
   - `bitable_lark.py`（进程层）：`SHANGHAI`/`_shanghai_tz`、`lark_bin`、`_run`、`_parse`、`_ok`、`_data`、`_json_arg`、`_has_batch_verb`、`_markdown_record_ids`、`_guard_offset`/`_page_fingerprint`/`_page_guard`（页指纹防误杀，#232）、`_CHUNK`。
   - `bitable_schema.py`（Base/表初始化）：`BASE_TITLES`/`TABLE_NAME`/`VIEW_NAME` 等常量、`fields_for`、`base_url`、`find_base_by_title`、`create_base`、`get_table_id`、`create_table`、`ensure_initialized`。
   - `bitable_views.py`（视图/字段/分享）：`_view_id`、`setup_view`、`set_tenant_readonly`、`ensure_archive_date_field`、`create_date_view`。
-  - `bitable_reseed.py`（reseed 前置清空）：`_delete_batches`、`_env_record_ids`、`purge_all_records`（#197/#218；`bitable_records` 以 `from … import … as …` re-export）。
+  - `bitable_reseed.py`（reseed 前置清空）：`_delete_batches`、`_markdown_has_data_row`（#242）、`_env_record_ids`、`purge_all_records`（#197/#218；`bitable_records` 以 `from … import … as …` re-export）。
   - `bitable_records.py`（记录读写）：`_cell`、`existing_links`、`sync_records`、`sync_env`（+ `purge_all_records` re-export）。
   - `bitable_backfill.py`（日期解析/回填）：`_cell_str`、`_shanghai_date`、`backfill_empty_archive_dates`。
   - `bitable.py`：`_tokens_ready`、`_dry_run_plan`、`main` + 全量 facade re-export；`bitable.X` 访问与既有调用点保持不变。
@@ -916,10 +916,10 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 
 ### 24.2 第五轮审计修复语义补充（#231–#239，2026-09-14）
 
-- **分页防死循环改为页指纹**（#232）：`bitable_lark._page_guard` 以本页 id 集合/行数据指纹比对上一页，相同即判 `--offset` 被忽略并中止；原 20000 offset 天花板抬高为 20 万绝对兜底（仅防指纹失效），合法大表（≥20200 行）不再误杀。`bitable --backfill` 异常捕获后 log.error + rc 2（不再冒 traceback）。
+- **分页防死循环改为页指纹**（#232/#243/#245）：`bitable_lark._page_guard` 以本页 id 集合的 sorted 指纹、无 id 时按行内容排序哈希比对上一页，相同即判 `--offset` 被忽略并中止（行序抖动不再漏检）；绝对兜底 = `_CHUNK × _MAX_PAGES` = 20 万 offset（1000 页，仅防指纹失效），`topic.fetch_selected_topics` 与 bitable 各路径统一使用，合法大表（≥20200 行）不再误杀。`bitable --backfill` 异常捕获后 log.error + rc 2（不再冒 traceback）；缺 lark-cli 时 `bitable.main` 非 dry-run 路径提前 rc 2、`backfill_empty_archive_dates` 直接 raise（不再静默 rc0，dry-run 预览降级 WARNING）。
 - **salon 逐题隔离**（#234）：`build_combined_md` 纳入逐题 try，`outline_to_md` 对 `slides`/`bullets`/`speaker_note` 类型归一（slides 非列表显式 raise 由逐题 try 跳过），单条坏 LLM 响应只 WARNING，不拖垮整批、不丢通知。
-- **reseed/markdown/existing_links 健壮性**（#235）：dev/test reseed 对「环境」为空/不匹配行保守保留并 WARNING（§20）；prod markdown 路径「输出非空但解析零 id」判 `ok=False` 中止；fields+data 行式缺「链接」字段且有行时 raise（不静默空集）。
+- **reseed/markdown/existing_links 健壮性**（#235/#242）：dev/test reseed 对「环境」为空/不匹配行保守保留并 WARNING（§20）；prod markdown 路径仅当存在数据行却解析零 record id 时判 `ok=False` 中止（整页删净后重拉只剩表头属正常空表，`ok=True` 不再误阻断，#242）；fields+data 行式缺「链接」字段且有行时 raise（不静默空集）。
 - **脱敏 canary 哈希化**（#236）：真实 prod record id 不再以明文（含拼接）留在 tracked；测试改为 sha256 比对 + 长 token 无匹配断言，非 git 工作树显式失败（OPS §2.2 同口径记录）。
-- **边界**（#237）：topic 响应容器校验（顶层非 dict / records 非 list[dict] → 空页 + WARNING）；salon 记录 skipped/attempted 计数；缺 lark-cli 时 `_run` 返回 None、`wiki.main` 统一 rc 2 不 traceback；`wiki_home` space/parent 复用「空或含 `<`」占位守卫 rc 2；minimax 成功码 `"0"` 归一为 0。
+- **边界**（#237/#244）：topic 响应容器异常（顶层非 dict / records 非空但非 list[dict] / data 非 list）抛 `RuntimeError` 中止，真正空页才返回 `[]`（#244 收紧 #237 的「空页 + WARNING」吞错）；salon 记录 skipped/attempted 计数；缺 lark-cli 时 `_run` 返回 None、`wiki.main` 统一 rc 2 不 traceback；`wiki_home` space/parent 复用「空或含 `<`」占位守卫 rc 2；minimax 成功码 `"0"` 归一为 0（`_parse_outline_from_response` 复用同款归一，#245）。
 - **配置/并发**（#239）：`feishu_webhook`/`feishu_secret` 的 `<...>` 占位在 `load_config` 统一清空（send 层判空即跳过）；`store_conn.connect` 设 `busy_timeout=5000` + `journal_mode=WAL`，ALTER 迁移容忍 duplicate column。
 - **接受项（记录不修）**：① 超大 `detail_url` 时 `build_card` 不保证 ≤20KB（`detail_url` 由 config 控制、现实值远小于预算；本轮只保证常规条目路径 ≤20KB，#239）；② `is_ppt_synced` 无 feed 过滤（理论碰撞，见 §24.1）。

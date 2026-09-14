@@ -27,15 +27,18 @@ log = logging.getLogger(__name__)
 
 _CHUNK = 200
 
-MAX_OFFSET = 20000
+_MAX_PAGES = 1000
 
-MAX_OFFSET_LAST = 200000
+MAX_OFFSET_LAST = _CHUNK * _MAX_PAGES
 
 _LARK_CANDIDATES = ("/opt/homebrew/bin/lark-cli", "/usr/local/bin/lark-cli")
 
 
 def _guard_offset(offset: int) -> None:
-    """绝对兜底（页指纹为主检测，#232）：正常大表可翻到 20 万 offset，仅防指纹失效。"""
+    """绝对兜底（页指纹为主检测，#232）：上限 = `_CHUNK × _MAX_PAGES` = 20 万 offset（1000 页）。
+
+    取飞书单表量级（十万行）之上、远离现实归档规模，仅防指纹失效；合法大表不误杀（#245）。
+    """
     if offset > MAX_OFFSET_LAST:
         raise RuntimeError(
             f"分页 offset 超过绝对兜底 {MAX_OFFSET_LAST}，疑似未按 --offset 翻页，中止以避免死循环"
@@ -43,7 +46,10 @@ def _guard_offset(offset: int) -> None:
 
 
 def _page_fingerprint(page: Any) -> str:
-    """本页指纹：优先 id 集合的 sorted sha1，无 id 时对行式数据做 sha1。"""
+    """本页指纹：id 集合取 sorted sha1（无序化），无 id 时对行内容排序后 sha1。
+
+    CLI 忽略 --offset 且每次打乱行序时，保序指纹永不命中；无序化后第 2 页即熔断（#243）。
+    """
     if not isinstance(page, dict):
         return ""
     records = page.get("records") or page.get("items")
@@ -56,9 +62,14 @@ def _page_fingerprint(page: Any) -> str:
         ids = [i for i in ids if i]
         if ids:
             return hashlib.sha1("|".join(sorted(ids)).encode()).hexdigest()
+    top_ids = page.get("record_ids") or page.get("recordIds") or page.get("ids")
+    ids = [str(i) for i in top_ids if i] if isinstance(top_ids, list) else []
+    if ids:
+        return hashlib.sha1("|".join(sorted(ids)).encode()).hexdigest()
     rows = page.get("data")
     if isinstance(rows, list) and rows:
-        return hashlib.sha1(json.dumps(rows, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
+        canon = sorted(json.dumps(r, ensure_ascii=False, sort_keys=True) for r in rows)
+        return hashlib.sha1("\n".join(canon).encode()).hexdigest()
     return ""
 
 

@@ -33,19 +33,21 @@ class FakeResp:
         return self._json
 
 
-# ── #237(a) topic 容器校验：坏容器 → 空页 + WARNING，不冒异常 ──
+# ── #237(a)/#244 topic 容器校验：坏容器必须 raise（重扫判定「空页 + WARNING」吞错） ──
 
 
-def test_topic_extract_records_container_validation(caplog):
-    with caplog.at_level(logging.WARNING):
-        assert topic_mod._extract_records("not-a-dict") == []
-        assert topic_mod._extract_records(["x"]) == []
-        assert topic_mod._extract_records({"records": "ab"}) == []
-        assert topic_mod._extract_records({"records": {"x": 1}}) == []
-        assert topic_mod._extract_records({"records": [{"record_id": "r1"}, "bad"]}) == []
-        assert topic_mod._extract_records({"data": 1}) == []
-        assert topic_mod._extract_records({"x": 1}) == []
-    assert sum(1 for r in caplog.records if "空页" in r.getMessage()) >= 4
+def test_topic_extract_records_container_validation():
+    for bad in (
+        "not-a-dict",
+        ["x"],
+        {"records": "ab"},
+        {"records": {"x": 1}},
+        {"records": [{"record_id": "r1"}, "bad"]},
+        {"data": 1},
+    ):
+        with pytest.raises(RuntimeError):
+            topic_mod._extract_records(bad)
+    assert topic_mod._extract_records({"x": 1}) == [], "无 records/data 才是真空页"
 
 
 def test_topic_extract_records_valid_shapes_still_work():
@@ -56,14 +58,14 @@ def test_topic_extract_records_valid_shapes_still_work():
     assert rows[0]["record_id"] == "r2"
 
 
-def test_fetch_selected_topics_bad_container_returns_empty(monkeypatch, caplog):
+def test_fetch_selected_topics_bad_container_raises(monkeypatch):
     monkeypatch.setattr(
         topic_mod.bitable_lark,
         "_run",
         lambda *a, **k: FakeProc(0, json.dumps({"data": {"records": "oops"}})),
     )
-    with caplog.at_level(logging.WARNING):
-        assert topic_mod.fetch_selected_topics("app", "tbl") == []
+    with pytest.raises(RuntimeError, match="records"):
+        topic_mod.fetch_selected_topics("app", "tbl")
 
 
 # ── #237(b) salon 稳态全跳过不得误报「全部失败」 ──

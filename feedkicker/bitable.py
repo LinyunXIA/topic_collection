@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any
 
-from feedkicker import bitable_backfill, bitable_records, bitable_schema, bitable_views
+from feedkicker import bitable_backfill, bitable_lark, bitable_records, bitable_schema, bitable_views
 from feedkicker.bitable_backfill import (
     _cell_str as _cell_str,
     _shanghai_date as _shanghai_date,
@@ -83,10 +83,14 @@ def _dry_run_plan(cfg: Any, args: Any) -> None:
     if args.backfill or args.fix_archive_date:
         if _tokens_ready(bt):
             env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
-            n = bitable_backfill.backfill_empty_archive_dates(
-                bt.app_token, bt.table_id, env_name=env_name, dry_run=True
-            )
-            log.info("dry-run：归档日期将回填 %d 条（未写入）", n)
+            try:
+                n = bitable_backfill.backfill_empty_archive_dates(
+                    bt.app_token, bt.table_id, env_name=env_name, dry_run=True
+                )
+            except RuntimeError as e:
+                log.warning("dry-run：backfill 预览不可用：%s", e)
+            else:
+                log.info("dry-run：归档日期将回填 %d 条（未写入）", n)
         else:
             log.info("dry-run：Base 未配置或为占位 token，跳过 backfill 预览")
     log.info("dry-run：跳过 sync_env（不写记录）")
@@ -119,6 +123,14 @@ def main(argv: list[str] | None = None) -> int:
     if args.dry_run:
         _dry_run_plan(cfg, args)
         return 0
+
+    try:
+        have_lark = bool(bitable_lark.lark_bin())
+    except FileNotFoundError:
+        have_lark = False
+    if not have_lark:
+        log.error("找不到 lark-cli，拒绝执行非 dry-run 动作（请先安装 @larksuite/cli 并完成 auth login）")
+        return 2
 
     if not (args.init or args.reseed) and not _tokens_ready(cfg.bitable):
         log.error(

@@ -9,10 +9,26 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 
 from feedkicker import bitable_backfill, bitable_lark, bitable_purge
 
 log = logging.getLogger(__name__)
+
+
+def _markdown_has_data_row(stdout: str) -> bool:
+    """表头（`| _record_id |`）与分隔行（`| --- |`）之外是否存在数据行（#242）。
+
+    整页删净后重拉只剩表头属正常空表；有数据行却解析不出 record id 才是列序异常。
+    """
+    for line in stdout.splitlines():
+        s = line.strip()
+        if not s.startswith("|") or re.match(r"^\|\s*_record_id\s*\|", s):
+            continue
+        if all(set(cell) <= set("-: ") for cell in s.strip("|").split("|")):
+            continue
+        return True
+    return False
 
 
 def _delete_batches(app_token: str, table_id: str, ids: list[str]) -> tuple[int, bool]:
@@ -87,8 +103,8 @@ def purge_all_records(
         ids = bitable_lark._markdown_record_ids(proc.stdout if proc is not None else "")
         if not ids:
             raw = (proc.stdout or "").strip() if proc is not None else ""
-            if raw:
-                log.warning("reseed：markdown 输出非空但解析不出 record id（非空表/列序异常），中止清理")
+            if raw and _markdown_has_data_row(raw):
+                log.warning("reseed：markdown 输出含数据行但解析不出 record id（列序异常），中止清理")
                 return deleted, False
             return deleted, True
         if dry_run:

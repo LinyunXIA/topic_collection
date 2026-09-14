@@ -11,7 +11,6 @@ from feedkicker.topic_records import _extract_records as _extract_records
 log = logging.getLogger(__name__)
 
 FILTER_JSON = json.dumps({"logic": "and", "conditions": [["讨论状态", "intersects", ["已选题"]]]}, ensure_ascii=False)
-MAX_OFFSET = bitable_lark.MAX_OFFSET
 
 
 def _has_more_of(data: dict[str, Any]) -> bool | None:
@@ -36,18 +35,17 @@ def fetch_selected_topics(
 
     响应兼容 records/items 包装与 data.fields+data.data 行式两种形态；
     空页且 has_more 非真即终止，has_more 缺失时以不足一页判定结束；
-    所有翻页分支共用 offset 上限守卫（A5），has_more 恒真时不会空转死循环。
+    翻页与 bitable 各路径统一走 offset 绝对兜底 + 页指纹守卫（#245），
+    has_more 恒真或 lark-cli 忽略 --offset 都不会死循环。
     """
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")
     limit = max(1, limit)
     all_records: list[dict[str, Any]] = []
     offset = 0
+    prev_fp = ""
     while True:
-        if offset > MAX_OFFSET:
-            raise RuntimeError(
-                f"fetch_selected_topics 分页 offset 超过上限 {MAX_OFFSET}，疑似 has_more 恒真，中止以避免死循环"
-            )
+        bitable_lark._guard_offset(offset)
         args = [
             "base", "+record-list",
             "--base-token", app_token,
@@ -69,6 +67,7 @@ def fetch_selected_topics(
             msg = (proc.stdout or proc.stderr or "").strip()[:500]
             log.warning("lark-cli 业务失败: %s", msg)
             raise RuntimeError(f"lark-cli 业务失败: {msg}")
+        prev_fp = bitable_lark._page_guard(prev_fp, data)
         chunk = _extract_records(data)
         has_more = _has_more_of(data)
         if not chunk:
