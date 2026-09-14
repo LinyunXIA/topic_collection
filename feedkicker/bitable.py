@@ -109,7 +109,9 @@ def _parse(proc: subprocess.CompletedProcess[str] | None) -> tuple[bool, dict[st
         obj = json.loads(raw)
     except json.JSONDecodeError:
         return True, {}
-    if isinstance(obj, dict) and obj.get("ok") is False:
+    if not isinstance(obj, dict):
+        return True, {}
+    if obj.get("ok") is False:
         err = obj.get("error") or {}
         log.warning("lark-cli 业务失败: %s", str(err.get("message") or err)[:300])
         return False, {}

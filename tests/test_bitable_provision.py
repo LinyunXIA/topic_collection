@@ -239,3 +239,11 @@ def test_ensure_initialized_writes_resolved_tokens_back(monkeypatch: pytest.Monk
     assert bt.app_token == "appAuto"
     assert bt.table_id == "tblAuto"
     assert bt.url == info["url"]
+
+
+def test_parse_top_level_array_does_not_crash(monkeypatch: pytest.MonkeyPatch):
+    # A4：顶层 JSON 数组不得让 _parse 的 .get 抛 AttributeError
+    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: FakeProc(0, stdout="[1, 2]"))
+    assert bitable._parse(FakeProc(0, stdout="[1, 2]")) == (True, {})
+    assert bitable.find_base_by_title("任意标题") is None
+    assert bitable.get_table_id("appToken") is None
