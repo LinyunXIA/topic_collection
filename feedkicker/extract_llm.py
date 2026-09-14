@@ -10,6 +10,11 @@ import httpx
 
 from feedkicker import minimax
 from feedkicker.config_models import ExtractConf, ProviderConf, env_key_for
+from feedkicker.extract_parse import (
+    build_batch_prompt as build_batch_prompt,
+    merge_topics as merge_topics,
+    parse_topics as parse_topics,
+)
 
 log = logging.getLogger(__name__)
 
