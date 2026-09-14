@@ -107,6 +107,10 @@ def build_card(
     wiki_urls: list[str] | None = None,
     wiki_label: str = "📖 查看大纲",
 ) -> dict[str, Any]:
+    """每源保最新 `top_n` 条（`top_n<=0` 全取，时效键=published_at/first_seen），`selected` 最旧在前（#200）。"""
+    def time_key(item: dict[str, Any]) -> str:
+        return item.get("published_at") or item.get("first_seen") or ""
+
     by_feed: dict[str, list[dict[str, Any]]] = {}
     for it in new_items:
         by_feed.setdefault(it["feed_id"], []).append(it)
@@ -117,7 +121,8 @@ def build_card(
     hidden_by_feed: dict[str, int] = {}
     for name in ordered:
         items = by_feed[name]
-        keep = items if top_n <= 0 else items[:top_n]
+        newest = sorted(items, key=time_key, reverse=True)[:top_n] if top_n > 0 else items
+        keep = sorted(newest, key=time_key) if top_n > 0 else newest
         selected.extend((name, it) for it in keep)
         hidden = len(items) - len(keep)
         if hidden > 0:

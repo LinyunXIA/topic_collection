@@ -548,11 +548,51 @@ def _many_items(feed, n):
     ]
 
 
+def _timed_items(feed, n):
+    """n 条：entry_key 升序、published_at 同日递增（键序≠时间序，复现 #200 场景）。"""
+    return [
+        {"feed_id": feed, "entry_key": f"k{i}", "title": f"{feed}标题{i}",
+         "url": f"https://e.com/{feed}/{i}", "description": f"摘要{i}",
+         "published_at": f"2026-09-{10 + i:02d}T00:00:00Z",
+         "first_seen": "2026-09-01T00:00:00Z"}
+        for i in range(n)
+    ]
+
+
+def test_build_card_top_n_keeps_latest_n():
+    """#200：top_n 按时效键取最新 N 条（输入键序≠时间序），卡内仍最旧在前。"""
+    card = feishu.build_card(_timed_items("F", 8), 0, ["F"], top_n=3)
+    content = card["card"]["elements"][0]["text"]["content"]
+    assert all(f"标题{i}" in content for i in (5, 6, 7))
+    assert all(f"标题{i}" not in content for i in range(5))
+    assert content.index("标题5") < content.index("标题6") < content.index("标题7")
+    assert "还有 5 条，详情见多维表格" in content
+
+
+def test_build_card_top_n_keeps_latest_per_feed():
+    """#200：多源各自保最新 N，隐藏数按源分开统计。"""
+    items = _timed_items("A源", 4) + _timed_items("B源", 4)
+    card = feishu.build_card(items, 0, ["A源", "B源"], top_n=2)
+    content = card["card"]["elements"][0]["text"]["content"]
+    for feed in ("A源", "B源"):
+        assert f"{feed}标题3" in content and f"{feed}标题2" in content
+        assert f"{feed}标题1" not in content and f"{feed}标题0" not in content
+    assert content.count("还有 2 条，详情见多维表格") == 2
+
+
+def test_build_card_top_n_equal_keys_keep_original_order():
+    """#200 边界：published_at 全 None（同批 first_seen 同值）→ 相等键保持原序。"""
+    card = feishu.build_card(_many_items("F", 8), 0, ["F"], top_n=3)
+    content = card["card"]["elements"][0]["text"]["content"]
+    assert all(f"标题{i}" in content for i in (0, 1, 2))
+    assert all(f"标题{i}" not in content for i in (3, 4, 5, 6, 7))
+
+
 def test_build_card_top_n_and_button():
-    card = feishu.build_card(_many_items("F", 8), 0, ["F"], top_n=3,
+    card = feishu.build_card(_timed_items("F", 8), 0, ["F"], top_n=3,
                              detail_url="https://linyunxia.github.io/topic_collection/daily/2026-08-25.html")
     content = card["card"]["elements"][0]["text"]["content"]
-    assert "标题7" not in content and "标题2" in content
+    assert "标题7" in content and "标题0" not in content
     assert "还有 5 条，详情见多维表格" in content
     actions = [el for el in card["card"]["elements"] if el["tag"] == "action"]
     assert actions and actions[0]["actions"][0]["text"]["content"] == "📰 详情见多维表格"
