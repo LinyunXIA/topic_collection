@@ -7,7 +7,7 @@
 - bitable 侧按「推送时间」早于 cutoff 删记录（bitable_purge），
   仅操作 cfg.bitable 资讯归档 Base，绝不调 ensure_initialized（防误建 Base）；
 - meta purge_last_run_at 仅在真删且 bitable 段整段成功时写入
-  （跳过/首屏失败/批失败不写，与 DESIGN §20.2 一致）。
+  （跳过/首屏失败/中途分页失败/批失败不写，与 DESIGN §20.2 一致）。
 """
 
 from __future__ import annotations

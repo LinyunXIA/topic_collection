@@ -678,7 +678,7 @@ wiki:
 - 截止时点：`cutoff_iso(days)` = UTC `now - days` 的 `%Y-%m-%dT%H:%M:%SZ`（字典序可比，先例 `promise_skip_old`）；bitable 侧用 `cutoff_date_shanghai(days)` = 上海时区 `%Y-%m-%d` 日期串。
 - **sqlite**（`purge_sqlite`）：选 `pushed_at IS NOT NULL AND pushed_at < cutoff`；其中仅 `bitable_synced_at IS NOT NULL`（已在线归档）的行可删，超期未归档只计数 WARNING；dry-run 只计数，apply 才 `DELETE` + commit。salon 占位行 `pushed_at` 为 NULL，天然不匹配。
 - **bitable**（`purge_expired_records`）：`+record-list --json --limit 200 --offset N` 分页拉全表（records 包装 / fields+data 行式双形态兼容，范本 backfill），「推送时间」经 `bitable._cell_str` + `bitable._shanghai_date`（epoch 毫秒/ISO/纯日期兼容）归一成上海日期串，**客户端过滤** `d < cutoff_date`（字典序；截止当天的记录保留，保守方向）；apply 按 200/批 `+record-delete --json '{"record_id_list":[...]}' --yes`，批失败即终止。返回 `(deleted, expired, scanned)`。
-- **安全条件**：bitable 段仅在 `enabled` 且 app_token/table_id 非空且不含 `<`（占位守卫）时执行；**绝不调 `ensure_initialized`**（防误建 Base）；只操作 `cfg.bitable` 资讯归档 Base，不碰 salon 选题 Base；首屏 list 失败返回 `(0,0,0)` 零删除；apply 成功才写 meta `purge_last_run_at`。同一守卫将扩展到 bitable 运维 CLI（`python -m feedkicker.bitable`）：仅对既有 Base 操作 / 显式确认（`--init`/`--reseed`），`--dry-run` 已支持；余下代码改动随后续 commit 落地（见本轮 PR / #168）。
+- **安全条件**：bitable 段仅在 `enabled` 且 app_token/table_id 非空且不含 `<`（占位守卫）时执行；**绝不调 `ensure_initialized`**（防误建 Base）；只操作 `cfg.bitable` 资讯归档 Base，不碰 salon 选题 Base；首屏 list 失败返回 `(0,0,0)` 零删除；全量分页读完（`complete`）且删除批全部成功才写 meta `purge_last_run_at`，中途分页失败仍删已扫到的过期行但不写 meta（#180）。同一守卫将扩展到 bitable 运维 CLI（`python -m feedkicker.bitable`）：仅对既有 Base 操作 / 显式确认（`--init`/`--reseed`），`--dry-run` 已支持；余下代码改动随后续 commit 落地（见本轮 PR / #168）。
 
 ### 20.3 调度（launchd，每月 1 号 dry-run 巡检）
 
