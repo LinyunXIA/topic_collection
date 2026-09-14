@@ -507,7 +507,7 @@ def test_salon_flow_wiki_nodeget_retry_then_success(monkeypatch):
 
 
 def test_salon_flow_wiki_nodeget_failure_fallback_docx_url(monkeypatch):
-    """docx 已建成但 node-get 重试仍失败：回退 /docx/ 链接保证可用，不丢已建文档（#133）"""
+    """docx 已建成但 node-get 重试仍失败且 node-list 无命中：回退 /docx/ 链接，不丢已建文档（#133/#140）"""
     import feedkicker.wiki as wk
     import feedkicker.wiki_lark as wl
     from feedkicker import bitable_lark
@@ -519,11 +519,92 @@ def test_salon_flow_wiki_nodeget_failure_fallback_docx_url(monkeypatch):
             return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"document": {"document_id": "docx_fb_002"}}}, ensure_ascii=False))
         if args[:2] == ["wiki", "+node-get"]:
             return FakeProc(0, stdout=json.dumps({"ok": False, "error": {"message": "node 131005 not_found"}}, ensure_ascii=False))
+        if args[:2] == ["wiki", "+node-list"]:
+            assert args[args.index("--space-id") + 1] == "spc"
+            assert args[args.index("--parent-node-token") + 1] == "parent"
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"nodes": []}}, ensure_ascii=False))
         raise AssertionError(f"未预期的 lark-cli 调用: {args}")
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
     url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题", "# md\n", dry_run=False)
     assert url == "https://web91vfvm7.feishu.cn/docx/docx_fb_002"
+
+
+def test_salon_flow_wiki_nodeget_fails_nodelist_objtoken_fallback(monkeypatch):
+    """node-get 传播延迟（131005）时改走 node-list，按 obj_token 命中规范 /wiki/ 链接（#140）"""
+    import feedkicker.wiki as wk
+    import feedkicker.wiki_lark as wl
+    from feedkicker import bitable_lark
+
+    monkeypatch.setattr(wl.time, "sleep", lambda *_: None)
+    seen = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        seen.append(args)
+        if args[:2] == ["docs", "+create"]:
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"document": {"document_id": "docx_nl_001"}}}, ensure_ascii=False))
+        if args[:2] == ["wiki", "+node-get"]:
+            return FakeProc(0, stdout=json.dumps({"ok": False, "error": {"code": 131005, "message": "not found"}}, ensure_ascii=False))
+        if args[:2] == ["wiki", "+node-list"]:
+            assert args[args.index("--space-id") + 1] == "spc"
+            assert args[args.index("--parent-node-token") + 1] == "parent"
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"nodes": [
+                {"node_token": "wiknode_other", "obj_token": "docx_other", "title": "别的"},
+                {"node_token": "wiknode_nl", "obj_token": "docx_nl_001", "title": "话题_2026-09-04_大纲"},
+            ]}}, ensure_ascii=False))
+        raise AssertionError(f"未预期的 lark-cli 调用: {args}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题", "# md\n", dry_run=False, date_str="2026-09-04")
+    assert url == "https://web91vfvm7.feishu.cn/wiki/wiknode_nl"
+    assert not url.startswith("https://web91vfvm7.feishu.cn/docx/")
+    assert any(a[:2] == ["wiki", "+node-list"] for a in seen)
+
+
+def test_salon_flow_wiki_nodeget_fails_nodelist_title_fallback(monkeypatch):
+    """node-list 无 obj_token 匹配时按 title 命中（含 nodeToken 驼峰字段），仍回规范 /wiki/ 链接（#140）"""
+    import feedkicker.wiki as wk
+    import feedkicker.wiki_lark as wl
+    from feedkicker import bitable_lark
+
+    monkeypatch.setattr(wl.time, "sleep", lambda *_: None)
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if args[:2] == ["docs", "+create"]:
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"document": {"document_id": "docx_nl_002"}}}, ensure_ascii=False))
+        if args[:2] == ["wiki", "+node-get"]:
+            return FakeProc(0, stdout=json.dumps({"ok": False, "error": {"code": 131005, "message": "not found"}}, ensure_ascii=False))
+        if args[:2] == ["wiki", "+node-list"]:
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"nodes": [
+                {"nodeToken": "wiknode_title", "title": "话题_2026-09-04_大纲"},
+            ]}}, ensure_ascii=False))
+        raise AssertionError(f"未预期的 lark-cli 调用: {args}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题", "# md\n", dry_run=False, date_str="2026-09-04")
+    assert url == "https://web91vfvm7.feishu.cn/wiki/wiknode_title"
+
+
+def test_salon_flow_wiki_nodeget_fails_nodelist_failure_fallback_docx_url(monkeypatch):
+    """node-get 失败且 node-list 进程失败：仍回退 /docx/ 且不抛异常，不阻塞话题（#140）"""
+    import feedkicker.wiki as wk
+    import feedkicker.wiki_lark as wl
+    from feedkicker import bitable_lark
+
+    monkeypatch.setattr(wl.time, "sleep", lambda *_: None)
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if args[:2] == ["docs", "+create"]:
+            return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"document": {"document_id": "docx_fb_003"}}}, ensure_ascii=False))
+        if args[:2] == ["wiki", "+node-get"]:
+            return FakeProc(0, stdout=json.dumps({"ok": False, "error": {"code": 131005, "message": "not found"}}, ensure_ascii=False))
+        if args[:2] == ["wiki", "+node-list"]:
+            return FakeProc(1, stdout="", stderr="boom")
+        raise AssertionError(f"未预期的 lark-cli 调用: {args}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题", "# md\n", dry_run=False)
+    assert url == "https://web91vfvm7.feishu.cn/docx/docx_fb_003"
 
 
 def test_salon_flow_flip_twice_regen_with_ppt_synced(monkeypatch):

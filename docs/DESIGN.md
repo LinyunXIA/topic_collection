@@ -46,7 +46,8 @@ topic_collection/
 ├── data/                     # 运行时生成：tc-{env}.sqlite3（gitignore）
 ├── logs/                     # launchd 重定向写日志（gitignore）
 ├── feedkicker/
-│   ├── config.py             # 读 config-{env}.yaml + env 覆盖
+│   ├── config.py             # 读 config-{env}.yaml + env 覆盖 + facade re-export（§21.2）
+│   ├── config_models.py      # 路径常量与全部配置 dataclass（叶子模块，§21.2）
 │   ├── fetch.py              # feedparser 抓取 + 归一化
 │   ├── store.py              # sqlite 主表 + facade re-export（§21.2）
 │   ├── store_meta.py         # meta 键值表（叶子模块）
@@ -739,6 +740,10 @@ store_salon（ppt 同步标记 / last_status / mark_topic_archived）
   ↑
 store（articles/feeds 主表 + facade re-export store_meta、store_salon）
 
+config_models（叶子：PROJECT_ROOT/DEFAULT_DB_PATH/VALID_ENVS + 全部 dataclass）
+  ↑
+config（读 config-{env}.yaml + env 覆盖；db_path_for/config_path_for/load_config 仍定义于此）
+
 feishu_card（卡片构建/转义/strip_actions）→ feishu（HTTP 发送 + facade re-export）
 minimax_schema（PROMPT_TEMPLATES / function-calling schema）→ minimax（调用 + facade）
 wiki_lark（lark-cli docs/wiki 调用与响应解析）→ wiki（编排 + __main__ CLI）
@@ -757,7 +762,8 @@ bitable（CLI + facade re-export，§21.2）
 
 - **facade 约定**：被搬走的公共函数在原模块以 `from x import y as y` 显式 re-export（抑制 ruff F401 且表明是刻意重导），全部既有调用点（`store.get_ppt_last_status`、`feishu.build_card`、`mm.PROMPT_TEMPLATES` 等 ~25 处）与测试 monkeypatch 目标零改动。
 - **monkeypatch 约定**：跨模块调用必须走模块属性访问（`feishu.send`、`bitable_lark._run`、`wiki_lark.time.sleep`），不可 `from x import y` 解包后调用，否则 patch 不生效。bitable 拆分（§21.4）后随之迁移的 patch 点：`bitable._run/_parse/_ok/_data/lark_bin/subprocess/os/SHANGHAI` → `bitable_lark.*`；`bitable.find_base_by_title/create_base/get_table_id/create_table/ensure_initialized` → `bitable_schema.*`；`bitable.setup_view/create_date_view/ensure_archive_date_field/set_tenant_readonly` → `bitable_views.*`；`bitable.existing_links/sync_records/purge_all_records/sync_env` → `bitable_records.*`；`bitable._cell_str/_shanghai_date/backfill_empty_archive_dates` → `bitable_backfill.*`。外部调用点（push/wiki/wiki_lark/wiki_home/topic/bitable_purge）同步改为引用 owner 模块。此前的 `wk.time.sleep` → `wiki_lark.time.sleep` 迁移遵循同一约定。
-- 拆分后行数（`wc -l feedkicker/*.py`，2026-09-14 实测）：全部 ≤200（bitable 拆分见 §21.4）；最大 feishu_card.py 195，config.py 194（#162 移除别名后回落、逼近 200 行门；如需拆分按 follow-up issue 跟踪）。
+- 拆分后行数（`wc -l feedkicker/*.py`，2026-09-14 实测）：全部 ≤200；最大 feishu_card.py 195；config.py 199 → #171 拆分为 config.py 138 + config_models.py 80（原先 1 行之差逼近 200 行门）。
+- **config 拆分（#171）**：`config_models.py` 承载 `PROJECT_ROOT`/`DEFAULT_DB_PATH`/`VALID_ENVS` 与全部 dataclass（`Config.db_path` 默认值一并迁入，`config` 单向依赖 `config_models`，无环）；`config.py` 以 `from feedkicker.config_models import X as X` 全量 re-export，`db_path_for`/`config_path_for`/`load_config` 仍定义于 `config.py`，故 conftest 对 `config.config_path_for` 与调用方对 `feedkicker.config.load_config` 的 patch 目标不变。
 
 ### 21.3 质量门配置
 
