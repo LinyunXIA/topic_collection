@@ -400,7 +400,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 
 ### 注意 / 坑
 
-- **默认 dry-run**：真实写入必须显式 `--apply`；重复运行按 **资讯链接 OR 话题名称** 双键去重跳过（幂等）——话题名经 NFKC 归一；链接归一 = **去 markdown 包裹 + 拆行 + 去 tracking 参数**（表内值常是 markdown 包裹且带 `utm_*` 的换行拼接串，故先取 inner/按行拆，再 `canonicalize` 去 fragment/host 大小写后剥 tracking 参数，有意义 query 按名排序保留）；仅两者皆无命中才写。链接键兜底 LLM 命名非确定性（同一新闻重跑可能得到不同话题名）。
+- **默认 dry-run**：真实写入必须显式 `--apply`；重复运行按 **资讯链接 OR 话题名称** 双键去重跳过（幂等）——话题名经 NFKC 归一；链接归一 = **去 markdown 包裹 + 拆行 + 去 tracking 参数**（表内值常是 markdown 包裹且带 `utm_*` 的换行拼接串，故先取 markdown 链接目标（target）URL/按行拆，再 `canonicalize` 去 fragment/host 大小写后剥 tracking 参数，有意义 query 按名排序保留）；仅两者皆无命中才写。链接键兜底 LLM 命名非确定性（同一新闻重跑可能得到不同话题名）。
 - `讨论状态` / `提取工具` 均为单选 select，按 lark-cli select CellValue 协议**一律写单元素数组**：`["未讨论"]` / `["MMax"]`（select CellValue 恒为数组，`multiple=false` 时也须数组；写字符串会被服务端拒）；取值须为**表内已有选项**（`讨论状态`：`未讨论`/`已选题`/`不选择`/`待继续评估`；`提取工具`：`MMax`/`DS`），写表外新值被拒 `800030005 Provide an existing option value`；不再读字段元数据判形态。
 - 时间窗 `COALESCE(published_at, first_seen) >= now − N 天`，边界含当天；仅 RSS 行（salon 占位行 `ppt_synced_at` 非空被排除）。
 - 单批 LLM 调用失败（超时/429/529/业务可重试码）重试 1 次（总 HTTP ≤2/批，单层重试）后跳过并汇总 WARNING，不阻断其余批；模型合法返回空话题列表计 `empty_batches` 不计失败，单条非法 topic 丢弃该条不丢整批；`--max-calls` 供联调限次。

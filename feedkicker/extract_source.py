@@ -8,6 +8,8 @@ from typing import Any
 
 _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
+MAX_SINCE_DAYS = 3650
+
 _COLUMNS = ("feed_id", "entry_key", "title", "url", "description", "published_at", "first_seen")
 
 
@@ -28,10 +30,11 @@ def select_source(
     时间窗用 `COALESCE(published_at, first_seen) >= cutoff`：published_at 优先、
     为空回退 first_seen，边界含当天（>=）。占位行必有 ppt_synced_at（#196），
     故 `ppt_synced_at IS NULL` 即「仅 RSS 行」。limit 为 None/<=0 时不限制。
-    since_days < 1 直接 raise（CLI 已有校验，此处纵深兜底，PRV-5）。
+    since_days 超出 1..MAX_SINCE_DAYS 直接 raise（CLI 已有校验，此处纵深兜底）：
+    极大 N 会让 `now - timedelta(days=N)` 抛 OverflowError，须明确报错而非 traceback（#269）。
     """
-    if since_days < 1:
-        raise ValueError(f"since_days 必须 >= 1: {since_days}")
+    if since_days < 1 or since_days > MAX_SINCE_DAYS:
+        raise ValueError(f"since_days 必须在 1..{MAX_SINCE_DAYS}: {since_days}")
     sql = (
         "SELECT feed_id, entry_key, title, url, description, published_at, first_seen"
         " FROM articles WHERE ppt_synced_at IS NULL"

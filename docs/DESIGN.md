@@ -632,7 +632,7 @@ salon:
   table_id: "<salon-table-id>"
   wiki_space_id: "<wiki-space>"
   wiki_parent_token: "<wiki-parent>"
-  trigger_weekday: 4        # 0=周日 … 5=周五，默认 4
+  trigger_weekday: 4        # 仅记录用途；调度以 launchd Weekday=5 为准
   trigger_hour: 10
   trigger_minute: 0
 minimax:
@@ -668,7 +668,7 @@ wiki:
 </dict></plist>
 ```
 
-- 注意：launchd `Weekday` 为 1..7（1=周日 … 5=周五），与 `config.salon.trigger_weekday`（0=周日）相差 1；文档以 launchd 实际值 `Weekday=5` 为准，代码内 trigger_* 仅作可配置记录与后续动态生成预留
+- 注意：调度以 launchd 实际值 `Weekday=5`（10:00）为准；代码内 `trigger_weekday`/`trigger_hour`/`trigger_minute` 仅作可配置记录与后续动态生成预留，不参与实际调度
 - 加载/校验：`launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.feedkicker.salon.plist`；`launchctl print gui/$UID/com.feedkicker.salon` 应含 `Weekday 5 10:00`
 - 日志：`logs/salon.log`（与 `push.log` 分流）；手动：`python -m feedkicker.salon_flow --dry-run --env test` 打印双大纲 JSON + wiki_url stub 不写库
 
@@ -700,7 +700,7 @@ wiki:
 
 - 截止时点（统一上海日界，#181）：`cutoff_date_shanghai(days)` = 上海时区 `now - days` 的 `%Y-%m-%d` 日期串；sqlite 侧 `cutoff_iso(days)` 取该日期 `00:00 Asia/Shanghai` 的 UTC 瞬时 `%Y-%m-%dT%H:%M:%SZ`（字典序可比，先例 `promise_skip_old`）——两库同一截止日，边界当天条目均保留。
 - **sqlite**（`purge_sqlite`）：选 `pushed_at IS NOT NULL AND pushed_at < cutoff`；其中仅 `bitable_synced_at IS NOT NULL`（已在线归档）的行可删，超期未归档只计数 WARNING；dry-run 只计数，apply 才 `DELETE` + commit。salon 占位行 `pushed_at` 为 NULL，天然不匹配。
-- **bitable**（`purge_expired_records`）：`+record-list --json --limit 200 --offset N` 分页拉全表（records 包装 / fields+data 行式双形态兼容，范本 backfill），「推送时间」经 `bitable._cell_str` + `bitable._shanghai_date`（epoch 毫秒/ISO/纯日期兼容；「推送时间」为空时回退「归档日期」，#198）归一成上海日期串；dev/test 共享 Base 时请求带出「环境」字段并**仅删除 `环境 == env_name` 的行**（prod/None 全表不过滤，#208），**客户端过滤** `d < cutoff_date`（字典序；截止当天的记录保留，保守方向）；apply 按 200/批 `+record-delete --json '{"record_id_list":[...]}' --yes`，批失败即终止。返回 `(deleted, expired, scanned)`。
+- **bitable**（`purge_expired_records_outcome`）：`+record-list --json --limit 200 --offset N` 分页拉全表（records 包装 / fields+data 行式双形态兼容，范本 backfill），「推送时间」经 `bitable._cell_str` + `bitable._shanghai_date`（epoch 毫秒/ISO/纯日期兼容；「推送时间」为空时回退「归档日期」，#198）归一成上海日期串；dev/test 共享 Base 时请求带出「环境」字段并**仅删除 `环境 == env_name` 的行**（prod/None 全表不过滤，#208），**客户端过滤** `d < cutoff_date`（字典序；截止当天的记录保留，保守方向）；apply 按 200/批 `+record-delete --json '{"record_id_list":[...]}' --yes`，批失败即终止。返回 `(deleted, expired, scanned)`。
 - **安全条件**：bitable 段仅在 `enabled` 且 app_token/table_id 非空且不含 `<`（占位守卫）时执行；**绝不调 `ensure_initialized`**（防误建 Base）；只操作 `cfg.bitable` 资讯归档 Base，不碰 salon 选题 Base；首屏 list 失败返回 `(0,0,0)` 零删除；全量分页读完（`complete`）且删除批全部成功才写 meta `purge_last_run_at`，中途分页失败仍删已扫到的过期行但不写 meta（#180）。bitable 运维 CLI（`python -m feedkicker.bitable`）已落地同口径守卫：**非 `--init`/`--reseed`（含无 flag 与仅 `--backfill`/`--fix-archive-date`）且 token 未就绪/占位 → log.error + rc 2，不自动建 Base**；`--init`/`--reseed` 才允许创建/修复；`--reseed`/`--backfill`/`--fix-archive-date` 互斥（#224/#229）；`--reseed` 先 reset 同步标记再清表，dev/test 按「环境」列**仅清本环境行**、prod 全清，任一批失败即 rc 2 中止（#218）；dev/test 下「环境」为空或不匹配的行保守保留不删但记 WARNING（#235）。
 
 ### 20.3 调度（launchd，每月 1 号 dry-run 巡检）
@@ -937,7 +937,7 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 
 ---
 
-## 25. v0.8 — 资讯→选题 LLM 提炼（F28–F32，#247）
+## 25. v0.8 — 资讯→选题 LLM 提炼（F28–F37，#247）
 
 > 编号说明：登记提交时 §24 已被「第四轮审计修复」占用，故 v0.8 设计落在 §25。
 
@@ -961,7 +961,7 @@ select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(p
 | `extract_source.py` | sqlite 选源 | `select_source(conn, since_days, limit=None, now=None)` |
 | `extract_llm.py` | provider 抽象 + 提示词/解析 + 批量提炼编排 | `call_llm(cfg, prompt) -> str`、`build_batch_prompt(template, items)`、`parse_topics(raw) -> (list[dict], dropped)`、`merge_topics(topics) -> list[dict]`、`refine_batches(ex, template, batches, max_calls) -> (topics, calls, failed, empty)`、`resolve_provider(cfg, name=None)` |
 | `extract_write.py` | 字段映射与写入 | `existing_index(app_token, table_id) -> tuple[set[str], set[str]]`、`build_record(topic, provider_label, run_date, status="未讨论") -> dict`、`write_topics(...) -> tuple[int, int]` |
-| `extract_flow.py` | 编排 + CLI | `run(cfg, conn, *, apply, since_days, limit, batch_size, max_calls) -> int`、`main(argv) -> int` |
+| `extract_flow.py` | 编排 + CLI | `run(cfg, conn, *, apply, since_days=None, limit=None, batch_size=None, max_calls=None, provider=None) -> int`、`main(argv) -> int` |
 
 - provider 注册表（`extract_llm.PROVIDERS`）：`minimax`（base_url `https://api.minimaxi.com/v1`、model `MiniMax-M3`、key env `MiniMax_Key`/`MINIMAX_API_KEY`、tool_label `MMax`）、`deepseek`（base_url `https://api.deepseek.com/v1`、model `deepseek-chat`、key env `DEEPSEEK_API_KEY`、tool_label `DS`）；`tool_label` 必须是 salon 表 `提取工具` select 字段的**表内已有选项**（`MMax`/`DS`，`飞书` 留给人工路径）；yaml `providers.<name>` 非空字段覆盖注册表默认。
 - 调用形态统一 OpenAI 兼容 `POST {base_url}/chat/completions`，取 `choices[0].message.content` 原始文本返回；`_post_chat` **单次尝试**：超时/HTTP 429/529/业务可重试码（1002/1004/1039）抛可重试 `RuntimeError`，重试仅由 `refine_batches` 外层做 1 次（总 HTTP ≤2/批，单层重试，PRV-8）；缺 key/占位 key 抛 `RuntimeError` 且**不发起 HTTP**。
@@ -1003,7 +1003,7 @@ extract:
 ### 25.5 去重
 
 - 写入前 `existing_index` 分页拉目标表 **`话题名称` + `资讯链接`** 两列（同页一次拉取），返回 `(归一话题名集合, 归一链接集合)`；名称按 `topic_key`（NFKC+strip+casefold）、链接按 `link_keys` 归一（`_page_guard` 防死循环；响应兼容 records 与 fields+data 两形态，容器异常 raise 中止写入而非静默空集）。
-- **链接归一 = 去 markdown 包裹 + 拆行 + 去 tracking 参数**（`link_keys`，`existing_index` 与 `write_topics` 共用）：表内 `资讯链接` 真实值常是 **markdown 链接包裹 + 换行拼接** 的单字符串且带 tracking 参数（如 `[<url1?utm_source=rss>\n<url2>](<url1?utm_source=rss>\n<url2>)`），而 LLM 输出的是不含 utm 的裸 URL 列表——旧 `canonicalize(整串)` 把 `[...](...)`+换行+utm 当一个 URL → 永不命中（真跑 `skipped=0` 已证）。故先取 markdown 链接 inner、按空白（含换行）拆成多个 URL，再对每个 URL `canonicalize` 后剥 tracking 参数（键名小写以 `utm_` 开头或属 `{spm,from,fbclid,gclid,ref,ref_src,source,mc_cid,mc_eid}`），其余 query 按名排序重建；无法解析则原样 canonicalize。
+- **链接归一 = 去 markdown 包裹 + 拆行 + 去 tracking 参数**（`link_keys`，`existing_index` 与 `write_topics` 共用）：表内 `资讯链接` 真实值常是 **markdown 链接包裹 + 换行拼接** 的单字符串且带 tracking 参数（如 `[<url1?utm_source=rss>\n<url2>](<url1?utm_source=rss>\n<url2>)`），而 LLM 输出的是不含 utm 的裸 URL 列表——旧 `canonicalize(整串)` 把 `[...](...)`+换行+utm 当一个 URL → 永不命中（真跑 `skipped=0` 已证）。故先取 markdown 链接目标（target）URL、按空白（含换行）拆成多个 URL，再对每个 URL `canonicalize` 后剥 tracking 参数（键名小写以 `utm_` 开头或属 `{spm,from,fbclid,gclid,ref,ref_src,source,mc_cid,mc_eid}`），其余 query 按名排序重建；无法解析则原样 canonicalize。
 - **按 资讯链接 OR 话题名称 双键去重**：命中任一既有键（或本批已出现）→ 跳过；两者皆无才写，重复运行不新增重复行（幂等）。动机：LLM 命名非确定性——同一新闻重跑会产出不同「话题名称」，仅按名去重会漏判并重复落表（真跑已证）；链接键是跨命名的稳定兜底，且 `link_keys` 保证 `#frag`/host 大小写/tracking 参数等形态差异不逃逸。`--update` 刷新既有行本期不做。
 - **去重规划抽为 `plan_writes(topics, provider_label, run_date, existing_names, existing_links)` → `(将写入记录, 将跳过记录)`**：`write_topics` 真写与 dry-run 打印**共用同一规划**，保证清单标注、summary `pending`/`skipped` 与实际写入三者同源一致（F35）。
 - `讨论状态` / `提取工具` 均为单选 select，按 lark-cli select CellValue 协议**一律写单元素数组**：`["未讨论"]` / `[provider_label]`（`base +record-batch-create --help` Tips 明确 select CellValue 恒为数组，`multiple=false` 时也须数组；写字符串会被服务端拒）。取值须为表内已有选项（`讨论状态`：`未讨论`/`已选题`/`不选择`/`待继续评估`；`提取工具`：`MMax`/`DS`），写表外新值被拒 `800030005 Provide an existing option value`（真跑已证）。不再读 `+field-list` 字段元数据判形态（真跑已证伪，PRV-1）。
@@ -1035,3 +1035,8 @@ tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-s
 - [x] F30 `prompts/extract.md` + `build_batch_prompt`/`parse_topics`/`merge_topics`
 - [x] F31 `extract_write.py`：字段映射 + 「话题名称」去重 + ≤200/批；dry-run 零写
 - [x] F32 `tc-extract` CLI + CLI.md/OPS.md 文档 + 测试（全 mock 离线）
+- [x] F33 `prompts/extract.md`：过滤仅版本/发布类公告，`可使用工具` 不得是模型名/版本号（#255/#256）
+- [x] F34 `prompts/extract.md`：增加「现场可演示」过滤（排除复杂/专有环境等不可演示工具，#257）
+- [x] F35 `refine_batches` 解析失败重试 1 次 + dry-run 清单 `[将写入]`/`[已存在跳过]` 标注（#258）
+- [x] F36 `prompts/extract.md`：`可使用工具` 不得为评测基准/榜单/数据集（#259）
+- [x] F37 `tc-extract --provider {minimax,deepseek}` 单次运行切换 provider（#261）

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
 
 import pytest
@@ -50,10 +51,76 @@ def _cfg(monkeypatch):
     cfg.minimax.api_key = "sk-test"
     cfg.minimax.model = "MiniMax-M3"
     cfg.minimax.base_url = "https://api.minimaxi.com"
+    cfg.salon.enabled = True
     cfg.feishu_webhook = "https://hook.test"
     cfg.http.timeout_seconds = 20
     cfg.http.user_agent = "test"
     return cfg
+
+
+@pytest.mark.parametrize("bad", [{}, {"slides": None}, {"slides": []}, {"slides": [1, "x"]}])
+def test_slides_of_empty_outline_raises(bad):
+    """#263：slides 缺失/空/无有效页时 raise，而非返回 [] 让空壳 Wiki 照建并永久归档。"""
+    from feedkicker import salon_md
+
+    with pytest.raises(ValueError):
+        salon_md._slides_of(bad)
+
+
+def test_slides_of_keeps_valid_pages():
+    from feedkicker import salon_md
+
+    assert salon_md._slides_of({"slides": [{"heading": "h"}, "坏"]}) == [{"heading": "h"}]
+
+
+@pytest.mark.parametrize("bad_outline", [{}, {"title": "空壳"}, {"title": "x", "slides": []}])
+def test_salon_flow_empty_outline_skips_without_mark(monkeypatch, caplog, bad_outline):
+    """#263：空壳大纲逐题 skip（WARNING），绝不建 Wiki、绝不 mark_topic_archived。"""
+    from feedkicker import salon_flow as sf
+
+    cfg = _cfg(monkeypatch)
+    conn = store.connect(":memory:")
+    monkeypatch.setattr(sf, "fetch_selected_topics", lambda *a, **kw: [
+        {"record_id": "recEmpty", "fields": {"讨论状态": ["已选题"], "话题名称": "空壳话题"}},
+    ])
+    monkeypatch.setattr(sf.minimax, "gen_outline", lambda *a, **kw: bad_outline)
+    wiki_calls: list[str] = []
+    monkeypatch.setattr(
+        sf.wiki,
+        "create_wiki_doc_from_md",
+        lambda *a, **kw: (wiki_calls.append(a[3]), "https://x/wiki/none")[1],
+    )
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
+
+    with caplog.at_level(logging.WARNING, logger="feedkicker.salon_flow"):
+        rc = sf.run(cfg, conn, dry_run=False)
+
+    assert rc == 0
+    assert wiki_calls == []
+    assert store.get_ppt_last_status(conn, "recEmpty") == ""
+    assert conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recEmpty'").fetchone() is None
+    assert any("大纲合并失败" in r.getMessage() for r in caplog.records)
+    conn.close()
+
+
+def test_salon_flow_disabled_skips_without_fetch(monkeypatch, caplog):
+    """#280：salon.enabled=false 必须 WARNING 并跳过，不再「设 false 却照样跑」。"""
+    from feedkicker import salon_flow as sf
+
+    cfg = _cfg(monkeypatch)
+    cfg.salon.enabled = False
+    conn = store.connect(":memory:")
+
+    def boom(*a, **kw):
+        raise AssertionError("disabled 时不得拉取/生成/建 Wiki")
+
+    monkeypatch.setattr(sf, "fetch_selected_topics", boom)
+    monkeypatch.setattr(sf.minimax, "gen_outline", boom)
+
+    with caplog.at_level(logging.WARNING, logger="feedkicker.salon_flow"):
+        assert sf.run(cfg, conn, dry_run=False) == 0
+    assert any("salon.enabled" in r.getMessage() for r in caplog.records)
+    conn.close()
 
 
 def test_salon_flow_dry_run_no_mark(monkeypatch, capsys):

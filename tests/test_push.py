@@ -467,6 +467,24 @@ def test_run_dry_run_prints_not_sends(monkeypatch, capsys):
     conn.close()
 
 
+def test_dry_run_writes_first_run_marker_with_pending(monkeypatch):
+    """#272：有 pending 的 dry-run 也须落 first_run_at（对齐无 pending 分支与文档）。"""
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    entries = [_norm("dry", "https://e.com/dry")]
+    monkeypatch.setattr(push, "fetch_feed", lambda url, http: entries)
+    monkeypatch.setattr(
+        feishu, "send", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run 不发送"))
+    )
+
+    assert push.run(cfg, conn, dry_run=True) == 0
+    assert not store.is_first_run(conn, "F")
+    row = conn.execute("SELECT first_run_at FROM feeds WHERE feed_id = 'F'").fetchone()
+    assert row is not None and row[0]
+    assert len(store.select_pending(conn)) == 1
+    conn.close()
+
+
 def test_run_one_source_fails_others_push(monkeypatch):
     def fake_fetch(url, http):
         if "bad" in url:
@@ -743,6 +761,59 @@ def test_push_detail_url_after_auto_created_base(monkeypatch):
     url = actions[0]["actions"][0]["url"]
     assert "appAutoA1" in url
     assert not url.endswith("/base/")
+    conn.close()
+
+
+def test_push_detail_url_recomputed_when_sync_writes_zero(monkeypatch):
+    """#271：auto-resolve 后即便本轮 0 写入，详情按钮也要带解析出的 token。"""
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.bitable.enabled = True
+    cfg.bitable.app_token = ""
+    cfg.bitable.table_id = ""
+    cfg.bitable.url = ""
+    entries = [_norm("z item", "https://e.com/z1")]
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+
+    def fake_sync(bt, env, c, now_iso=None):
+        bt.app_token = "appAutoZero"
+        bt.table_id = "tblAutoZero"
+        return 0
+
+    monkeypatch.setattr(push.bitable_records, "sync_env", fake_sync)
+    sent = []
+    monkeypatch.setattr(feishu, "send", lambda p, *a, **kw: sent.append(p) or True)
+
+    rc = push.run(cfg, conn)
+    assert rc == 0
+    actions = [el for el in sent[0]["card"]["elements"] if el.get("tag") == "action"]
+    assert actions and "appAutoZero" in actions[0]["actions"][0]["url"]
+    conn.close()
+
+
+def test_push_detail_url_none_when_no_token_or_url(monkeypatch):
+    """N2：enabled 但 token/url 均空且 sync_env 返回 0 时，detail_url 不得退化成 `…/base/`。"""
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.bitable.enabled = True
+    cfg.bitable.app_token = ""
+    cfg.bitable.table_id = ""
+    cfg.bitable.url = ""
+    entries = [_norm("z item", "https://e.com/z1")]
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    monkeypatch.setattr(push.bitable_records, "sync_env", lambda bt, env, c, now_iso=None: 0)
+    seen: dict = {}
+    real_build = feishu.build_card
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real_build(*a, **kw)
+
+    monkeypatch.setattr(push.feishu, "build_card", spy)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
+
+    assert push.run(cfg, conn) == 0
+    assert seen["detail_url"] is None
     conn.close()
 
 
@@ -1200,6 +1271,25 @@ def test_existing_links_records_shape(monkeypatch):
     ]}
     monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: FakeProc(
         0, stdout=json.dumps({"data": payload}, ensure_ascii=False)))
+    assert bitable.existing_links("app", "tbl") == {"https://e.com/a", "https://e.com/b?q=1"}
+
+
+def test_existing_links_fields_data_dict_rows(monkeypatch):
+    """#275：fields+data 的字典行形态不得 KeyError(0)，须按「链接」键取值。"""
+    from feedkicker import bitable
+
+    payload = {
+        "fields": ["标题", "链接"],
+        "data": [
+            {"标题": "a", "链接": {"link": "https://E.com/a#frag"}},
+            {"标题": "b", "链接": "https://e.com/b?q=1"},
+        ],
+        "record_ids": ["recA", "recB"],
+    }
+    monkeypatch.setattr(
+        bitable_lark, "_run",
+        lambda *a, **kw: FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False)),
+    )
     assert bitable.existing_links("app", "tbl") == {"https://e.com/a", "https://e.com/b?q=1"}
 
 

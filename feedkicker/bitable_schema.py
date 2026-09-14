@@ -38,6 +38,7 @@ def base_url(app_token: str) -> str:
 
 
 def find_base_by_title(title: str) -> dict[str, Any] | None:
+    """按标题**精确**匹配既有 Base（prod 标题是 dev-test 标题前缀，子串匹配会串 Base，#264）。"""
     proc = bitable_lark._run(["base", "+title-resolve", "--title", title[:30]])
     if not bitable_lark._ok(proc):
         return None
@@ -50,7 +51,7 @@ def find_base_by_title(title: str) -> dict[str, Any] | None:
         if isinstance(cand, list):
             for b in cand:
                 tok = b.get("base_token") or b.get("token") or ""
-                if tok and (b.get("name") == title or title in str(b.get("title", ""))):
+                if tok and (b.get("name") == title or str(b.get("title", "")) == title):
                     return {"app_token": tok, "url": b.get("url") or base_url(tok)}
     if isinstance(d.get("token"), str) and d["token"]:
         return {"app_token": d["token"], "url": d.get("url") or base_url(d["token"])}
@@ -116,15 +117,22 @@ def create_table(app_token: str, app_env: str = "prod") -> str:
     return table_id
 
 
+def _configured(value: Any) -> bool:
+    """真值且非 `<...>` 占位才视为已配置（`.example` 默认态占位不得当真 token 使用，#262）。"""
+    return bool(value) and "<" not in str(value)
+
+
 def ensure_initialized(bt: Any, app_env: str = "prod") -> dict[str, Any]:
     """解析/创建 Base 与数据表，并把解析结果回写到空配置字段（A1）。
 
     push 在 sync_env 后按 bt.url/bt.app_token 重算详情按钮链接；
     若不回写，自动解析出的 token 会丢在局部变量里，卡片退化成 …/base/。
+    占位 token（`<...>`）按「未配置」处理：若用真值判断，`.example` 默认占位会被当成既有
+     Base 直接跳过解析，后续 lark 调用全业务失败却被静默吞掉（#262）。
     """
     title = BASE_TITLES.get(app_env, BASE_TITLE_DEFAULT)
-    app_token = bt.app_token
-    table_id = bt.table_id
+    app_token = bt.app_token if _configured(bt.app_token) else ""
+    table_id = bt.table_id if _configured(bt.table_id) else ""
     url = bt.url or (base_url(app_token) if app_token else "")
     if not app_token:
         found = find_base_by_title(title) or create_base(title, app_env)
@@ -132,9 +140,9 @@ def ensure_initialized(bt: Any, app_env: str = "prod") -> dict[str, Any]:
         url = found.get("url") or base_url(app_token)
     if not table_id:
         table_id = get_table_id(app_token) or create_table(app_token, app_env)
-    if not bt.app_token:
+    if not _configured(bt.app_token):
         bt.app_token = app_token
-    if not bt.table_id:
+    if not _configured(bt.table_id):
         bt.table_id = table_id
     if not bt.url:
         bt.url = url

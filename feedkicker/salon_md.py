@@ -29,15 +29,20 @@ def record_status(rec: dict[str, Any]) -> str:
 
 
 def _slides_of(outline: Any) -> list[dict[str, Any]]:
-    """slides 归一：缺省/None → 空；非 list 显式 raise（由 salon_flow 逐题捕获跳过）；非 dict 项跳过。"""
+    """slides 归一：非 dict / slides 缺失或非列表 / 无有效页一律 raise（salon_flow 逐题捕获跳过）。
+
+    不能把空壳大纲归一为 []：`{}`/缺 slides 会让调用方照建空 Wiki 并 mark_topic_archived，
+    该题被永久归档为「已选题」、不再生成，卡片却宣称成功（#263）。非 dict 页项跳过。
+    """
     if not isinstance(outline, dict):
-        return []
+        raise ValueError(f"大纲非对象（{type(outline).__name__}），无法渲染")
     slides = outline.get("slides")
-    if slides is None:
-        return []
     if not isinstance(slides, list):
-        raise ValueError(f"大纲 slides 非列表（{type(slides).__name__}），无法渲染")
-    return [s for s in slides if isinstance(s, dict)]
+        raise ValueError(f"大纲缺 slides 或非列表（{type(slides).__name__}），无法渲染")
+    valid = [s for s in slides if isinstance(s, dict)]
+    if not valid:
+        raise ValueError("大纲为空或缺 slides（需 ≥1 页），无法渲染")
+    return valid
 
 
 def outline_to_md(outline: dict[str, Any], label: str) -> str:

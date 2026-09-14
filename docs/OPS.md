@@ -78,18 +78,20 @@
 
 ## 2. 凭据与环境变量
 
-### 2.1 环境变量（覆盖 yaml，`config.py`）
+### 2.1 环境变量（覆盖 yaml，`config.py`；`extract.providers.*.api_key` 例外见下注）
 
 | 变量 | 覆盖 | 说明 |
 |---|---|---|
 | `FEISHU_WEBHOOK` | `feishu_webhook` | 凭据可不落文件 |
 | `FEISHU_SECRET` | `feishu_secret` | 签名密钥 |
-| `MiniMax_Key`（或 `MINIMAX_API_KEY`） | `minimax.api_key`、`extract.providers.minimax.api_key` | 大纲生成 / 选题提炼；占位值（以 `<` 开头）会被清空 |
-| `DEEPSEEK_API_KEY` | `extract.providers.deepseek.api_key` | 选题提炼（DeepSeek provider）；占位值清空 |
+| `MiniMax_Key`（或 `MINIMAX_API_KEY`） | `minimax.api_key`（**env 优先覆盖 yaml**）；`extract.providers.minimax.api_key`（**yaml 非空则 yaml 优先**，仅 yaml 空/占位时回退 env） | 大纲生成 / 选题提炼；占位值（以 `<` 开头）会被清空 |
+| `DEEPSEEK_API_KEY` | `extract.providers.deepseek.api_key`（同 extract 优先级：**yaml 非空则 yaml 优先**） | 选题提炼（DeepSeek provider）；占位值清空 |
 | `TC_SALON_TOKEN` | `salon.app_token` | 沙龙选题 Base |
 | `TC_FEISHU_HOST` | —（`feishu_host.feishu_host()`） | 飞书租户域名，默认 `web91vfvm7.feishu.cn`；换租户/测试注入 |
 | `TC_APP_ENV` | 运行环境 | `dev\|test\|prod`，默认 `prod` |
 | `TC_DB` | db 路径 | 显式指定时高于环境推导 |
+
+> **优先级差异（实测，勿一概而论「env 覆盖 yaml」）**：legacy `minimax.api_key` 在 `config.load_config` 读 yaml 之后用 env 覆盖（**env 优先**）；而 `extract.providers.<name>.api_key` 由 `config._providers_conf` 在 yaml 为空/占位时才回退 env（**yaml 非空则 yaml 优先，env 不生效**）。以 `docs/CLI.md`（provider key 段）与 DESIGN §25.3 为准。
 
 ### 2.2 凭据持有规则
 

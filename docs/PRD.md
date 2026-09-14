@@ -37,9 +37,9 @@ v2 **重开 = 瘦身**。真正的起点比 v1 小一个数量级：**不是一�
 | Phase 2 | v0.3–v0.5 | F11–F16：多维表格归档（跨源去重、双分组视图） | 已交付 |
 | Phase 3 | v0.6–v0.7 | F17–F22：AI 沙龙每周大纲（salon）+ 365 天滚动保留（purge） | 已交付 |
 | Phase 3+ | v0.7+ | F23–F27：Wiki 首页自动索引 + 项目文档三件套（F24–F27 = README/CLI/OPS/一致性自检） | 已交付 |
-| Phase 4 | v0.8 | F28–F32：资讯→选题 LLM 提炼 | 进行中 |
+| Phase 4 | v0.8 | F28–F32：资讯→选题 LLM 提炼（含 F33–F37 增强） | 已交付 |
 
-**当前所处阶段 = Phase 4（v0.8，F28–F32 开发中）**；后续新增需求先落本映射，再落 §13 起的版本增量小节。
+**当前所处阶段 = Phase 4（v0.8，F28–F32 已交付；F33–F37 增强见 §21 与 DESIGN §25）**；后续新增需求先落本映射，再落 §13 起的版本增量小节。
 
 ---
 
@@ -339,7 +339,7 @@ feeds:
 | F20 | Wiki 归档 | 单话题单 Wiki doc（含双大纲 MD 代码块），返回 wiki_url | P0 |
 | F21 | 机器人通知 | 同一 webhook，卡片含双 Wiki 链接，20KB 降级 + strip_actions + SOS 复用 | P1 |
 
-- 配置可配：`config.salon.trigger_weekday/trigger_hour/trigger_minute`（默认 4/10/0 = 周五 10:00），MiniMax Key 走 `MiniMax_Key` 环境变量覆盖
+- 配置可配：`config.salon.trigger_weekday/trigger_hour/trigger_minute`（仅记录用途，调度以 launchd `Weekday=5` 为准），MiniMax Key 走 `MiniMax_Key` 环境变量覆盖
 - 不产 PPTX，不混入 `push.py` 主流程，去重列 `ppt_synced_at`（只生成从未处理过的题目）；`ppt_last_status_{rid}` 的差异分支仅为部分写失败兜底（服务端 filter 只返回「已选题」，生产不会出现非「已选题」值），失败单条 WARNING 不阻断他条
 
 ---
@@ -395,10 +395,10 @@ feeds:
 | # | 特性 | 验收要点 | 优先级 |
 |---|---|---|---|
 | F28 | 数据源与时间窗 | `extract_source.select_source`：`ppt_synced_at IS NULL`（排除 salon 占位行）、`COALESCE(published_at, first_seen) >= cutoff`（cutoff = UTC now − N 天，边界含当天）、时间升序 + `limit` | P1 |
-| F29 | LLM provider 抽象 + `extract:` 配置段 | `ExtractConf`（since_days/batch_size/provider/prompt_file/max_calls）+ `providers` 子段（base_url/model/api_key/tool_label）；`call_llm` 按 `extract.provider` 分派，MiniMax 首发、DeepSeek 预留；缺 key/占位 key 明确报错且**不发起调用** | P1 |
+| F29 | LLM provider 抽象 + `extract:` 配置段 | `ExtractConf`（since_days/batch_size/provider/prompt_file/max_calls）+ `providers` 子段（base_url/model/api_key/tool_label）；`call_llm` 按 `extract.provider` 分派，**MiniMax / DeepSeek 双 provider 均已实现**（`--provider deepseek` 可用，见 F37）；缺 key/占位 key 明确报错且**不发起调用** | P1 |
 | F30 | 批量提炼（提示词 + schema + 整合去重） | `prompts/extract.md`（用户提示词原文 + 输出 JSON schema）；按 `batch_size` 分批，每批一次 LLM 调用；`parse_topics` 容忍 ```json 围栏、非法 JSON/缺字段返回 `[]`（调用方 WARNING 跳过）；同话题多来源 `资讯链接`/`出处来源` 合并去重 | P1 |
-| F31 | 写入选题表（字段映射 + 去重跳过） | `extract_write`：按「话题名称」拉既有集合命中跳过（幂等）；字段 `话题名称`/`可使用工具`/`相关AI原理`=LLM、`资讯链接`/`出处来源`=换行拼接、`提炼日期`=运行日（上海）、`讨论状态=未讨论`、`提取工具`=provider 映射；`+record-batch-create` ≤200/批；dry-run **零写调用** | P1 |
-| F32 | CLI `tc-extract` + 文档/测试 | 默认 `--dry-run`、`--apply` 才写；`--since-days`/`--limit`/`--batch-size`/`--max-calls`/`--env`/`--config`/`--db`；串行 + 单批失败重试 1 次后跳过并汇总 WARNING；`max_calls` 达限停止；rc 2 配置错 / 1 异常 / 0 正常；CLI.md/OPS.md 补条目 | P1 |
+| F31 | 写入选题表（字段映射 + 去重跳过） | `extract_write`：按**「归一话题名 OR 归一资讯链接」双键**拉既有集合命中跳过（幂等）；字段 `话题名称`/`可使用工具`/`相关AI原理`=LLM、`资讯链接`/`出处来源`=换行拼接、`提炼日期`=运行日（上海）、`讨论状态=未讨论`、`提取工具`=provider 映射；`+record-batch-create` ≤200/批；dry-run **零写调用** | P1 |
+| F32 | CLI `tc-extract` + 文档/测试 | 默认 `--dry-run`、`--apply` 才写；`--since-days`/`--limit`/`--batch-size`/`--max-calls`/`--provider {deepseek,minimax}`（默认取 config `extract.provider`，默认 minimax）/`--env`/`--config`/`--db`；串行 + 单批失败重试 1 次后跳过并汇总 WARNING；`max_calls` 达限停止；rc 2 配置错 / 1 异常 / 0 正常；CLI.md/OPS.md 补条目 | P1 |
 
 提示词（用户给定，原文，落 `prompts/extract.md`）：
 
@@ -413,7 +413,7 @@ feeds:
 - 输出契约：JSON `{"topics":[{"话题名称":"","可使用工具":"","相关AI原理":"","资讯链接":[""],"出处来源":[""]}]}`；多源以换行拼接。
 - **窗口**：默认 7 天；`published_at` 优先、为空回退 `first_seen`；仅 RSS 行（`ppt_synced_at IS NULL`），salon 占位行绝不入选。
 - **批次**：`batch_size`（默认 30 条/批）；LLM「先整合去重、再提炼」，无话题即无输出、条数不固定。
-- **去重**：按**「话题名称」**比对目标表，命中跳过（重复运行不产生重复行）。
+- **去重**：按**归一话题名 OR 归一资讯链接双键**比对目标表，命中任一即跳过（重复运行不产生重复行）。
 - **模型**：provider 抽象 + `extract:` 配置选型；key 走 env（`MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`），占位值 `<...>` 清空。
 - **写前确认**：dry-run 清单 + `--apply` 两步；dry-run 不产生任何多维表格写调用。
 - 设计见 DESIGN §25。

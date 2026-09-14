@@ -58,8 +58,12 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     if cfg.bitable.enabled and not dry_run:
         try:
             synced_n = bitable_records.sync_env(cfg.bitable, cfg.app_env, conn, now)
+            detail_url = (
+                (cfg.bitable.url or bitable_schema.base_url(cfg.bitable.app_token))
+                if cfg.bitable.app_token
+                else None
+            )
             if synced_n:
-                detail_url = cfg.bitable.url or bitable_schema.base_url(cfg.bitable.app_token)
                 log.info("多维表格已写入 %d 条", synced_n)
         except Exception as e:  # noqa: BLE001
             log.warning("多维表格同步未完成（不影响推送，保留待重试）: %s", e)
@@ -75,6 +79,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     )
 
     if dry_run:
+        store.update_first_run_all(conn, ok_feed_objs, now)
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         log.info("dry-run：共 %d 条待推，已打印 payload 未发送", len(pending))
         return 0

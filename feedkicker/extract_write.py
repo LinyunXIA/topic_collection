@@ -14,7 +14,7 @@ from feedkicker.topic_records import _extract_records
 
 log = logging.getLogger(__name__)
 
-_MD_LINK = re.compile(r"\[(?P<inner>.*)\]\((?P<target>.*)\)", re.DOTALL)
+_MD_LINK = re.compile(r"\[(?P<inner>.*?)\]\((?P<target>.*?)\)", re.DOTALL)
 _TRACKING = {"spm", "from", "fbclid", "gclid", "ref", "ref_src", "source", "mc_cid", "mc_eid"}
 
 
@@ -42,13 +42,14 @@ def link_keys(raw: Any) -> set[str]:
     """把表内/候选的 `资讯链接` 原值归一为去重键集合（`existing_index`/`plan_writes` 共用）。
 
     真跑表内值常是 markdown 包裹 + 换行拼接 + tracking 参数的单字符串（旧 `canonicalize(str)`
-    永不命中，skipped=0 已证）：取 markdown inner → 按空白拆多个 URL → `_link_key` 去
-    tracking（`utm_*` 与常见广告参数）并保留有意义 query；详见 DESIGN §25.5。
+    永不命中，skipped=0 已证）：**只取 markdown 目标 URL**（`[标签](url)` 不得把标签当 URL，
+    相邻多链接各取各，#270）→ 按空白拆多个 URL → `_link_key` 去 tracking（`utm_*` 与常见
+    广告参数）并保留有意义 query；非 markdown 原值按空白直接拆；详见 DESIGN §25.5。
     """
     keys: set[str] = set()
     for item in _str_list(raw):
-        m = _MD_LINK.search(item)
-        text = m.group("inner") if m else item
+        targets = [m.group("target") for m in _MD_LINK.finditer(item)]
+        text = "\n".join(targets) if targets else item
         for url in text.split():
             if key := _link_key(url):
                 keys.add(key)
@@ -59,8 +60,9 @@ def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
     """分页拉目标表已有索引 `(归一话题名集合, 归一链接集合)`；拉取失败/容器异常 raise（不静默空集）。
 
     双键之因：LLM 命名非确定性，仅按名去重会漏判重复落表（真跑已证），并列按 `资讯链接`
-    兜底。响应兼容 records/items 与 fields+data 行式；fields+data 缺「话题名称」列 → raise
-    （不得静默空集，PRV-4）；翻页走 offset + 页指纹守卫（#245）。
+    兜底。响应兼容 records/items 与 fields+data 行式；两者皆非（如 rc0 的 `{}`）→ raise
+    （不可识别响应不得静默空集，#265）；fields+data 缺「话题名称」列 → raise（PRV-4）；
+    翻页走 offset + 页指纹守卫（#245）。
     """
     names: set[str] = set()
     links: set[str] = set()
@@ -88,12 +90,11 @@ def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
             raise RuntimeError(f"选题表响应不是 JSON 对象: {str(data)[:200]}")
         prev_fp = bitable_lark._page_guard(prev_fp, data)
         fields_raw = data.get("fields")
-        if (
-            not (data.get("records") or data.get("items"))
-            and isinstance(fields_raw, list)
-            and fields_raw
-            and "话题名称" not in fields_raw
-        ):
+        fields_list = isinstance(fields_raw, list)
+        has_rec = isinstance(data.get("records"), list) or isinstance(data.get("items"), list)
+        if not (has_rec or (fields_list and isinstance(data.get("data"), list))):
+            raise RuntimeError(f"选题表响应无法识别（无 records/items 或 fields+data 容器），中止写入以避免重复行: {str(data)[:200]}")
+        if not (data.get("records") or data.get("items")) and fields_list and fields_raw and "话题名称" not in fields_raw:
             raise RuntimeError("选题表响应为 fields+data 形态但缺「话题名称」列，中止写入以避免重复行")
         records = _extract_records(data)
         for rec in records:
@@ -167,9 +168,8 @@ def write_topics(
     topics: list[dict[str, Any]],
     provider_label: str,
     run_date: str,
-    dry_run: bool = False,
 ) -> tuple[int, int]:
-    """按双键查重跳过（幂等）；dry_run 仅返回 (待写数, 跳过数) 零写调用；规划复用 `plan_writes`。
+    """按双键查重跳过（幂等）后真写；dry-run 由 `extract_flow` 走 `existing_index`+`plan_writes`（#283）。
 
     真写走 +record-batch-create ≤200/批；块失败 WARNING 后继续，返回实际成功数。
     """
@@ -177,8 +177,6 @@ def write_topics(
         raise RuntimeError("写入选题表需要 app_token 与 table_id（salon 配置段）")
     existing_names, existing_links = existing_index(app_token, table_id)
     picked, skipped = plan_writes(topics, provider_label, run_date, existing_names, existing_links)
-    if dry_run:
-        return len(picked), len(skipped)
     written = 0
     for i in range(0, len(picked), bitable_lark._CHUNK):
         chunk = picked[i : i + bitable_lark._CHUNK]

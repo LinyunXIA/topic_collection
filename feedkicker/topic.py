@@ -14,8 +14,15 @@ FILTER_JSON = json.dumps({"logic": "and", "conditions": [["讨论状态", "inter
 
 
 def _has_more_of(data: dict[str, Any]) -> bool | None:
-    raw = data.get("has_more") if "has_more" in data else data.get("hasMore")
-    return None if raw is None else (raw.strip().lower() == "true" if isinstance(raw, str) else bool(raw))
+    """has_more 归一：字符串真值含 "true"/"1"；`has_more: null` 回退看 `hasMore`（#277）。"""
+    raw = data.get("has_more")
+    if raw is None:
+        raw = data.get("hasMore")
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return raw.strip().lower() in ("true", "1")
+    return bool(raw)
 
 
 def _positive_int(value: str) -> int:
@@ -79,16 +86,20 @@ def fetch_selected_topics(
         if has_more is not None:
             if not has_more:
                 break
-            offset += limit
+            offset += len(chunk)
             continue
         if len(chunk) < limit:
             break
-        offset += limit
+        offset += len(chunk)
     return all_records
 
 
 def fetch_topic_fields(app_token: str, table_id: str) -> list[dict[str, Any]]:
-    """列出表字段并校验 讨论状态；select/singleSelect/multiSelect 均视为合法（intersects 已验证可用）。"""
+    """列出表字段并校验 讨论状态；select/singleSelect/multiSelect 均视为合法（intersects 已验证可用）。
+
+    `fields`/`items` 非 list[dict]（str / list[str] / dict 等）一律抛 RuntimeError，
+    否则迭代时 `f.get` 会裸 AttributeError（#244 只收口了 records 容器，#276）。
+    """
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")
     proc = bitable_lark._run(["base", "+field-list", "--base-token", app_token, "--table-id", table_id], timeout=60)
@@ -103,7 +114,12 @@ def fetch_topic_fields(app_token: str, table_id: str) -> list[dict[str, Any]]:
         msg = (proc.stdout or proc.stderr or "").strip()[:500]
         log.warning("lark-cli 业务失败: %s", msg)
         raise RuntimeError(f"lark-cli 业务失败: {msg}")
-    fields: list[dict[str, Any]] = data.get("fields") or data.get("items") or []
+    fields_raw = data.get("fields") or data.get("items") or []
+    if not isinstance(fields_raw, list) or not all(isinstance(f, dict) for f in fields_raw):
+        raise RuntimeError(
+            f"field-list 响应 fields 非 list[dict]: {type(fields_raw).__name__}: {str(fields_raw)[:200]}"
+        )
+    fields: list[dict[str, Any]] = fields_raw
     found = None
     for f in fields:
         name = f.get("field_name") or f.get("name") or ""
