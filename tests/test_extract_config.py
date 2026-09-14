@@ -58,7 +58,7 @@ def test_load_extract_section_and_placeholder_cleared(tmp_path) -> None:
         "    deepseek:\n"
         "      api_key: \"<deepseek-key>\"\n"
         "      model: \"deepseek-reasoner\"\n"
-        "      tool_label: \"DS（DeepSeek）\"\n",
+        "      tool_label: \"DS\"\n",
         encoding="utf-8",
     )
 
@@ -99,7 +99,7 @@ def test_resolve_provider_registry_defaults_and_overrides() -> None:
 
     assert conf.base_url == "https://api.minimaxi.com/v1"
     assert conf.model == "M-custom"
-    assert conf.tool_label == "MMX（MiniMax）"
+    assert conf.tool_label == "MMax"
     assert conf.api_key == "sk-1"
 
 

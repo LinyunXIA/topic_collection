@@ -164,8 +164,8 @@ def test_main_apply_writes_mapped_record(tmp_path, monkeypatch, capsys) -> None:
     out = capsys.readouterr().out
     assert rc == 0
     assert created[0]["话题名称"] == "话题A"
-    assert created[0]["讨论状态"] == "未讨论"
-    assert created[0]["提取工具"] == "MMX（MiniMax）"
+    assert created[0]["讨论状态"] == ["未讨论"]
+    assert created[0]["提取工具"] == ["MMax"]
     assert created[0]["资讯链接"] == "https://a/1"
     stats = _last_summary(out)
     assert stats["mode"] == "apply" and stats["written"] == 1 and stats["pending"] == 0

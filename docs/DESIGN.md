@@ -79,7 +79,7 @@ topic_collection/
 │   ├── salon_md.py / salon_notify.py  # 大纲 markdown/stub / 卡片与连败 SOS
 │   ├── extract_source.py     # 近 N 天 RSS 行选源（F28，§25）
 │   ├── extract_llm.py        # LLM provider 抽象 / 批量提示词 / JSON 解析与多源合并（F29–F30，§25）
-│   ├── extract_write.py      # 选题表字段映射 + 按「话题名称」去重写入（F31，§25）
+│   ├── extract_write.py      # 选题表字段映射 + 「资讯链接 OR 话题名称」双键去重写入（F31，§25）
 │   ├── extract_flow.py       # tc-extract 编排 + CLI（F32，§25）
 │   ├── push.py               # push 编排主流程
 │   └── purge.py              # tc-purge 编排：365 天滚动保留（§20）
@@ -950,7 +950,7 @@ select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(p
   → 按 batch_size 切批                     # cutoff = UTC now − N 天（ISO 秒级，与库内同格式）
   → call_llm(cfg.extract, prompt)          # provider 分派：minimax / deepseek（OpenAI 兼容）
   → parse_topics(raw) → merge_topics       # 容错 JSON、缺字段整批弃、同话题链接/来源去重
-  → existing_topics(app_token, table_id)   # 按「话题名称」去重（幂等）
+  → existing_index(app_token, table_id)    # 按「资讯链接 OR 话题名称」双键去重（幂等）
   → dry-run 打印完整清单 / --apply: +record-batch-create ≤200/批
 ```
 
@@ -960,10 +960,10 @@ select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(p
 |---|---|---|
 | `extract_source.py` | sqlite 选源 | `select_source(conn, since_days, limit=None, now=None)` |
 | `extract_llm.py` | provider 抽象 + 提示词/解析 + 批量提炼编排 | `call_llm(cfg, prompt) -> str`、`build_batch_prompt(template, items)`、`parse_topics(raw) -> (list[dict], dropped)`、`merge_topics(topics) -> list[dict]`、`refine_batches(ex, template, batches, max_calls) -> (topics, calls, failed, empty)`、`resolve_provider(cfg, name=None)` |
-| `extract_write.py` | 字段映射与写入 | `existing_topics(app_token, table_id) -> set[str]`、`resolve_status_value(app_token, table_id, field="讨论状态", option="未讨论") -> str \| list[str]`、`build_record(topic, provider_label, run_date, status_value) -> dict`、`write_topics(...) -> tuple[int, int]` |
+| `extract_write.py` | 字段映射与写入 | `existing_index(app_token, table_id) -> tuple[set[str], set[str]]`、`build_record(topic, provider_label, run_date, status="未讨论") -> dict`、`write_topics(...) -> tuple[int, int]` |
 | `extract_flow.py` | 编排 + CLI | `run(cfg, conn, *, apply, since_days, limit, batch_size, max_calls) -> int`、`main(argv) -> int` |
 
-- provider 注册表（`extract_llm.PROVIDERS`）：`minimax`（base_url `https://api.minimaxi.com/v1`、model `MiniMax-M3`、key env `MiniMax_Key`/`MINIMAX_API_KEY`、tool_label `MMX（MiniMax）`）、`deepseek`（base_url `https://api.deepseek.com/v1`、model `deepseek-chat`、key env `DEEPSEEK_API_KEY`、tool_label `DS（DeepSeek）`）；yaml `providers.<name>` 非空字段覆盖注册表默认。
+- provider 注册表（`extract_llm.PROVIDERS`）：`minimax`（base_url `https://api.minimaxi.com/v1`、model `MiniMax-M3`、key env `MiniMax_Key`/`MINIMAX_API_KEY`、tool_label `MMax`）、`deepseek`（base_url `https://api.deepseek.com/v1`、model `deepseek-chat`、key env `DEEPSEEK_API_KEY`、tool_label `DS`）；`tool_label` 必须是 salon 表 `提取工具` select 字段的**表内已有选项**（`MMax`/`DS`，`飞书` 留给人工路径）；yaml `providers.<name>` 非空字段覆盖注册表默认。
 - 调用形态统一 OpenAI 兼容 `POST {base_url}/chat/completions`，取 `choices[0].message.content` 原始文本返回；`_post_chat` **单次尝试**：超时/HTTP 429/529/业务可重试码（1002/1004/1039）抛可重试 `RuntimeError`，重试仅由 `refine_batches` 外层做 1 次（总 HTTP ≤2/批，单层重试，PRV-8）；缺 key/占位 key 抛 `RuntimeError` 且**不发起 HTTP**。
 
 ### 25.3 配置（`extract:` 段）
@@ -981,12 +981,12 @@ extract:
       api_key: "<MiniMax_Key env>"
       model: "MiniMax-M3"
       base_url: "https://api.minimaxi.com/v1"
-      tool_label: "MMX（MiniMax）"
+      tool_label: "MMax"
     deepseek:
       api_key: "<DEEPSEEK_API_KEY env>"
       model: "deepseek-chat"
       base_url: "https://api.deepseek.com/v1"
-      tool_label: "DS（DeepSeek）"
+      tool_label: "DS"
 ```
 
 - dataclass：`ExtractConf{enabled, since_days, batch_size, provider, prompt_file, max_calls, providers: dict[str, ProviderConf]}`；`ProviderConf{base_url, model, api_key, tool_label}`（`config_models.py`）。
@@ -1002,9 +1002,10 @@ extract:
 
 ### 25.5 去重
 
-- 写入前 `existing_topics` 分页拉目标表「话题名称」列（`_page_guard` 防死循环；响应兼容 records 与 fields+data 两形态，容器异常 raise 中止写入而非静默空集）。
-- 命中「话题名称」或本批已出现 → 跳过；重复运行不新增重复行（幂等）。`--update` 刷新既有行本期不做。
-- `讨论状态` 写入形态按 `base +field-list` 字段元数据 `multiple` 决定：单选（权威元数据 `type:"select"`,`multiple:false`）写字符串 `"未讨论"`，多选（`multiple:true` 或类型码 4）写 `["未讨论"]`；元数据读取失败/字段缺失 → 保守按字符串并 WARNING（PRV-1）。
+- 写入前 `existing_index` 分页拉目标表 **`话题名称` + `资讯链接`** 两列（同页一次拉取），返回 `(归一话题名集合, 归一链接集合)`；名称按 `topic_key`（NFKC+strip+casefold）、链接按 `link_keys` 归一（`_page_guard` 防死循环；响应兼容 records 与 fields+data 两形态，容器异常 raise 中止写入而非静默空集）。
+- **链接归一 = 去 markdown 包裹 + 拆行 + 去 tracking 参数**（`link_keys`，`existing_index` 与 `write_topics` 共用）：表内 `资讯链接` 真实值常是 **markdown 链接包裹 + 换行拼接** 的单字符串且带 tracking 参数（如 `[<url1?utm_source=rss>\n<url2>](<url1?utm_source=rss>\n<url2>)`），而 LLM 输出的是不含 utm 的裸 URL 列表——旧 `canonicalize(整串)` 把 `[...](...)`+换行+utm 当一个 URL → 永不命中（真跑 `skipped=0` 已证）。故先取 markdown 链接 inner、按空白（含换行）拆成多个 URL，再对每个 URL `canonicalize` 后剥 tracking 参数（键名小写以 `utm_` 开头或属 `{spm,from,fbclid,gclid,ref,ref_src,source,mc_cid,mc_eid}`），其余 query 按名排序重建；无法解析则原样 canonicalize。
+- **按 资讯链接 OR 话题名称 双键去重**：命中任一既有键（或本批已出现）→ 跳过；两者皆无才写，重复运行不新增重复行（幂等）。动机：LLM 命名非确定性——同一新闻重跑会产出不同「话题名称」，仅按名去重会漏判并重复落表（真跑已证）；链接键是跨命名的稳定兜底，且 `link_keys` 保证 `#frag`/host 大小写/tracking 参数等形态差异不逃逸。`--update` 刷新既有行本期不做。
+- `讨论状态` / `提取工具` 均为单选 select，按 lark-cli select CellValue 协议**一律写单元素数组**：`["未讨论"]` / `[provider_label]`（`base +record-batch-create --help` Tips 明确 select CellValue 恒为数组，`multiple=false` 时也须数组；写字符串会被服务端拒）。取值须为表内已有选项（`讨论状态`：`未讨论`/`已选题`/`不选择`/`待继续评估`；`提取工具`：`MMax`/`DS`），写表外新值被拒 `800030005 Provide an existing option value`（真跑已证）。不再读 `+field-list` 字段元数据判形态（真跑已证伪，PRV-1）。
 
 ### 25.6 CLI（`tc-extract`）
 
