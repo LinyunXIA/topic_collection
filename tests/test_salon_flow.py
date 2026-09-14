@@ -221,7 +221,8 @@ def test_salon_flow_skip_already_synced(monkeypatch):
     conn.close()
 
 
-def test_salon_flow_flip_regen(monkeypatch):
+def test_salon_flow_stale_last_status_partial_write_fallback_regen(monkeypatch):
+    """meta 缺/异 = 部分写失败兜底：非生产可达的真实「翻转」（#211）。"""
     from feedkicker import salon_flow as sf
 
     cfg = _cfg(monkeypatch)
@@ -240,6 +241,7 @@ def test_salon_flow_flip_regen(monkeypatch):
 
     sf.run(cfg, conn, dry_run=False)
     assert store.get_ppt_last_status(conn, "rec1") == "已选题"
+    # 构造态：手工写「待讨论」模拟部分写失败残留；生产服务端 filter 只返回「已选题」，真实翻转不可达（#211）
     store.set_ppt_last_status(conn, "rec1", "待讨论")
     calls = []
 

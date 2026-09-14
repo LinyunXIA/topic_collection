@@ -49,10 +49,12 @@ def mark_ppt_synced(
 
 
 def get_ppt_last_status(conn: sqlite3.Connection, record_id: str) -> str:
+    """读 `ppt_last_status_{rid}`：生产值恒为「已选题」，异值（含空）仅为部分写失败兜底（#211）。"""
     return get_meta(conn, f"ppt_last_status_{record_id}", "")
 
 
 def set_ppt_last_status(conn: sqlite3.Connection, record_id: str, status: str) -> None:
+    """写 `ppt_last_status_{rid}`：生产唯一调用点是 mark_topic_archived 固定写「已选题」（#211）。"""
     set_meta(conn, f"ppt_last_status_{record_id}", status)
 
 
@@ -67,7 +69,8 @@ def mark_topic_archived(
 ) -> None:
     """选题 Wiki 建成后落库：插占位 article 行、标记 ppt 已同步、last_status=已选题。
 
-    三段写入各自独立 try/except：单段失败只 WARNING，不影响已建成的 Wiki 与卡片推送。
+    三段写入各自独立 try/except：单段失败只 WARNING，不影响已建成的 Wiki 与卡片推送；
+    last_status 只在「已选题」被处理时写，差异分支仅兜底部分写失败（#211，语义见 PRD §17）。
     """
     try:
         exists = conn.execute(

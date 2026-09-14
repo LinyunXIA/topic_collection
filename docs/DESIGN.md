@@ -88,7 +88,7 @@ feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/<token>"
 feishu_secret: "<签名密钥>"   # 机器人开启「签名校验」安全设置时的密钥；未开启则留空
 bootstrap_days: 3      # 冷启动窗口：新源首跑最多推最近 N 天
 site:
-  top_n: 5             # 摘要卡每源条数（site 段仅此项生效；enabled 已不再被读取）
+  top_n: 5             # 摘要卡每源保留的最新条数（site 段仅此项生效；enabled 已不再被读取）
 http:
   timeout_seconds: 20
   user_agent: "rss2feishu/0.2 (+local cron; private)"
@@ -437,10 +437,10 @@ v0.2 起 macOS 用 **launchd** 取代 cron：`StartCalendarInterval` 在机器�
 
 ### 15.4 飞书摘要卡改造
 
-- 每源最多 `site.top_n` 条（默认 5），组尾「… 还有 M 条见详情页」；详情页无 20KB 限制
+- 每源最多 `site.top_n` 条（默认 5；**保最新**：按时效键 `published_at or first_seen` 降序取前 N，卡内仍最旧在前，#200），组尾「… 还有 M 条见详情页」；详情页无 20KB 限制
 - 底部 action button「📰 查看全部 N 条」+ 同文 markdown 链接行（双保险）
 - 发送失败且带按钮时：`strip_actions` 去按钮降级重试一次（防旧版客户端/接口不兼容 action 元素）
-- 20KB 兜底保留：top_n 截断后仍超限 → 先剥 description 再从尾部丢条目
+- 20KB 兜底保留：top_n 截断后仍超限 → 先剥 description 再丢最旧条目（`selected.pop(0)`，方向与 top_n 保最新一致）
 - **语义变更**：site.enabled 时改为 mark_pushed 先于发送（页面内容完整性优先）；
   发送失败不再自动重试本批条目（已上页面），由 §15.5 求救通道兜底可见性。site 关闭时保持 v0.1 语义
 
@@ -559,7 +559,7 @@ batch 失败必须整批不打标（已实现），跨源去重必须在写入�
         → 发送成功才 mark_pushed（失败下次重试卡片）
 ```
 
-- top_n 摘要形态随 archive.enabled 恢复（每源 top 5，20KB 兜底保留）
+- top_n 摘要形态随 archive.enabled 恢复（每源最新 5，20KB 兜底丢最旧）
 - dry-run 不写表格、不发送
 - 配置段：`archive{enabled, spreadsheet_token, url}`（三环境均已启用；dev/test 共享同一文件，
   以「环境」列区分行）
@@ -611,6 +611,7 @@ python -m feedkicker.sheets_archive --env prod [--init]   # [--init] 设置组�
 
 - 每周五 10:00（可配置）自动将 Tikp 多维表「AI 沙龙换题管理」(`<salon-app-token>` / `<salon-table-id>`) 中新增的「已选题」增量生成双大纲并入 Wiki
 - 仅产 Markdown 大纲（自适应 5–8 页），不产 PPTX；独立进程 `feedkicker.salon_flow`，不混入 `push.py` 编排；配置与调度可验证（`--help` / `launchctl print`）
+- 增量语义（F18，#211）：服务端 filter 只返回「已选题」，本流程只对**首次**进入「已选题」且从未处理（`ppt_synced_at IS NULL`）的题目生成；`ppt_last_status_{rid}` 的差异分支（非「已选题」→ 重生成）**仅为部分写失败兜底**（`mark_topic_archived` 三段写入单段失败可能残留异值），生产正常路径不会出现非「已选题」值。
 
 ### 19.2 配置（config.yaml 新增段）
 
@@ -734,7 +735,7 @@ wiki:
 
 - **OBS1（P2）卡片连败 SOS**：Wiki 大纲卡片推送从「strip_actions 重试 1 次 + WARNING、`run()` 恒返回 0」对齐 push.py 的成熟模式——失败累计 meta `salon_fail_streak`，连续 3 次且 webhook 非空时发纯文本 SOS（`feishu.send_text`，文案含「连续 N 次」与最近一班 Wiki 已建成的提示）后清零；成功即清零（有旧值记恢复日志）。逻辑收敛在 `salon_notify.send_wiki_card(cfg, conn, wiki_urls, dry_run) -> bool`，`salon_flow.run()` 据返回值返回 0/1（卡片最终失败 rc=1，launchd 记失败，与 push 一致）。
 - **OBS2（P2）dry-run 不得计费**：`--dry-run` 无条件使用 `salon_md.stub_outlines(title)` 占位大纲（5 页工具/原理页，标题含「工具类大纲」标记），不再因配置了真实 MiniMax key 而发起计费调用（原先每题 2 次）。测试以「gen_outline 被调即抛 AssertionError」做真守卫（旧守卫的 AssertionError 被 broad except 吞掉而假通过）。
-- **OBS3（P3）死逻辑移除**：`_unsynced_keys` 的 if/else 两分支都赋 `ppt_synced_is_null=True`，整段删除；同步判定改为单一来源 `store.is_ppt_synced(conn, rid)`（`ppt_synced_at IS NOT NULL`），死代码 `select_pushed_since` / `select_unsynced_topics` 一并删除。
+- **OBS3（P3）死逻辑移除**：`_unsynced_keys` 的 if/else 两分支都赋 `ppt_synced_is_null=True`，整段删除；同步判定改为单一来源 `store.is_ppt_synced(conn, rid)`（`ppt_synced_at IS NOT NULL`），死代码 `select_pushed_since` / `select_unsynced_topics` 一并删除；`ppt_last_status_{rid}` 差异分支语义见 §19.1（#211）。
 
 ### 21.2 模块拆分（依赖单向无环）
 

@@ -36,9 +36,9 @@ v2 **重开 = 瘦身**。真正的起点比 v1 小一个数量级：**不是一�
 | Phase 1+ | v0.2 | F7–F10：GitHub Pages 详情页 + launchd（F7–F9 已废弃，见 §13） | 已交付（Pages 链路废弃） |
 | Phase 2 | v0.3–v0.5 | F11–F16：多维表格归档（跨源去重、双分组视图） | 已交付 |
 | Phase 3 | v0.6–v0.7 | F17–F22：AI 沙龙每周大纲（salon）+ 365 天滚动保留（purge） | 已交付 |
-| Phase 3+ | v0.7+ | F23–F27：Wiki 首页自动索引 + 项目文档三件套（F24–F27 = README/CLI/OPS/一致性自检，进行中） | **当前所处阶段** |
+| Phase 3+ | v0.7+ | F23–F27：Wiki 首页自动索引 + 项目文档三件套（F24–F27 = README/CLI/OPS/一致性自检） | 已交付 |
 
-**当前所处阶段 = Phase 3+（v0.7+，F23–F27：Wiki 首页自动索引已交付，项目文档三件套 F24–F27 进行中）**；后续新增需求先落本映射，再落 §13 起的版本增量小节。
+**当前所处阶段 = Phase 3+（v0.7+，F23–F27 已全部交付，当前无进行中增量）**；后续新增需求先落本映射，再落 §13 起的版本增量小节。
 
 ---
 
@@ -326,13 +326,13 @@ feeds:
 | # | 特性 | 验收要点 | 优先级 |
 |---|---|---|---|
 | F17 | 周五定时 + 手动 CLI | `com.feedkicker.salon.plist` Weekday=5 10:00 + `python -m feedkicker.salon_flow [--dry-run/--env/--config/--db]` | P0 |
-| F18 | 已选题增量读取 | 按「讨论状态=intersects 已选题」服务端过滤，仅新增/翻转重生成 | P0 |
+| F18 | 已选题增量读取 | 按「讨论状态=intersects 已选题」服务端过滤，只对首次进入「已选题」且从未处理过的题目生成 | P0 |
 | F19 | 双大纲生成 | MiniMax M3 function-calling 自适应 5–8 页，工具类/原理类各一 | P0 |
 | F20 | Wiki 归档 | 单话题单 Wiki doc（含双大纲 MD 代码块），返回 wiki_url | P0 |
 | F21 | 机器人通知 | 同一 webhook，卡片含双 Wiki 链接，20KB 降级 + strip_actions + SOS 复用 | P1 |
 
 - 配置可配：`config.salon.trigger_weekday/trigger_hour/trigger_minute`（默认 4/10/0 = 周五 10:00），MiniMax Key 走 `MiniMax_Key` 环境变量覆盖
-- 不产 PPTX，不混入 `push.py` 主流程，去重列 `ppt_synced_at` + `ppt_last_status_{rid}` 翻转检测，失败单条 WARNING 不阻断他条
+- 不产 PPTX，不混入 `push.py` 主流程，去重列 `ppt_synced_at`（只生成从未处理过的题目）；`ppt_last_status_{rid}` 的差异分支仅为部分写失败兜底（服务端 filter 只返回「已选题」，生产不会出现非「已选题」值），失败单条 WARNING 不阻断他条
 
 ---
 
@@ -376,4 +376,4 @@ feeds:
 
 - 组织方式：按命令分节、节内嵌三环境示例；输出**示意化**（结构真实、值脱敏/截断并标注），**prod 示例一律 `--dry-run`**，真跑命令单列并标 ⚠️。
 - 凭据一律占位符（`<webhook>`/`<salon-app-token>`/`<space-id>`…），不落真实 token。
-- 设计见 DESIGN §23；F27 为独立后续任务（本增量不实现）。
+- 设计见 DESIGN §23；F27 三件套一致性自检已于 2026-09-14 完成交付（自检结论见 DESIGN §23.3）。
