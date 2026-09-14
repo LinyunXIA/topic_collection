@@ -960,7 +960,7 @@ select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(p
 |---|---|---|
 | `extract_source.py` | sqlite 选源 | `select_source(conn, since_days, limit=None, now=None)` |
 | `extract_llm.py` | provider 抽象 + 提示词/解析 + 批量提炼编排 | `call_llm(cfg, prompt) -> str`、`build_batch_prompt(template, items)`、`parse_topics(raw) -> (list[dict], dropped)`、`merge_topics(topics) -> list[dict]`、`refine_batches(ex, template, batches, max_calls) -> (topics, calls, failed, empty)`、`resolve_provider(cfg, name=None)` |
-| `extract_write.py` | 字段映射与写入 | `existing_topics(app_token, table_id) -> set[str]`、`resolve_status_value(app_token, table_id, field="讨论状态", option="未讨论") -> str \| list[str]`、`build_record(topic, provider_label, run_date, status_value) -> dict`、`write_topics(...) -> tuple[int, int]` |
+| `extract_write.py` | 字段映射与写入 | `existing_topics(app_token, table_id) -> set[str]`、`build_record(topic, provider_label, run_date, status="未讨论") -> dict`、`write_topics(...) -> tuple[int, int]` |
 | `extract_flow.py` | 编排 + CLI | `run(cfg, conn, *, apply, since_days, limit, batch_size, max_calls) -> int`、`main(argv) -> int` |
 
 - provider 注册表（`extract_llm.PROVIDERS`）：`minimax`（base_url `https://api.minimaxi.com/v1`、model `MiniMax-M3`、key env `MiniMax_Key`/`MINIMAX_API_KEY`、tool_label `MMX（MiniMax）`）、`deepseek`（base_url `https://api.deepseek.com/v1`、model `deepseek-chat`、key env `DEEPSEEK_API_KEY`、tool_label `DS（DeepSeek）`）；yaml `providers.<name>` 非空字段覆盖注册表默认。
@@ -1004,7 +1004,7 @@ extract:
 
 - 写入前 `existing_topics` 分页拉目标表「话题名称」列（`_page_guard` 防死循环；响应兼容 records 与 fields+data 两形态，容器异常 raise 中止写入而非静默空集）。
 - 命中「话题名称」或本批已出现 → 跳过；重复运行不新增重复行（幂等）。`--update` 刷新既有行本期不做。
-- `讨论状态` 写入形态按 `base +field-list` 字段元数据 `multiple` 决定：单选（权威元数据 `type:"select"`,`multiple:false`）写字符串 `"未讨论"`，多选（`multiple:true` 或类型码 4）写 `["未讨论"]`；元数据读取失败/字段缺失 → 保守按字符串并 WARNING（PRV-1）。
+- `讨论状态` 按 lark-cli select CellValue 协议写数组：单选=单元素 `["未讨论"]`（`base +record-batch-create --help` Tips 明确 select CellValue 恒为数组，`multiple=false` 时也须数组；写字符串会被服务端拒 800030005 not_found）。不再读 `+field-list` 字段元数据判形态（真跑已证伪，PRV-1）。
 
 ### 25.6 CLI（`tc-extract`）
 

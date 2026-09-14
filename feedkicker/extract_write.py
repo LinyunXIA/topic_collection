@@ -60,49 +60,16 @@ def existing_topics(app_token: str, table_id: str) -> set[str]:
     return names
 
 
-def resolve_status_value(
-    app_token: str, table_id: str, field: str = "讨论状态", option: str = "未讨论"
-) -> str | list[str]:
-    """按字段元数据 `multiple`/类型决定 select 选项写入形态：单选 str、多选 [option]（PRV-1）。
-
-    权威口径是 `base +field-list` 元数据（multiple:true / 多选码 4）；lark-cli 行式渲染
-    把 select 值显示成数组，不代表字段是多选。元数据读取失败/字段缺失 → 保守按字符串
-    写入并 WARNING（真多选才会被服务端拒绝、真单选绝不会因数组被拒）。
-    """
-    try:
-        proc = bitable_lark._run(
-            [
-                "base", "+field-list",
-                "--base-token", app_token,
-                "--table-id", table_id,
-                "--json",
-            ],
-            timeout=60,
-        )
-        if not bitable_lark._ok(proc):
-            raise RuntimeError("field-list 业务失败")
-        data = bitable_lark._data(proc)
-        fields = data.get("fields") or data.get("items") or []
-        for f in fields:
-            if not isinstance(f, dict):
-                continue
-            name = str(f.get("field_name") or f.get("name") or "")
-            if name != field:
-                continue
-            ftype = str(f.get("type") or f.get("field_type") or "").strip().lower()
-            if f.get("multiple") is True or ftype in ("4", "multiselect", "multiple_select"):
-                return [option]
-            return option
-        raise RuntimeError(f"字段未找到: {field}")
-    except Exception as e:  # noqa: BLE001
-        log.warning("%s 字段元数据读取失败，按单选字符串写入兜底: %s", field, e)
-        return option
-
-
 def build_record(
-    topic: dict[str, Any], provider_label: str, run_date: str, status_value: str | list[str]
+    topic: dict[str, Any], provider_label: str, run_date: str, status: str = "未讨论"
 ) -> dict[str, Any]:
-    """字段映射：LLM 三字段原样、链接/来源换行拼接、提炼日期/讨论状态/提取工具固定值。"""
+    """字段映射：LLM 三字段原样、链接/来源换行拼接、提炼日期/讨论状态/提取工具固定值。
+
+    `讨论状态` 按 lark-cli select CellValue 协议写数组 `[status]`：`base +record-batch-create
+    --help` Tips 明确 select CellValue 恒为数组（`multiple=false` 时也须单元素数组），
+    写字符串会被服务端拒（800030005 not_found）。单选=单元素 `["未讨论"]`，不复用
+    `+field-list` 元数据判形态（真跑已证伪）。
+    """
     return {
         "话题名称": str(topic.get("话题名称") or "").strip(),
         "可使用工具": str(topic.get("可使用工具") or ""),
@@ -110,7 +77,7 @@ def build_record(
         "资讯链接": "\n".join(_str_list(topic.get("资讯链接"))),
         "出处来源": "\n".join(_str_list(topic.get("出处来源"))),
         "提炼日期": run_date,
-        "讨论状态": status_value,
+        "讨论状态": [status],
         "提取工具": provider_label,
     }
 
@@ -143,11 +110,10 @@ def write_topics(
         picked.append(topic)
     if dry_run:
         return len(picked), skipped
-    status_value = resolve_status_value(app_token, table_id)
     written = 0
     for i in range(0, len(picked), bitable_lark._CHUNK):
         chunk = picked[i : i + bitable_lark._CHUNK]
-        payload = {"create_records": [build_record(t, provider_label, run_date, status_value) for t in chunk]}
+        payload = {"create_records": [build_record(t, provider_label, run_date) for t in chunk]}
         with bitable_lark._json_arg(payload) as (jflag, jval):
             proc = bitable_lark._run(
                 [
