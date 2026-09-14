@@ -1028,4 +1028,4 @@ tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-s
 - [x] F29 `extract:` 配置段 + `extract_llm.call_llm` provider 抽象（minimax/deepseek），缺 key 明确报错
 - [x] F30 `prompts/extract.md` + `build_batch_prompt`/`parse_topics`/`merge_topics`
 - [x] F31 `extract_write.py`：字段映射 + 「话题名称」去重 + ≤200/批；dry-run 零写
-- [ ] F32 `tc-extract` CLI + CLI.md/OPS.md 文档 + 测试（全 mock 离线）
+- [x] F32 `tc-extract` CLI + CLI.md/OPS.md 文档 + 测试（全 mock 离线）

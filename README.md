@@ -11,7 +11,7 @@
 | 文档 | 定位 |
 |---|---|
 | `README.md`（本文） | 总览 + 快速上手（入口） |
-| [`docs/CLI.md`](docs/CLI.md) | 7 个命令详解：参数、dev/test/prod 示例、退出码、错误码对照 |
+| [`docs/CLI.md`](docs/CLI.md) | 8 个命令详解：参数、dev/test/prod 示例、退出码、错误码对照 |
 | [`docs/OPS.md`](docs/OPS.md) | 运维手册：配置与凭据、launchd 定时、飞书三坑、排障 |
 | [`docs/PRD.md`](docs/PRD.md) | 产品权威（需求与阶段，权威层级最高） |
 | [`docs/DESIGN.md`](docs/DESIGN.md) | 工程实现权威（§N 被 commit/PR 引用） |
@@ -76,12 +76,13 @@ cp config-dev.yaml.example config-dev.yaml
 | `tc-push` | 抓取 RSS → 归档 → 推飞书摘要卡（每日 8:30/16:00） | entry point | [CLI §tc-push](docs/CLI.md#tc-push) |
 | `tc-salon` | 已选题 → 双大纲 → Wiki 归档（周五 10:00） | entry point | [CLI §tc-salon](docs/CLI.md#tc-salon) |
 | `tc-purge` | 365 天滚动保留清理（默认 dry-run，`--apply` 才删） | entry point | [CLI §tc-purge](docs/CLI.md#tc-purge) |
+| `tc-extract` | 近 N 天资讯 → LLM 提炼选题 → salon 表（默认 dry-run，`--apply` 才写） | entry point | [CLI §tc-extract](docs/CLI.md#tc-extract) |
 | `python -m feedkicker.wiki_home` | 重建 Wiki 首页（大纲按月索引） | `-m` 模块 | [CLI §wiki_home](docs/CLI.md#wiki_home) |
 | `python -m feedkicker.bitable` | 多维表格归档运维（`--init`/`--reseed`/`--backfill`） | `-m` 模块 | [CLI §bitable](docs/CLI.md#bitable) |
 | `python -m feedkicker.wiki` | 单篇 Wiki docx 创建（联调） | `-m` 模块 | [CLI §wiki](docs/CLI.md#wiki) |
 | `python -m feedkicker.topic` | 已选题分页拉取（只读） | `-m` 模块 | [CLI §topic](docs/CLI.md#topic) |
 
-命令清单与 `pyproject.toml [project.scripts]`（`tc-push`/`tc-salon`/`tc-purge`）及 `-m` 模块一致。
+命令清单与 `pyproject.toml [project.scripts]`（`tc-push`/`tc-salon`/`tc-purge`/`tc-extract`）及 `-m` 模块一致。
 
 ## 操作纪律（摘要）
 
