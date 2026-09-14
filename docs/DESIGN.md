@@ -1012,12 +1012,14 @@ extract:
 
 ```
 tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-size N]
-           [--max-calls N] [--env dev|test|prod] [--config PATH] [--db PATH]
+           [--max-calls N] [--provider {minimax,deepseek}] [--env dev|test|prod]
+           [--config PATH] [--db PATH]
 ```
 
 - 默认 dry-run：打印合并后的待写清单（逐条 `[将写入]`/`[已存在跳过]` 前缀标注，数量与 summary `pending`/`skipped` 同源一致）与统计（批数/调用数/话题数/将写/将跳过/失败批/空批 `empty_batches`），**零写调用**。
+- `--provider`：单次运行覆盖 `extract.provider`（缺省取配置，默认 `minimax`）；choices 由 `extract_llm.PROVIDERS` 注册表键动态给出；`run` 用 `dataclasses.replace` 构造有效 `ex`，`resolve_provider`/`refine_batches`（内含 `call_llm`）与 `提取工具` 均取该 provider（minimax→`MMax`，deepseek→`DS`），运行日志打印实际 provider。
 - `--apply`：写入 `cfg.salon.app_token/table_id`（不调 `ensure_initialized`，不改表结构）。
-- 退出码：2 配置错（config 加载失败 / prompt 文件缺失 / provider 未注册或缺 key / salon token 占位或缺失）；1 未捕获异常；0 正常（含部分批失败跳过）。
+- 退出码：2 配置错（config 加载失败 / prompt 文件缺失 / `--provider` 未知 / provider 未注册 / 所选 provider 缺 key（配置与 env 均无，不发起 HTTP）/ salon token 占位或缺失）；1 未捕获异常；0 正常（含部分批失败跳过）。
 
 ### 25.7 失败语义
 

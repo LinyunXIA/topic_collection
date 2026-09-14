@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -443,3 +444,96 @@ def test_run_uses_cfg_defaults_and_cli_overrides(tmp_path, monkeypatch) -> None:
         assert seen == {"since_days": 1, "limit": 5}
     finally:
         conn.close()
+
+
+class _Resp200:
+    status_code = 200
+    text = "{}"
+
+    def json(self):
+        return {"choices": [{"message": {"content": _TOPICS_JSON}}]}
+
+
+def test_provider_cli_deepseek_uses_endpoint_and_ds_label(tmp_path, monkeypatch, capsys, caplog) -> None:
+    cfg = _write_cfg(tmp_path)
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, calls)
+    monkeypatch.setattr(extract_flow.extract_source, "select_source", lambda conn, since_days, limit=None: _items(2))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-ds")
+    posts: list[dict[str, Any]] = []
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        posts.append({"url": url, "json": json, "headers": headers})
+        return _Resp200()
+
+    monkeypatch.setattr(extract_flow.extract_llm.httpx, "post", fake_post)
+
+    with caplog.at_level(logging.INFO):
+        rc = extract_flow.main(
+            ["--dry-run", "--provider", "deepseek", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")]
+        )
+
+    out = capsys.readouterr().out
+    assert rc == 0 and len(posts) == 1
+    assert posts[0]["url"] == "https://api.deepseek.com/v1/chat/completions"
+    assert posts[0]["json"]["model"] == "deepseek-chat"
+    assert posts[0]["headers"]["Authorization"] == "Bearer sk-ds"
+    assert '"提取工具": ["DS"]' in out
+    assert _last_summary(out)["topics"] == 1
+    assert "provider=deepseek" in caplog.text
+
+
+def test_provider_defaults_to_config_provider(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path, provider="deepseek", key="sk-ds")
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, calls)
+    monkeypatch.setattr(extract_flow.extract_source, "select_source", lambda conn, since_days, limit=None: _items(2))
+    monkeypatch.setattr(extract_flow.extract_llm, "call_llm", lambda ex, prompt: _TOPICS_JSON)
+
+    rc = extract_flow.main(["--dry-run", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
+
+    out = capsys.readouterr().out
+    assert rc == 0 and '"提取工具": ["DS"]' in out
+
+
+def test_provider_unknown_argparse_rc2(tmp_path, monkeypatch) -> None:
+    cfg = _write_cfg(tmp_path)
+    posts: list[str] = []
+    monkeypatch.setattr(extract_flow.extract_llm.httpx, "post", lambda *a, **k: posts.append("x"))
+
+    with pytest.raises(SystemExit) as ei:
+        extract_flow.main(
+            ["--dry-run", "--provider", "openai", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")]
+        )
+
+    assert ei.value.code == 2 and posts == []
+
+
+def test_run_unknown_provider_rc2_no_http(tmp_path, monkeypatch) -> None:
+    cfg = load_config(_write_cfg(tmp_path), app_env="test")
+    posts: list[str] = []
+    monkeypatch.setattr(extract_flow.extract_llm.httpx, "post", lambda *a, **k: posts.append("x"))
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, calls)
+    conn = store.connect(tmp_path / "t.sqlite3")
+    try:
+        assert extract_flow.run(cfg, conn, apply=False, provider="openai") == 2
+    finally:
+        conn.close()
+    assert posts == [] and calls == []
+
+
+def test_provider_missing_key_rc2_no_http(tmp_path, monkeypatch, caplog) -> None:
+    cfg = _write_cfg(tmp_path)
+    posts: list[str] = []
+    monkeypatch.setattr(extract_flow.extract_llm.httpx, "post", lambda *a, **k: posts.append("x"))
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, calls)
+
+    with caplog.at_level(logging.ERROR):
+        rc = extract_flow.main(
+            ["--dry-run", "--provider", "deepseek", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")]
+        )
+
+    assert rc == 2 and posts == [] and calls == []
+    assert "provider" in caplog.text and "api_key" in caplog.text

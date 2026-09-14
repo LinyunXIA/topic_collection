@@ -325,6 +325,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 | `--limit` | 正整数 | `None`（不限） | — | 最多处理的 RSS 行数 |
 | `--batch-size` | 正整数 | `None`（取 `extract.batch_size=30`） | 覆盖配置 | 每批条数（每批一次 LLM 调用） |
 | `--max-calls` | 非负整数 | `None`（取 `extract.max_calls=0`） | 覆盖配置 | LLM 调用上限，`0`=不限；达限停止剩余批 |
+| `--provider` | choice `{minimax,deepseek}`（由 provider 注册表键动态生成） | `None`（取 `extract.provider`，默认 `minimax`） | 覆盖配置 | 本次运行使用的 LLM provider；`提取工具` 随之为该 provider 的 tool_label（minimax→`MMax`，deepseek→`DS`） |
 | `--config` | str | `None` | 覆盖 `--env` 推导 | 指定 `config-{env}.yaml` 路径 |
 | `--db` | str | `None` | 覆盖 `TC_DB` 与 `--env` 推导 | sqlite 路径 |
 | `--env` | choice `{dev,test,prod}` | `None`（回落 prod） | 覆盖 `TC_APP_ENV` | 决定默认配置与 db 路径 |
@@ -337,7 +338,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 | test | `config-test.yaml` / `data/tc-test.sqlite3` | 同上 |
 | prod | `config-prod.yaml` / `data/tc-prod.sqlite3` | 真实 prod salon 选题表 |
 
-provider key：`extract.providers.<name>.api_key`，为空或占位时按 provider 取 env（`MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`）；占位值（`<` 开头）清空。提示词文件默认 `prompts/extract.md`（仓库根相对）。
+provider key：`extract.providers.<name>.api_key`，为空或占位时按 provider 取 env（`MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`）；占位值（`<` 开头）清空。`--provider` 可单次切换 provider（缺省取 `extract.provider`，默认 `minimax`）；未知 provider 或所选 provider 缺 key → rc 2 且不发起 HTTP 调用。提示词文件默认 `prompts/extract.md`（仓库根相对）。
 
 ### 示例
 
@@ -347,14 +348,20 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 .venv/bin/tc-extract --env dev
 ```
 
+本次切 DeepSeek（key 走 `DEEPSEEK_API_KEY` 或 `extract.providers.deepseek.api_key`；`提取工具=DS`）：
+
+```bash
+.venv/bin/tc-extract --env dev --provider deepseek
+```
+
 示意输出（「示意」）：
 
 ```
 2026-09-14 ... feedkicker.extract_flow tc-extract 运行开始：环境=dev，db=/.../data/tc-dev.sqlite3，mode=dry-run
-2026-09-14 ... feedkicker.extract_flow 近 7 天 RSS 行 12 条（limit=None）→ 批大小 30，provider=minimax
+2026-09-14 ... feedkicker.extract_flow 近 7 天 RSS 行 12 条（limit=None）→ 批大小 30，provider=minimax（提取工具=MMax）
 2026-09-14 ... feedkicker.extract_flow 第 1/1 批提炼 2 个话题
 待写选题 2 个（dry-run，未写表；目标表已存在跳过 0 个）：
-1. 话题名A
+[将写入] 1. 话题名A
 {"话题名称": "话题名A", "可使用工具": "…", "相关AI原理": "…", "资讯链接": "https://…", "出处来源": "量子位", "提炼日期": "2026-09-14", "讨论状态": ["未讨论"], "提取工具": ["MMax"]}
 {"mode": "dry-run", "since_days": 7, "batches": 1, "llm_calls": 1, "topics": 2, "written": 0, "pending": 2, "skipped": 0, "failed_batches": 0, "empty_batches": 0}
 ```
@@ -367,7 +374,9 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 .venv/bin/tc-extract --env test --apply
 ```
 
-示意输出：`提炼完成：… 写入=N 待写=0 跳过=M 失败批=0` 与统计 JSON（`"mode": "apply"`）。退出码 `0`（部分批失败仅汇总 WARNING，rc 不变；配置错 `2`，异常 `1`）。副作用：写 salon 选题表（≤200/批，`讨论状态=未讨论`、`提取工具=MMax`）。
+如需本次走 DeepSeek：`.venv/bin/tc-extract --env test --apply --provider deepseek`（`提取工具=DS`）。
+
+示意输出：`提炼完成：… 写入=N 待写=0 跳过=M 失败批=0` 与统计 JSON（`"mode": "apply"`）。退出码 `0`（部分批失败仅汇总 WARNING，rc 不变；配置错 `2`，异常 `1`）。副作用：写 salon 选题表（≤200/批，`讨论状态=未讨论`、`提取工具`=所选 provider 的 tool_label）。
 
 **prod（仅 dry-run）**：
 
@@ -387,7 +396,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 
 ### 退出码
 
-`0` = 正常（含部分批失败跳过，结束汇总 WARNING）；`1` = 未捕获异常；`2` = 配置错（config 加载失败 / `prompts/extract.md` 缺失 / provider 未注册或缺 key / salon token 缺失或占位 / 参数非法 / 同时给 `--apply` 与 `--dry-run`）。
+`0` = 正常（含部分批失败跳过，结束汇总 WARNING）；`1` = 未捕获异常；`2` = 配置错（config 加载失败 / `prompts/extract.md` 缺失 / `--provider` 未知（argparse choices 拒绝）/ provider 未注册 / 所选 provider 缺 key / salon token 缺失或占位 / 参数非法 / 同时给 `--apply` 与 `--dry-run`）。
 
 ### 注意 / 坑
 
