@@ -30,6 +30,7 @@ def test_prompt_file_contains_user_prompt_and_schema() -> None:
     assert "话题提炼需要过滤无工具的纯新闻信息和营销信息" in text
     assert "如果无法提炼明确的可使用工具、系统、平台、应用等信息，则跳过此条AI资讯" in text
     assert "必须提供完整的数据列表，在用户确认后，才能进行多维表格写操作" in text
+    assert "不得是评测基准 / 榜单 / 数据集 / 论文" in text
     assert '"topics"' in text and "话题名称" in text and "资讯链接" in text and "出处来源" in text
 
 
