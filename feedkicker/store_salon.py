@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 
 
 def is_ppt_synced(conn: sqlite3.Connection, record_id: str) -> bool:
+    """按 entry_key 判定（无 feed 过滤）；entry_key 为 URL/guid 的实际数据不会跨源碰撞（#229）。"""
     try:
         row = conn.execute(
             "SELECT 1 FROM articles WHERE entry_key = ? AND ppt_synced_at IS NOT NULL",

@@ -36,7 +36,8 @@ def canonicalize(url: str) -> str:
     """跨源去重键：去 fragment、保留 query，host 归一（IDNA/小写）。
 
     netloc 重组保留 userinfo 与 IPv6 方括号，省略默认端口（http:80/https:443），
-    避免非法 URL 写入卡片/归档或漏去重（#207）。
+    避免非法 URL 写入卡片/归档或漏去重（#207）。归一规则变更会让 guid-less 源
+    旧行 entry_key 与新 key 不一致，升级首轮可能重复推卡一次（一次性，#229）。
     """
     parts = urlsplit((url or "").strip())
     if not parts.netloc:

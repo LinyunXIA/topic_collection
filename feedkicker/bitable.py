@@ -75,7 +75,7 @@ def _dry_run_plan(cfg: Any, args: Any) -> None:
             n, _ok = bitable_records.purge_all_records(
                 bt.app_token, bt.table_id, dry_run=True, env_name=env_name
             )
-            log.info("dry-run：将清空 %d 条记录后全量重灌（未删除）", n)
+            log.info("dry-run：将清空 %d 条记录后全量重灌（未删除；prod markdown 路径仅数首屏）", n)
         else:
             log.info("dry-run：Base 未配置或为占位 token，跳过 reseed 预览")
     if args.backfill or args.fix_archive_date:
@@ -91,6 +91,7 @@ def _dry_run_plan(cfg: Any, args: Any) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """bitable 运维 CLI：非 --init/--reseed 需既有 Base；并发 reseed 无互斥，按单点运维执行（#229）。"""
     import argparse
 
     from feedkicker import store
@@ -101,9 +102,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default=None, help="sqlite 路径（覆盖 TC_DB 与 --env 推导）")
     parser.add_argument("--env", default=None, choices=["dev", "test", "prod"])
     parser.add_argument("--init", action="store_true", help="补字段/视图/组织内只读分享")
-    parser.add_argument("--reseed", action="store_true", help="清空表内记录后全量重灌")
-    parser.add_argument("--backfill", action="store_true", help="回填存量空归档日期")
-    parser.add_argument("--fix-archive-date", action="store_true", help="回填存量空归档日期（--backfill 别名）")
+    exclusive = parser.add_mutually_exclusive_group()
+    exclusive.add_argument("--reseed", action="store_true", help="清空表内记录后全量重灌")
+    exclusive.add_argument("--backfill", action="store_true", help="回填存量空归档日期")
+    exclusive.add_argument("--fix-archive-date", action="store_true", help="回填存量空归档日期（--backfill 别名）")
     parser.add_argument("--dry-run", action="store_true", help="只读预览：不建 Base、不写表、不清空")
     args = parser.parse_args(argv)
 

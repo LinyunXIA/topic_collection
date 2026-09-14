@@ -26,24 +26,20 @@ def _resolve_api_key(api_key: str | None) -> str:
 
 
 def _extract_code(data: Any) -> str | int | None:
+    """错误码提取；非 str/int（list/dict 等）归一为 None，避免 set 成员判断 TypeError（#227）。"""
     if not isinstance(data, dict):
         return None
-    br = data.get("base_resp")
-    if isinstance(br, dict):
-        c = br.get("status_code")
-        if c is not None:
-            return c
-        c = br.get("code")
-        if c is not None:
-            return c
-    for k in ("code", "error_code", "status_code", "resp_code"):
-        if k in data and data[k] is not None:
-            return data[k]
-    err = data.get("error")
-    if isinstance(err, dict):
-        for k in ("code", "error_code", "status_code"):
-            if k in err and err[k] is not None:
-                return err[k]
+    for src, keys in (
+        (data.get("base_resp"), ("status_code", "code")),
+        (data, ("code", "error_code", "status_code", "resp_code")),
+        (data.get("error"), ("code", "error_code", "status_code")),
+    ):
+        if not isinstance(src, dict):
+            continue
+        for k in keys:
+            c = src.get(k)
+            if isinstance(c, (str, int)):
+                return c
     return None
 
 
@@ -101,6 +97,10 @@ def call_minimax_chat(
         base = data.get("base_resp") if isinstance(data, dict) else None
         if isinstance(base, dict) and base.get("status_code") not in (None, 0):
             sc = base["status_code"]
+            if not isinstance(sc, (str, int)):
+                raise RuntimeError(
+                    f"MiniMax base_resp.status_code 类型异常: {type(sc).__name__}: {str(sc)[:200]}"
+                )
             if sc in _RETRY_CODES and attempt == 0:
                 continue
             if sc != 0:
@@ -114,17 +114,32 @@ def call_minimax_chat(
 def _parse_outline_from_response(data: Any) -> dict[str, Any]:
     """从模型响应提取大纲对象。
 
-    非 dict 响应、或 tool_calls arguments 可解析但非 JSON 对象时抛
-    RuntimeError（salon_flow 逐题捕获跳过，不让 AttributeError 逃逸）。
+    非 dict 响应、choices/message/tool_calls/function 类型异常、或 arguments
+    可解析但非 JSON 对象时统一抛 RuntimeError（salon_flow 逐题捕获跳过，
+    不让 AttributeError/KeyError/TypeError 逃逸，#227）。
     """
     if not isinstance(data, dict):
         raise RuntimeError(f"MiniMax 响应非 dict: {type(data).__name__}: {str(data)[:200]}")
     choices = data.get("choices") or []
+    if not isinstance(choices, list):
+        raise RuntimeError(f"choices 非 list: {type(choices).__name__}: {str(choices)[:200]}")
     if choices:
-        msg = choices[0].get("message") or {}
+        first = choices[0]
+        if not isinstance(first, dict):
+            raise RuntimeError(f"choices[0] 非 dict: {type(first).__name__}: {str(first)[:200]}")
+        msg = first.get("message") or {}
+        if not isinstance(msg, dict):
+            raise RuntimeError(f"choices[0].message 非 dict: {type(msg).__name__}: {str(msg)[:200]}")
         tool_calls = msg.get("tool_calls") or []
+        if not isinstance(tool_calls, list):
+            raise RuntimeError(f"tool_calls 非 list: {type(tool_calls).__name__}: {str(tool_calls)[:200]}")
         if tool_calls:
-            fn = tool_calls[0].get("function") or {}
+            tc0 = tool_calls[0]
+            if not isinstance(tc0, dict):
+                raise RuntimeError(f"tool_calls[0] 非 dict: {type(tc0).__name__}: {str(tc0)[:200]}")
+            fn = tc0.get("function") or {}
+            if not isinstance(fn, dict):
+                raise RuntimeError(f"tool_calls[0].function 非 dict: {type(fn).__name__}: {str(fn)[:200]}")
             args_raw = fn.get("arguments") or ""
             if isinstance(args_raw, dict):
                 return args_raw

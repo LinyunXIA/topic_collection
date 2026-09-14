@@ -42,6 +42,7 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
 
     拉不到已有链接集合时必须中止：返回空集会让全量被当新记录写入，造成重复行。
     兼容 records 包装与 fields+data 行式两种形态；其余形态一律抛错（A3）。
+    不按「环境」过滤：dev/test 共享 Base 下跨环境 URL 也去重，test 视图可能缺行（非丢失，#229）。
     """
     links: set[str] = set()
     offset = 0

@@ -9,7 +9,7 @@
 单进程、无网络服务、无队列，一次 cron 运行 = 抓全部 → 下载入库 → 查待推 → 组卡片 → 推飞书 → 标已推 → 退出。
 
 ```
-                cron（每天 8:00 / 16:00）
+                cron（每天 8:30 / 16:00）
                       │  python -m feedkicker.push
                       ▼
             ┌───────────────────────┐
@@ -768,8 +768,9 @@ bitable（CLI + facade re-export，§21.2）
 
 - **facade 约定**：被搬走的公共函数在原模块以 `from x import y as y` 显式 re-export（抑制 ruff F401 且表明是刻意重导），全部既有调用点（`store.get_ppt_last_status`、`feishu.build_card`、`mm.PROMPT_TEMPLATES` 等 ~25 处）与测试 monkeypatch 目标零改动。
 - **monkeypatch 约定**：跨模块调用必须走模块属性访问（`feishu.send`、`bitable_lark._run`、`wiki_lark.time.sleep`），不可 `from x import y` 解包后调用，否则 patch 不生效。bitable 拆分（§21.4）后随之迁移的 patch 点：`bitable._run/_parse/_ok/_data/lark_bin/subprocess/os/SHANGHAI` → `bitable_lark.*`；`bitable.find_base_by_title/create_base/get_table_id/create_table/ensure_initialized` → `bitable_schema.*`；`bitable.setup_view/create_date_view/ensure_archive_date_field/set_tenant_readonly` → `bitable_views.*`；`bitable.existing_links/sync_records/purge_all_records/sync_env` → `bitable_records.*`；`bitable._cell_str/_shanghai_date/backfill_empty_archive_dates` → `bitable_backfill.*`。外部调用点（push/wiki/wiki_lark/wiki_home/topic/bitable_purge）同步改为引用 owner 模块。此前的 `wk.time.sleep` → `wiki_lark.time.sleep` 迁移遵循同一约定。
-- 拆分后行数（`wc -l feedkicker/*.py`，2026-09-14 实测）：全部 ≤200；最大 feishu_card.py 195；config.py 199 → #171 拆分为 config.py 138 + config_models.py 80（原先 1 行之差逼近 200 行门）。
+- 拆分后行数（`wc -l feedkicker/*.py`，2026-09-14 实测）：全部 ≤200；最大 feishu_card.py 200（贴线）；config.py 199 → #171 拆分为 config.py 138 + config_models.py 80（原先 1 行之差逼近 200 行门）。
 - **config 拆分（#171）**：`config_models.py` 承载 `PROJECT_ROOT`/`DEFAULT_DB_PATH`/`VALID_ENVS` 与全部 dataclass（`Config.db_path` 默认值一并迁入，`config` 单向依赖 `config_models`，无环）；`config.py` 以 `from feedkicker.config_models import X as X` 全量 re-export，`db_path_for`/`config_path_for`/`load_config` 仍定义于 `config.py`，故 conftest 对 `config.config_path_for` 与调用方对 `feedkicker.config.load_config` 的 patch 目标不变。
+- **包版本解耦（#228 裁定）**：`pyproject.toml` `version` 是安装包版本，与产品/文档 v0.x 解耦、不随文档同步；产品版本以 PRD 为准。
 
 ### 21.3 质量门配置
 
@@ -852,7 +853,7 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 - [x] wiki_home.py：list_outline_docs / build_home_md / update_homepage / CLI
 - [x] salon_flow 卡片后接入，失败仅 WARNING；dry-run 预览
 - [x] tests/test_wiki_home.py（13 用例，subprocess 全 mock）；既有 sf.run 测试 autouse 打桩 update_homepage 防真实子进程
-- [x] ruff / basedpyright 0 errors，274 用例全绿，模块 ≤200 行
+- [x] ruff / basedpyright 0 errors，277 用例全绿，模块 ≤200 行
 - [x] 合并后人工执行一次 `wiki_home --env prod` 存量回填并核对主页渲染（3 篇，2026年9月表格）—— 执行状态待用户确认（截至本次裁决未核实）（2026-09-14 执行并复核，prod 重建 10 篇索引）
 
 ---
@@ -883,3 +884,19 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 - [x] F27 三件套一致性自检（独立后续任务，2026-09-14 完成）
 
 **F27 自检结论（2026-09-14）**：六项检查（参数/退出码、脱敏、三环境、交叉引用、prod 示例、与代码一致）全部 PASS，CLI.md 回修 5 处示例；自检记录 `.omo/evidence/docs-trio/f27-selfcheck.log`（本地，gitignored）。
+
+---
+
+## 24. v0.7+ — 第四轮审计修复（#217–#229，2026-09-14）
+
+第四轮全量审计（4 车道；P0=0 / P1×3 组 / P2×8 / P3×3 组）的修复落在三 commit（P1/P2/P3）与对应 PR。
+行为修复见各 issue 与 PR 描述；本节记录**不改行为的取舍与语义说明**（#229 裁定，与代码 docstring 互补）。
+
+### 24.1 已知取舍（明示语义，不改变行为）
+
+- **并发 `--reseed` 无互斥**：两个操作员同时跑会在清理窗口互抢（重复行/半清）；本机单进程运维，按运维纪律单点执行，不加锁（`bitable.main` docstring 同注）。
+- **卡片 20KB 裁剪跨源语义**：按「源分组、组内最旧在前」的拼接序 `pop(0)` 丢最旧，跨源时先丢完前面的源；单源内语义正确，跨源为近似（`feishu_card.build_card` docstring 同注）。
+- **`existing_links` 跨环境去重**：共享 Base 下不按「环境」过滤链接 → 另一环境已归档的同一 URL 不在本环境重复写（test 视图缺行，非数据丢失）；按环境 `--reseed` 后收敛。
+- **`canonicalize` 键规则漂移**：省略默认端口/保留 userinfo 等归一变更会让 guid-less 源旧行 `entry_key` 与新 key 不一致，升级首轮可能重复推卡一次（一次性影响）。
+- **`is_ppt_synced` 无 feed 过滤**：仅按 `entry_key` 判定，理论碰撞才误伤；实际 `entry_key` 为 URL/guid，不会跨源碰撞。
+- **salon 全失败返回码不变**：`selected` 非空但 0 条成功时仅 `log.warning`（salon_flow + salon_notify），rc 仍 0，不触发 SOS。

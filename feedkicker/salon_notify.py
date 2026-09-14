@@ -25,6 +25,7 @@ def send_wiki_card(
     返回 True 表示送达（或 dry-run / 无链接），False 表示最终失败。
     """
     if not wiki_urls:
+        log.warning("无 Wiki 链接（0 条成功），跳过卡片推送")
         return True
     payload = feishu.build_card(
         [],
