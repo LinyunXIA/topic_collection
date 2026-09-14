@@ -29,18 +29,20 @@ class DistCheck:
 
 
 def parse_results(raw: str) -> tuple[list[dict[str, Any]], int]:
-    """解析 LLM 原始文本 → `(results, dropped)`；先经 `_load_json_obj` 剥离 thinking 推理块并容忍
-    JSON 围栏/前后说明。非法 JSON / 顶层非对象 / `results` 非列表（兼容 DESIGN 的 `scores` 别名）
-    → raise ValueError（调用方重试后计失败批）；单条非对象/缺名/空名丢弃计数，不整批弃。
+    """解析 LLM 原始文本 → `(scores, dropped)`，**权威口径 `scores` 数组 / `dimensions` 六维 /
+    `gate: "pass"|"zero"`（DESIGN §26.4）**；兼容回退 `results` 主键与 `scores` 维度键。
+
+    先经 `_load_json_obj` 剥离 thinking 推理块并容忍 JSON 围栏/前后说明；非法 JSON / 顶层非对象 /
+    权威键非列表 → raise ValueError（调用方重试后计失败批）；单条非对象/缺名/空名丢弃计数，不整批弃。
     """
     obj = _load_json_obj(raw)
     if obj is None:
         raise ValueError("LLM 输出不是合法 JSON 对象")
-    items = obj.get("results")
+    items = obj.get("scores")
     if not isinstance(items, list):
-        items = obj.get("scores")
+        items = obj.get("results")
     if not isinstance(items, list):
-        raise ValueError("results 字段缺失或非列表")
+        raise ValueError("scores 字段缺失或非列表")
     parsed: list[dict[str, Any]] = []
     dropped = 0
     for item in items:
@@ -53,7 +55,7 @@ def parse_results(raw: str) -> tuple[list[dict[str, Any]], int]:
             continue
         parsed.append({**item, "话题名称": name})
     if dropped:
-        log.warning("丢弃 %d 条非法 results 元素（非对象/缺名/空名）", dropped)
+        log.warning("丢弃 %d 条非法 scores 元素（非对象/缺名/空名）", dropped)
     return parsed, dropped
 
 
@@ -82,13 +84,17 @@ def _dim(scores: dict[str, Any], key: str) -> tuple[float | None, bool]:
     return (val, False) if val is not None else (None, True)
 
 
-def weighted_total(scores: dict[str, Any]) -> tuple[float | None, list[str]]:
-    """缺失维剔除权重、其余按剩余权重归一后加权，round 到 1 位小数；全维缺失 → `(None, 全维)`。"""
+def weighted_total(
+    scores: dict[str, Any], missing_extra: Any = ()
+) -> tuple[float | None, list[str]]:
+    """缺失维剔除权重、其余按剩余权重归一后加权，round 到 1 位小数；全维缺失 → `(None, 全维)`；
+    `missing_extra`（模型 `missing` 列表）与「值为 `"缺失"`」两种缺失表达一并归一。"""
+    extra = {str(k) for k in missing_extra}
     present: list[tuple[str, float]] = []
     missing: list[str] = []
     for key in _WEIGHTS:
         val, is_missing = _dim(scores, key)
-        if is_missing or val is None:
+        if is_missing or val is None or key in extra:
             missing.append(key)
         else:
             present.append((key, val))
@@ -100,31 +106,17 @@ def weighted_total(scores: dict[str, Any]) -> tuple[float | None, list[str]]:
 
 
 def _zero_gate(gate: Any) -> bool:
-    if gate is None or isinstance(gate, bool):
-        return False
-    if isinstance(gate, (int, float)):
+    if isinstance(gate, (int, float)) and not isinstance(gate, bool):
         return gate == 0
-    return str(gate).strip().lower() in ("0", "0.0", "zero")
-
-
-def _reason_with_flags(item: dict[str, Any]) -> str:
-    reason = str(item.get("reason") or "").strip()
-    if len(reason) > _REASON_LIMIT:
-        log.warning("话题 %s 理由超 %d 字，截断", item.get("话题名称"), _REASON_LIMIT)
-        reason = reason[:_REASON_LIMIT] + "…"
-    if item.get("risk_flag") and "risk" not in reason:
-        reason += "｜risk"
-    if item.get("source_flag") and "source" not in reason:
-        reason += "｜source"
-    return reason
+    return str(gate).strip().lower() in ("zero", "0", "0.0")
 
 
 def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
-    scores = item.get("scores")
+    scores = item.get("dimensions")
     if not isinstance(scores, dict):
-        scores = item.get("dimensions")
+        scores = item.get("scores")
     scores = scores if isinstance(scores, dict) else {}
-    total, missing = weighted_total(scores)
+    total, missing = weighted_total(scores, item.get("missing") or ())
     pain, pain_missing = _dim(scores, "普适痛点强度")
     layer, layer_missing = _dim(scores, "分层承载力")
     veto = (not pain_missing and pain == 0) or (not layer_missing and layer == 0)
@@ -133,6 +125,14 @@ def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]
     model_total = _num(item.get("weighted_total"))
     if total is not None and model_total is not None and abs(total - model_total) > 0.1:
         log.warning("话题 %s 总分重算=%s 与模型值=%s 偏差 >0.1", item.get("话题名称"), total, model_total)
+    reason = str(item.get("reason") or "").strip()
+    if len(reason) > _REASON_LIMIT:
+        log.warning("话题 %s 理由超 %d 字，截断", item.get("话题名称"), _REASON_LIMIT)
+        reason = reason[:_REASON_LIMIT] + "…"
+    if item.get("risk_flag") and "risk" not in reason:
+        reason += "｜risk"
+    if item.get("source_flag") and "source" not in reason:
+        reason += "｜source"
     return {
         "record_id": row.get("record_id") or "",
         "话题名称": str(item.get("话题名称") or "").strip(),
@@ -142,7 +142,7 @@ def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]
         "missing": missing,
         "risk_flag": bool(item.get("risk_flag")),
         "source_flag": bool(item.get("source_flag")),
-        "reason": _reason_with_flags(item),
+        "reason": reason,
         "rescue": str(item.get("rescue") or "").strip(),
     }
 
@@ -165,14 +165,13 @@ def normalize_results(
         row = by_key.get(key)
         if row is None:
             dropped += 1
-            log.warning("results 多余项（表内无此话题，忽略）：%s", item.get("话题名称"))
+            log.warning("scores 多余项（表内无此话题，忽略）：%s", item.get("话题名称"))
             continue
         matched.add(key)
         normalized.append(_normalize_item(item, row))
-    for key, row in by_key.items():
-        if key not in matched:
-            dropped += 1
-            log.warning("表内话题未被返回（缺返回行）：%s", row.get("话题名称"))
+    for key in set(by_key) - matched:
+        dropped += 1
+        log.warning("表内话题未被返回（缺返回行）：%s", by_key[key].get("话题名称"))
     return normalized, check_distribution(normalized), dropped
 
 
@@ -187,9 +186,9 @@ def normalize(
 def check_distribution(items: list[dict[str, Any]]) -> DistCheck:
     """按 PRD §22.7 校验 `≥4.0 ≤20%` 与 `<2.0 ≥15%`；仅收集 violation，不自动调分。"""
     scored = [i for i in items if i.get("weighted_total") is not None]
+    if not scored:
+        return DistCheck(0, 0.0, 0.0, [])
     total = len(scored)
-    if total == 0:
-        return DistCheck(total=0, ge4_ratio=0.0, lt2_ratio=0.0, violations=[])
     ge4 = sum(1 for i in scored if i["weighted_total"] >= 4.0) / total
     lt2 = sum(1 for i in scored if i["weighted_total"] < 2.0) / total
     violations: list[str] = []

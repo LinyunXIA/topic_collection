@@ -24,12 +24,13 @@ def _stub_llm_echo(monkeypatch: pytest.MonkeyPatch) -> None:
         }
         results = [
             {
-                "话题名称": n.strip(), "gate": "pass", "scores": dims, "weighted_total": 4.0,
+                "话题名称": n.strip(), "gate": "pass", "dimensions": dims, "missing": [],
+                "weighted_total": 4.0,
                 "risk_flag": False, "source_flag": False, "reason": "依据字段",
             }
             for n in names
         ]
-        return json.dumps({"results": results}, ensure_ascii=False)
+        return json.dumps({"scores": results}, ensure_ascii=False)
 
     monkeypatch.setattr(score_llm, "call_llm", fake)
 

@@ -87,15 +87,15 @@ def _summary(out: str) -> dict:
 
 def _result(name: str, **over: object) -> dict[str, object]:
     item: dict[str, object] = {
-        "话题名称": name, "gate": "pass", "scores": dict(_DIMS_4), "weighted_total": 4.0,
-        "risk_flag": False, "source_flag": False, "reason": "依据 可使用工具",
+        "话题名称": name, "gate": "pass", "dimensions": dict(_DIMS_4), "missing": [],
+        "weighted_total": 4.0, "risk_flag": False, "source_flag": False, "reason": "依据 可使用工具",
     }
     item.update(over)
     return item
 
 
 def _results(names: list[str], **over: object) -> str:
-    return json.dumps({"results": [_result(n, **over) for n in names]}, ensure_ascii=False)
+    return json.dumps({"scores": [_result(n, **over) for n in names]}, ensure_ascii=False)
 
 
 def _stub_llm(monkeypatch: pytest.MonkeyPatch, responder) -> list[str]:
@@ -118,10 +118,31 @@ def _echo_responder(prompt: str) -> str:
 
 def test_parse_scores_plain_and_fence_and_thinking() -> None:
     assert score_parse.parse_scores(_results(["A"]))[0]["话题名称"] == "A"
-    fenced = '说明\n```json\n{"results": [{"话题名称": "B"}]}\n```\n'
+    fenced = '说明\n```json\n{"scores": [{"话题名称": "B"}]}\n```\n'
     assert score_parse.parse_scores(fenced)[0]["话题名称"] == "B"
-    thinking = '<think foo="1">推导</think>{"results": [{"话题名称": "C"}]}'
+    thinking = '<think foo="1">推导</think>{"scores": [{"话题名称": "C"}]}'
     assert score_parse.parse_scores(thinking)[0]["话题名称"] == "C"
+
+
+def test_parse_scores_results_fallback_compat() -> None:
+    raw = json.dumps(
+        {"results": [{"话题名称": "D", "gate": "pass", "scores": dict(_DIMS_4)}]}, ensure_ascii=False
+    )
+
+    items, _ = score_parse.normalize(
+        score_parse.parse_scores(raw), [{"record_id": "recD", "话题名称": "D"}]
+    )
+
+    assert items[0]["话题名称"] == "D" and items[0]["weighted_total"] == 4.0
+
+
+def test_dimensions_key_drives_weighted_total() -> None:
+    raw = _results(["E"])
+    items, _ = score_parse.normalize(
+        score_parse.parse_scores(raw), [{"record_id": "recE", "话题名称": "E"}]
+    )
+
+    assert items[0]["scores"] == _DIMS_4 and items[0]["weighted_total"] == 4.0
 
 
 @pytest.mark.parametrize("raw", ['{}', '{"results": "x"}', '{"results": 3}', '{"scores": "x"}'])
@@ -133,7 +154,7 @@ def test_parse_scores_invalid_raises(raw: str) -> None:
 def test_parse_results_drops_invalid_items() -> None:
     raw = json.dumps(
         {
-            "results": [
+            "scores": [
                 "not-a-dict",
                 {"gate": "pass"},
                 {"话题名称": "  "},
@@ -164,17 +185,37 @@ def test_weighted_total_rounds_to_one_decimal() -> None:
     assert total == 3.9
 
 
-def test_gate_zero_sets_total_zero() -> None:
+def test_gate_zero_string_skips_dimensions() -> None:
+    items, _ = score_parse.normalize(
+        [_result("A", gate="zero", dimensions={}, reason="无内容内核")],
+        [{"record_id": "rec1", "话题名称": "A"}],
+    )
+
+    assert items[0]["weighted_total"] == 0.0 and len(items[0]["missing"]) == 6
+
+
+def test_gate_numeric_zero_tolerated() -> None:
     items, _ = score_parse.normalize([_result("A", gate=0)], [{"record_id": "rec1", "话题名称": "A"}])
 
     assert items[0]["weighted_total"] == 0.0
+
+
+def test_missing_list_drives_renormalize() -> None:
+    dims = dict(_DIMS_4)
+    dims["普适痛点强度"] = 5
+    items, _ = score_parse.normalize(
+        [_result("A", dimensions=dims, missing=["讲解成本"])],
+        [{"record_id": "rec1", "话题名称": "A"}],
+    )
+
+    assert items[0]["weighted_total"] == 4.3 and "讲解成本" in items[0]["missing"]
 
 
 def test_veto_pain_zero_keeps_dimensions() -> None:
     scores = dict(_DIMS_4)
     scores["普适痛点强度"] = 0
     items, _ = score_parse.normalize(
-        [_result("A", scores=scores)], [{"record_id": "rec1", "话题名称": "A"}]
+        [_result("A", dimensions=scores)], [{"record_id": "rec1", "话题名称": "A"}]
     )
 
     assert items[0]["weighted_total"] == 0.0
@@ -185,7 +226,7 @@ def test_veto_layer_zero() -> None:
     scores = dict(_DIMS_4)
     scores["分层承载力"] = 0
     items, _ = score_parse.normalize(
-        [_result("A", scores=scores)], [{"record_id": "rec1", "话题名称": "A"}]
+        [_result("A", dimensions=scores)], [{"record_id": "rec1", "话题名称": "A"}]
     )
 
     assert items[0]["weighted_total"] == 0.0
@@ -204,7 +245,7 @@ def test_all_missing_returns_none() -> None:
     scores = {k: "缺失" for k in _DIMS_4}
 
     total, missing = score_parse.weighted_total(scores)
-    items, _ = score_parse.normalize([_result("A", scores=scores)], [{"record_id": "rec1", "话题名称": "A"}])
+    items, _ = score_parse.normalize([_result("A", dimensions=scores)], [{"record_id": "rec1", "话题名称": "A"}])
 
     assert total is None and len(missing) == 6
     assert items[0]["weighted_total"] is None
@@ -317,7 +358,7 @@ def test_print_dry_run_and_summary(capsys) -> None:
 def test_run_results_not_list_retries_then_failed_batch(tmp_path, monkeypatch, capsys) -> None:
     cfg = _write_cfg(tmp_path)
     _patch_lark(monkeypatch, pages=[_records(2)], field_names=_MM_FIELDS)
-    _stub_llm(monkeypatch, lambda prompt: '{"results": "bad"}')
+    _stub_llm(monkeypatch, lambda prompt: '{"scores": "bad"}')
 
     rc = score_flow.main(_args(cfg, tmp_path))
 
@@ -328,7 +369,7 @@ def test_run_results_not_list_retries_then_failed_batch(tmp_path, monkeypatch, c
 def test_run_empty_results_counts_empty_batch(tmp_path, monkeypatch, capsys) -> None:
     cfg = _write_cfg(tmp_path)
     _patch_lark(monkeypatch, pages=[_records(2)], field_names=_MM_FIELDS)
-    _stub_llm(monkeypatch, lambda prompt: '{"results": []}')
+    _stub_llm(monkeypatch, lambda prompt: '{"scores": []}')
 
     rc = score_flow.main(_args(cfg, tmp_path))
 
@@ -370,7 +411,7 @@ def test_run_dry_run_listing_and_summary(tmp_path, monkeypatch, capsys) -> None:
 def test_run_distribution_violation_warning(tmp_path, monkeypatch, caplog) -> None:
     cfg = _write_cfg(tmp_path)
     _patch_lark(monkeypatch, pages=[_records(1)], field_names=_MM_FIELDS)
-    _stub_llm(monkeypatch, lambda prompt: _results(["话题1"], scores={k: 5.0 for k in _DIMS_4}))
+    _stub_llm(monkeypatch, lambda prompt: _results(["话题1"], dimensions={k: 5.0 for k in _DIMS_4}))
 
     with caplog.at_level(logging.WARNING):
         rc = score_flow.main(_args(cfg, tmp_path))
