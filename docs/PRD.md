@@ -120,23 +120,30 @@ v2 **重开 = 瘦身**。真正的起点比 v1 小一个数量级：**不是一�
 | `feedkicker/config.py` | 读 `config-{env}.yaml`（dev/test/prod 各一，均 gitignored）+ 环境变量覆盖（`FEISHU_WEBHOOK`/`FEISHU_SECRET`/`TC_APP_ENV`/`TC_DB`）；dataclass 类型化 |
 | `feedkicker/fetch.py` | `feedparser` 抓取 + 归一化 `{key,title,url,description,published_at}` + 每源错误捕获 |
 | `feedkicker/store.py` | sqlite 主表（articles/feeds）+ facade re-export；下载入库/查待推/标已推/首跑判定 |
+| `feedkicker/store_conn.py` | sqlite 连接与 schema 迁移（WAL + busy_timeout；`store` re-export） |
 | `feedkicker/store_meta.py` | `meta` 键值表（叶子模块：连败计数等运行期状态） |
 | `feedkicker/store_salon.py` | salon 选题 sqlite 状态（ppt 同步标记/last_status/落库） |
 | `feedkicker/feishu.py` | webhook 发送 + 业务码校验 + facade re-export 卡片构建 |
 | `feedkicker/feishu_card.py` | interactive 汇总卡片构建/转义/20KB 降级裁剪/strip_actions |
+| `feedkicker/feishu_card_body.py` | 卡片 body 元素组装与截断提示（自 feishu_card 抽出，§21.2） |
+| `feedkicker/feishu_host.py` | 飞书租户域名单点（`TC_FEISHU_HOST` 可覆盖） |
 | `feedkicker/bitable.py` | 多维表格归档（lark-cli 封装、跨源去重、双分组视图，见 §14–§16） |
 | `feedkicker/bitable_purge.py` | 滚动保留的 bitable 侧删除（§20） |
+| `feedkicker/bitable_reseed.py` | `--reseed` 前置清空 `purge_all_records`（`bitable_records` re-export，§21.4） |
 | `feedkicker/minimax.py` | MiniMax function-calling 调用 + facade |
 | `feedkicker/minimax_schema.py` | 大纲 prompt 模板与 function-calling schema |
 | `feedkicker/wiki.py` | Wiki 归档编排 + `__main__` CLI |
 | `feedkicker/wiki_lark.py` | lark-cli docs/wiki 调用与响应解析 |
 | `feedkicker/wiki_home.py` | Wiki「首页」自动索引：node-list → 月块表格 → overwrite（§22） |
-| `feedkicker/topic.py` | 已选题分页拉取 |
+| `feedkicker/topic.py` | 已选题分页拉取 + facade re-export |
+| `feedkicker/topic_records.py` | topic 响应记录归一（容器校验，自 topic 抽出，§21.2） |
 | `feedkicker/salon_flow.py` | 沙龙编排主流程（§19） |
 | `feedkicker/salon_md.py` | 大纲 markdown 生成/stub |
 | `feedkicker/salon_notify.py` | 大纲卡片与连败 SOS |
 | `feedkicker/push.py` | push 编排主流程（先档案后推送）；`--dry-run` 只打印不发 |
 | `feedkicker/purge.py` | `tc-purge` 编排：365 天滚动保留（§20） |
+
+以上为职责概览；子模块完整清单与依赖单向图以 `DESIGN §3` / `§21.2` 为准。
 
 ---
 

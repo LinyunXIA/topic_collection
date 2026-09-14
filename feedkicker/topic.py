@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from feedkicker import bitable_lark
+from feedkicker.topic_records import _extract_records as _extract_records
 
 log = logging.getLogger(__name__)
 
@@ -26,34 +27,6 @@ def _positive_int(value: str) -> int:
     if n < 1:
         raise argparse.ArgumentTypeError(f"必须是正整数: {value}")
     return n
-
-
-def _extract_records(data: dict[str, Any]) -> list[dict[str, Any]]:
-    records = data.get("records") or data.get("items") or []
-    if records:
-        return list(records)
-    fields: list[str] = data.get("fields") or []
-    rows: list[Any] = data.get("data") or []
-    if not rows:
-        return []
-    converted: list[dict[str, Any]] = []
-    rids: list[str] = data.get("record_ids") or data.get("recordIds") or data.get("ids") or data.get("record_id_list") or data.get("recordId_list") or data.get("recordIdList") or []
-    for i, r in enumerate(rows):
-        if isinstance(r, dict):
-            if "fields" in r or "record" in r:
-                fds = r.get("fields") or r.get("record") or {}
-                rid = r.get("record_id") or r.get("id") or r.get("recordId") or (rids[i] if i < len(rids) else "")
-                converted.append({"record_id": rid, "fields": fds, **({k: v for k, v in r.items() if k not in ("fields", "record")} if isinstance(r, dict) else {})})
-            else:
-                rid = r.get("record_id") or r.get("id") or (rids[i] if i < len(rids) else "")
-                converted.append({"record_id": rid, "fields": r})
-        elif isinstance(r, list) and fields:
-            d = {fields[idx]: r[idx] for idx in range(min(len(fields), len(r)))}
-            rid = rids[i] if i < len(rids) else ""
-            converted.append({"record_id": rid, "fields": d})
-        else:
-            converted.append({"record_id": rids[i] if i < len(rids) else "", "fields": {}})
-    return converted
 
 
 def fetch_selected_topics(

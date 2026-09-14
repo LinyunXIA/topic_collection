@@ -90,21 +90,22 @@ def call_minimax_chat(
             if resp.status_code in (429, 529) and attempt == 0:
                 log.warning("MiniMax HTTP %d 限流，重试1次", resp.status_code)
                 continue
-            if code is not None and code != 0:
+            if code is not None and str(code).strip() != "0":
                 raise RuntimeError(f"MiniMax 错误 {code}: {data}")
             if resp.status_code >= 400:
                 raise RuntimeError(f"MiniMax HTTP {resp.status_code}: {data}")
         base = data.get("base_resp") if isinstance(data, dict) else None
-        if isinstance(base, dict) and base.get("status_code") not in (None, 0):
-            sc = base["status_code"]
+        sc = base.get("status_code") if isinstance(base, dict) else None
+        if isinstance(sc, str) and sc.strip().isdigit():
+            sc = int(sc.strip())
+        if sc is not None and sc != 0:
             if not isinstance(sc, (str, int)):
                 raise RuntimeError(
                     f"MiniMax base_resp.status_code 类型异常: {type(sc).__name__}: {str(sc)[:200]}"
                 )
             if sc in _RETRY_CODES and attempt == 0:
                 continue
-            if sc != 0:
-                raise RuntimeError(f"MiniMax base_resp {sc}: {data}")
+            raise RuntimeError(f"MiniMax base_resp {sc}: {data}")
         return data
     if last_data is not None:
         raise RuntimeError(f"MiniMax 重试后仍失败: {last_data}")

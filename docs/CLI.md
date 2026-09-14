@@ -378,7 +378,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 
 ### 退出码
 
-`0` = 成功（含 dry-run）；`1` = 未捕获异常或更新失败（`update_homepage` 返回 False）；`2` = 配置加载失败，或 `wiki.space_id` / `parent_token`（含 salon 回退）缺失。
+`0` = 成功（含 dry-run）；`1` = 未捕获异常或更新失败（`update_homepage` 返回 False）；`2` = 配置加载失败，或 `wiki.space_id` / `parent_token`（含 salon 回退）为空或含 `<` 占位（占位时零 lark 调用直接拒绝）。
 
 ### 注意 / 坑
 
@@ -549,7 +549,7 @@ https://<host>/wiki/wiki_dry_示例话题
 
 ### 退出码
 
-`0` = 成功（含 dry-run）；`2` = `--file` 读取失败（不存在 / 非 UTF-8 / 是目录），或**非 dry-run 且 space_id / parent 为空或占位**（拒绝建孤儿 docx，零 lark 调用），或创建失败（`docs +create` 业务失败、取不到 `document_id` 等 `RuntimeError`，统一 `log.error` 后返回 `2`）；配置加载异常未捕获时进程以 Python 异常非 0 结束。
+`0` = 成功（含 dry-run）；`2` = `--file` 读取失败（不存在 / 非 UTF-8 / 是目录），或**非 dry-run 且 space_id / parent 为空或占位**（拒绝建孤儿 docx，零 lark 调用），或创建失败（缺 lark-cli、`docs +create` 业务失败、取不到 `document_id` 等 `RuntimeError`/`OSError`，统一 `log.error` 后返回 `2`）；配置回退阶段的 `load_config` 异常被 `pass` 吞掉，最终由 token 守卫统一判定 rc `2`（不再以未捕获异常收场）。
 
 ### 注意 / 坑
 

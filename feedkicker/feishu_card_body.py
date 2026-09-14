@@ -1,6 +1,6 @@
 """卡片 body 元素组装（自 feishu_card 抽出，保持 feishu_card.py ≤200 行，DESIGN §21.2）。
 
-超限裁剪顺序（#222）：先剥 description、再从 selected 头部丢最旧条目、
+超限裁剪顺序（#222/#233）：先剥 description、再丢全局最旧（time_key 最小）条目、
 最后从 wiki_urls 尾部丢链接并在卡片提示截断数。
 """
 

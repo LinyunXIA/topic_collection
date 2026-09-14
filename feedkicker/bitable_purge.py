@@ -57,6 +57,7 @@ def _list_records(
     out: list[tuple[str, dict[str, Any]]] = []
     offset = 0
     first = True
+    prev_fp = ""
     env_args = (
         ["--field-id", "环境", "--field-id", "推送时间", "--field-id", "归档日期"]
         if env_name is not None
@@ -84,6 +85,7 @@ def _list_records(
             return out, True, False
         first = False
         data = bitable_lark._data(proc)
+        prev_fp = bitable_lark._page_guard(prev_fp, data)
         records: list[dict[str, Any]] = data.get("records") or []
         if records:
             for rec in records:

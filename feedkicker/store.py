@@ -1,9 +1,9 @@
 from __future__ import annotations
 
 import sqlite3
-from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from feedkicker.store_conn import _SCHEMA as _SCHEMA, connect as connect
 from feedkicker.store_meta import (  # noqa: I001
     get_meta as get_meta,
     set_meta as set_meta,
@@ -18,50 +18,6 @@ from feedkicker.store_salon import (
 
 if TYPE_CHECKING:
     from feedkicker.config import Feed
-
-_SCHEMA = """
-CREATE TABLE IF NOT EXISTS articles (
-  feed_id      TEXT NOT NULL,
-  entry_key    TEXT NOT NULL,
-  title        TEXT NOT NULL,
-  url          TEXT NOT NULL,
-  description  TEXT,
-  published_at TEXT,
-  first_seen   TEXT NOT NULL,
-  pushed_at    TEXT,
-  PRIMARY KEY (feed_id, entry_key)
-);
-
-CREATE TABLE IF NOT EXISTS feeds (
-  feed_id      TEXT PRIMARY KEY,
-  url          TEXT NOT NULL,
-  first_run_at TEXT NOT NULL,
-  fail_streak  INTEGER DEFAULT 0
-);
-
-CREATE INDEX IF NOT EXISTS idx_articles_pending ON articles (pushed_at)
-  WHERE pushed_at IS NULL;
-
-CREATE TABLE IF NOT EXISTS meta (
-  key   TEXT PRIMARY KEY,
-  value TEXT NOT NULL
-);
-"""
-
-
-def connect(db_path: str | Path) -> sqlite3.Connection:
-    path = Path(db_path)
-    if str(path) != ":memory:":
-        path.parent.mkdir(parents=True, exist_ok=True)
-    conn = sqlite3.connect(str(path))
-    conn.executescript(_SCHEMA)
-    cols = {r[1] for r in conn.execute("PRAGMA table_info(articles)")}
-    if "bitable_synced_at" not in cols:
-        conn.execute("ALTER TABLE articles ADD COLUMN bitable_synced_at TEXT")
-    if "ppt_synced_at" not in cols:
-        conn.execute("ALTER TABLE articles ADD COLUMN ppt_synced_at TEXT")
-    conn.commit()
-    return conn
 
 
 def download(

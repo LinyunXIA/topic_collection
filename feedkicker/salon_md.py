@@ -19,18 +19,48 @@ def topic_title(rec: dict[str, Any]) -> str:
     return rid or "未命名话题"
 
 
+def record_status(rec: dict[str, Any]) -> str:
+    """「讨论状态」归一：list 取首个字符串，str 直取，其余空串（salon_flow 过滤用）。"""
+    fields = rec.get("fields")
+    v = fields.get("讨论状态") if isinstance(fields, dict) else None
+    if isinstance(v, list):
+        return v[0] if v and isinstance(v[0], str) else ""
+    return v if isinstance(v, str) else ""
+
+
+def _slides_of(outline: Any) -> list[dict[str, Any]]:
+    """slides 归一：缺省/None → 空；非 list 显式 raise（由 salon_flow 逐题捕获跳过）；非 dict 项跳过。"""
+    if not isinstance(outline, dict):
+        return []
+    slides = outline.get("slides")
+    if slides is None:
+        return []
+    if not isinstance(slides, list):
+        raise ValueError(f"大纲 slides 非列表（{type(slides).__name__}），无法渲染")
+    return [s for s in slides if isinstance(s, dict)]
+
+
 def outline_to_md(outline: dict[str, Any], label: str) -> str:
+    if not isinstance(outline, dict):
+        outline = {}
     title = outline.get("title") or label
-    slides = outline.get("slides") or []
+    slides = _slides_of(outline)
     lines = [f"## {label}", "", f"**{title}**", ""]
     for idx, s in enumerate(slides, 1):
         heading = s.get("heading") or f"第{idx}页"
-        bullets = s.get("bullets") or []
+        if not isinstance(heading, str):
+            heading = f"第{idx}页"
+        bullets_raw = s.get("bullets")
+        bullets = (
+            [str(b) for b in bullets_raw if isinstance(b, (str, int, float))]
+            if isinstance(bullets_raw, list)
+            else []
+        )
         note = s.get("speaker_note") or s.get("speakerNote") or ""
         lines.append(f"### {idx}. {heading}")
         for b in bullets:
             lines.append(f"- {b}")
-        if note:
+        if isinstance(note, str) and note:
             lines.append(f"> 备注：{note}")
         lines.append("")
     md_json = json.dumps(outline, ensure_ascii=False, indent=2)

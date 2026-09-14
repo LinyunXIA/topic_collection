@@ -51,6 +51,8 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     wiki_urls: list[str] = []
     success_count = 0
+    attempted = 0
+    skipped = 0
 
     for rec in selected:
         rid = str(rec.get("record_id") or rec.get("id") or "")
@@ -58,16 +60,8 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             log.warning("跳过无 record_id 的记录: %s", rec)
             continue
 
-        fields: dict[str, Any] = rec.get("fields") or {}
-        cur_status_val = fields.get("讨论状态")
-        if isinstance(cur_status_val, list):
-            cur_status = cur_status_val[0] if cur_status_val else ""
-        elif isinstance(cur_status_val, str):
-            cur_status = cur_status_val
-        else:
-            cur_status = ""
-
-        if cur_status != "已选题":
+        if salon_md.record_status(rec) != "已选题":
+            skipped += 1
             continue
 
         last_status = store.get_ppt_last_status(conn, rid)
@@ -75,6 +69,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
 
         if not ppt_synced_is_null and last_status == "已选题":
             log.info("跳过已处理 %s (last_status=已选题)", rid)
+            skipped += 1
             continue
 
         title = salon_md.topic_title(rec)
@@ -82,6 +77,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         if dry_run:
             tool_outline, principle_outline = salon_md.stub_outlines(title)
         else:
+            attempted += 1
             try:
                 tool_outline = minimax.gen_outline(
                     title,
@@ -106,7 +102,11 @@ def run(cfg, conn, dry_run: bool = False) -> int:
                 log.warning("topic %s 原理类大纲生成失败: %s", rid, e)
                 continue
 
-        combined_md = salon_md.build_combined_md(title, tool_outline, principle_outline)
+        try:
+            combined_md = salon_md.build_combined_md(title, tool_outline, principle_outline)
+        except Exception as e:  # noqa: BLE001
+            log.warning("topic %s 大纲合并失败: %s", rid, e)
+            continue
         if dry_run:
             print(json.dumps({"tool_outline": tool_outline, "principle_outline": principle_outline}, ensure_ascii=False, indent=2))
             print(combined_md[:3000])
@@ -142,8 +142,13 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     else:
         log.info("本轮无新增 Wiki")
 
-    if not dry_run and selected and not wiki_urls:
-        log.warning("已选题 %d 条但 0 条成功建 Wiki（生成/写入全部失败），请查上方 WARNING", len(selected))
+    if not dry_run and attempted and not wiki_urls:
+        log.warning(
+            "已选题 %d 条，尝试 %d 条但 0 条成功建 Wiki（全部失败；另 %d 条跳过），请查上方 WARNING",
+            len(selected),
+            attempted,
+            skipped,
+        )
 
     card_ok = salon_notify.send_wiki_card(cfg, conn, wiki_urls, dry_run=dry_run)
 

@@ -82,6 +82,7 @@
 | `FEISHU_SECRET` | `feishu_secret` | 签名密钥 |
 | `MiniMax_Key`（或 `MINIMAX_API_KEY`） | `minimax.api_key` | 大纲生成；占位值（以 `<` 开头）会被清空 |
 | `TC_SALON_TOKEN` | `salon.app_token` | 沙龙选题 Base |
+| `TC_FEISHU_HOST` | —（`feishu_host.feishu_host()`） | 飞书租户域名，默认 `web91vfvm7.feishu.cn`；换租户/测试注入 |
 | `TC_APP_ENV` | 运行环境 | `dev\|test\|prod`，默认 `prod` |
 | `TC_DB` | db 路径 | 显式指定时高于环境推导 |
 
@@ -91,6 +92,7 @@
 - `.example` 中的值一律是占位符（`<dev-token>`、`<prod-secret>`…），不能直接当真实凭据用。
 - 文档与 issue 中不落真实 token / webhook / 签名 secret。
 - 历史提交曾含 salon `app_token`/`table_id`（标识符，不授予访问权，#225）：轮换该 Base 的 app_token 或书面记录「已接受风险」；工作树已占位化。
+- 历史提交曾含资讯 Base（prod）record_id（标识符，不授予访问权，#236）：仅建议知悉；tracked 已移除，`tests/test_hygiene.py` 以 sha256 canary 防回归（明文不入库）。
 
 ### 2.3 双 Base 拓扑
 
