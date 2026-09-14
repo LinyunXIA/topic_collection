@@ -169,7 +169,7 @@
 { "tool_outline": {"title": "示例已选题话题", "slides": [...]}, "principle_outline": {...} }
 # 示例已选题话题
 ...
-wiki_dry_示例已选题话题
+https://<host>/wiki/wiki_dry_示例已选题话题
 2026-09-14 ... feedkicker.salon_flow dry-run 完成，待处理 1 条，Wiki 预览 1 个
 ```
 
@@ -253,8 +253,8 @@ wiki_dry_示例已选题话题
 {
   "dry_run": true,
   "retention_days": 365,
-  "cutoff_iso": "2025-09-14T16:00:00Z",
-  "cutoff_date_shanghai": "2025-09-15",
+  "cutoff_iso": "2025-09-13T16:00:00Z",
+  "cutoff_date_shanghai": "2025-09-14",
   "sqlite_deleted": 0,
   "sqlite_expired_unarchived": 0,
   "bitable_scanned": 120,
@@ -509,8 +509,11 @@ dry-run：跳过 sync_env（不写记录）
 示意输出（「示意」）：
 
 ```
-wiki_dry_示例话题
-{ "wiki_url": "https://<host>/wiki/wiki_dry_示例话题", "filename": "示例话题_2026-09-14_大纲.md" }
+https://<host>/wiki/wiki_dry_示例话题
+{
+  "wiki_url": "https://<host>/wiki/wiki_dry_示例话题",
+  "filename": "示例话题_2026-09-14_大纲.md"
+}
 ```
 
 退出码：`0`。副作用：无。
@@ -537,7 +540,7 @@ wiki_dry_示例话题
 
 ### `--dry-run` 示意输出
 
-先打印 stub 链接 `wiki_dry_<标题>`，再打印 `{"wiki_url": ..., "filename": ...}` JSON。
+先打印 stub 完整链接 `https://<host>/wiki/wiki_dry_<标题>`，再打印 `{"wiki_url": ..., "filename": ...}` JSON。
 
 ### 退出码
 
@@ -601,13 +604,13 @@ wiki_dry_示例话题
 
 示意输出：`[{"record_id": "rec...", "fields": {"讨论状态": ["已选题"], ...}}, ...]`，日志 `已选题 N 条`。退出码 `0`。副作用：无（只读）。
 
-**prod（只读，安全，但读真实 Base）**：
+**prod（仅 dry-run，只读，但读真实 Base）**：
 
 ```bash
-.venv/bin/python -m feedkicker.topic --env prod --limit 200
+.venv/bin/python -m feedkicker.topic --env prod --dry-run --limit 200
 ```
 
-（本命令为只读，无写入副作用；仍建议排查时先用 `--dry-run` 或小 `--limit`。）
+（本命令为只读，无写入副作用；仍建议排查时用小 `--limit` 控制输出。）
 
 ### `--dry-run` 示意输出
 
