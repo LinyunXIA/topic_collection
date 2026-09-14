@@ -79,6 +79,12 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         log.info("dry-run：共 %d 条待推，已打印 payload 未发送", len(pending))
         return 0
 
+    if cfg.app_env != "prod" and cfg.feishu_webhook:
+        log.warning(
+            "环境 %s 非 prod：将向已配置的真实飞书群（webhook 非空）发送，请确认这是预期测试群",
+            cfg.app_env,
+        )
+
     ok = feishu.send(
         payload,
         cfg.feishu_webhook,
