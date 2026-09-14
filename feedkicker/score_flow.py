@@ -6,7 +6,7 @@ import argparse
 import logging
 import sys
 
-from feedkicker import bitable_lark, score_llm, score_parse, score_report, score_source
+from feedkicker import bitable_lark, score_llm, score_parse, score_report, score_source, score_write
 from feedkicker.config import load_config
 from feedkicker.config_models import Config
 from feedkicker.log_setup import setup_logging
@@ -66,15 +66,12 @@ def run(
     max_calls: int = 0,
     force: bool = False,
 ) -> int:
-    """读全表 → 校验目标列 → 组批 → 逐批 LLM 打分 → dry-run 清单；rc 2 配置/参数非法、0 正常。
+    """读全表 → 校验目标列 → 组批 → 逐批 LLM 打分 → dry-run 清单 / `--apply` 写入。
 
-    本阶段（F38–F40）仍不写表：`--apply` 显式拒绝为 rc2（写入属 F41）；prompt 文件缺失 /
-    provider 缺 key / 目标列缺失均 rc2，且均在发起任何 lark/LLM 调用前判定。默认只补空：
-    已有 `打分`/`理由` 的行计入 skipped 并作为横向上文，不进入本批（§26.7）。
+    rc 2 配置/参数非法；prompt 文件缺失 / provider 缺 key / 目标列缺失均 rc2，且均在发起任何
+    lark/LLM 调用前判定。默认只补空：已有 `打分`/`理由` 的行计入 skipped 并作为横向上文，
+    不进入本批（§26.7）；`--apply` 全失败（written=0 且 failed_writes>0）→ rc1（§26.6）。
     """
-    if apply:
-        log.error("写入尚未实现（F41）")
-        return 2
     provider = (provider or cfg.score.provider or "minimax").strip()
     if provider not in PROVIDER_COLUMNS:
         log.error("未知 provider: %s（可用 %s）", provider, sorted(PROVIDER_COLUMNS))
@@ -117,7 +114,11 @@ def run(
         if row.get("打分") is not None and str(row.get("打分")).strip()
     ]
     result = score_llm.refine_batches(provider_conf, template, batches, prior_scores, max_calls)
-    score_report.print_dry_run(result.scored, skipped, score_parse.check_distribution(result.scored))
+    to_write, skipped_plan = score_write.plan_writes(result.scored, force=force)
+    if not apply:
+        score_report.print_dry_run(to_write, skipped, score_parse.check_distribution(result.scored))
+    write_conf = score_write.WriteConf(app_token, table_id, provider)
+    written_stats = score_write.write_scores(write_conf, to_write, dry_run=not apply)
     score_report.print_summary(
         {
             "mode": "apply" if apply else "dry-run",
@@ -125,13 +126,17 @@ def run(
             "llm_calls": result.calls,
             "rows": len(rows),
             "scored": len(result.scored),
-            "skipped": len(skipped),
-            "failed_writes": 0,
+            "skipped": len(skipped) + len(skipped_plan),
+            "written": written_stats.written,
+            "failed_writes": written_stats.failed_writes,
             "failed_batches": result.failed,
             "dropped": result.dropped,
             "empty_batches": result.empty,
         }
     )
+    if apply and written_stats.failed_writes and not written_stats.written:
+        log.error("写入全部失败：failed_writes=%d（rc=1）", written_stats.failed_writes)
+        return 1
     return 0
 
 
@@ -141,7 +146,7 @@ def main(argv: list[str] | None = None) -> int:
         description="沙龙话题清单自动打分（默认 dry-run；本阶段仅打印计划）",
     )
     mode = parser.add_mutually_exclusive_group()
-    mode.add_argument("--apply", action="store_true", help="写回打分/理由列（尚未实现，rc2）")
+    mode.add_argument("--apply", action="store_true", help="写回打分/理由列（默认只补空，--force 覆盖重算）")
     mode.add_argument("--dry-run", action="store_true", help="仅打印计划（默认行为）")
     parser.add_argument(
         "--provider", choices=sorted(PROVIDER_COLUMNS), default=None,

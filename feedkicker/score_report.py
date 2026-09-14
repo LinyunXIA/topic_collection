@@ -36,11 +36,11 @@ def print_dry_run(
 
 
 def print_summary(stats: dict[str, Any]) -> None:
-    """输出可统计 JSON 摘要行（与 `tc-extract` 同风格）；`failed_writes` 本阶段恒 0（F41 接入）。"""
+    """输出可统计 JSON 摘要行（与 `tc-extract` 同风格）；`written`/`failed_writes` 由 F41 写入统计提供。"""
     print(json.dumps(stats, ensure_ascii=False))
     log.info(
-        "打分完成：模式=%s 批=%d 调用=%d 行=%d 打分=%d 跳过=%d 写入失败=%d 失败批=%d 丢弃=%d 空批=%d",
+        "打分完成：模式=%s 批=%d 调用=%d 行=%d 打分=%d 跳过=%d 写入=%d 写入失败=%d 失败批=%d 丢弃=%d 空批=%d",
         stats["mode"], stats["batches"], stats["llm_calls"], stats["rows"], stats["scored"],
-        stats["skipped"], stats["failed_writes"], stats["failed_batches"],
-        stats["dropped"], stats["empty_batches"],
+        stats["skipped"], stats.get("written", 0), stats["failed_writes"],
+        stats["failed_batches"], stats["dropped"], stats["empty_batches"],
     )

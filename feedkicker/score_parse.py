@@ -140,6 +140,7 @@ def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]
         "scores": scores,
         "weighted_total": total,
         "missing": missing,
+        "打分": row.get("打分"),
         "risk_flag": bool(item.get("risk_flag")),
         "source_flag": bool(item.get("source_flag")),
         "reason": reason,

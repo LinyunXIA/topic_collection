@@ -45,6 +45,10 @@ def _patch_lark(
     def fake_run(args, stdin_text=None, timeout=120):
         if calls is not None:
             calls.append(list(args))
+        if args[:2] == ["base", "--help"]:
+            return FakeProc(0, "+record-batch-update")
+        if "+record-batch-update" in args:
+            return FakeProc(0, "{}")
         if "+field-list" in args:
             payload = {"fields": [{"field_name": n} for n in (field_names or [])]}
             return FakeProc(0, json.dumps({"data": payload}, ensure_ascii=False))
@@ -432,12 +436,12 @@ def test_run_prior_context_feeds_next_batch(tmp_path, monkeypatch) -> None:
     assert "- 话题1：4.0" in prompts[1]
 
 
-def test_run_apply_rc2_no_llm(tmp_path, monkeypatch, caplog) -> None:
+def test_run_apply_writes(tmp_path, monkeypatch, capsys) -> None:
     cfg = _write_cfg(tmp_path)
     _patch_lark(monkeypatch, pages=[_records(1)], field_names=_MM_FIELDS)
-    prompts = _stub_llm(monkeypatch, _echo_responder)
+    _stub_llm(monkeypatch, _echo_responder)
 
-    with caplog.at_level(logging.ERROR):
-        rc = score_flow.main(_args(cfg, tmp_path, "--apply"))
+    rc = score_flow.main(_args(cfg, tmp_path, "--apply"))
 
-    assert rc == 2 and prompts == [] and "尚未实现" in caplog.text
+    summary = _summary(capsys.readouterr().out)
+    assert rc == 0 and summary["mode"] == "apply" and summary["written"] == 1

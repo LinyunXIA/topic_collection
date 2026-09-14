@@ -73,6 +73,10 @@ def _patch_lark(
     def fake_run(args, stdin_text=None, timeout=120):
         if calls is not None:
             calls.append(list(args))
+        if args[:2] == ["base", "--help"]:
+            return FakeProc(0, "+record-batch-update")
+        if "+record-batch-update" in args:
+            return FakeProc(0, "{}")
         if data_override is not None:
             return FakeProc(0, json.dumps(data_override, ensure_ascii=False))
         if "+field-list" in args:
@@ -136,15 +140,17 @@ def test_default_dry_run_rc0_prints_plan(tmp_path, monkeypatch, capsys, caplog) 
     assert "总行数=3" in caplog.text and "批数=1" in caplog.text
 
 
-def test_apply_rejected_rc2_no_lark(tmp_path, monkeypatch, caplog) -> None:
+def test_apply_writes_two_columns(tmp_path, monkeypatch) -> None:
     cfg = _write_cfg(tmp_path)
     calls: list[list[str]] = []
     _patch_lark(monkeypatch, pages=[_records(3)], field_names=_MM_FIELDS, calls=calls)
+    _stub_llm_echo(monkeypatch)
 
-    with caplog.at_level(logging.ERROR):
-        rc = score_flow.main(_args(cfg, tmp_path, "--apply"))
+    rc = score_flow.main(_args(cfg, tmp_path, "--apply"))
 
-    assert rc == 2 and "尚未实现" in caplog.text and calls == []
+    assert rc == 0
+    assert any("+record-batch-update" in c for c in calls)
+    assert not any("+record-batch-create" in c or "+record-delete" in c for c in calls)
 
 
 @pytest.mark.parametrize(
