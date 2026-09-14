@@ -30,9 +30,17 @@ _KNOWN_SECTION_KEYS = {
     ),
 }
 
+_KNOWN_PROVIDER_KEYS = frozenset(("base_url", "model", "api_key", "tool_label"))
+
+_KNOWN_FEED_KEYS = frozenset(("name", "url"))
+
 
 def warn_unknown_keys(raw: dict[str, Any]) -> None:
-    """未知配置键与显式 enabled:false 仅 WARNING，不硬失败（本地残留键不得弄挂 prod 启动，#291）。"""
+    """未知配置键与显式 enabled:false 仅 WARNING，不硬失败（本地残留键不得弄挂 prod 启动，#291）。
+
+    递归覆盖 `extract.providers.<name>`（ProviderConf 字段集）与 `feeds[i]`（仅 name/url），
+    避免 provider 段或 feed 项拼错静默回落默认值（#327）。
+    """
     for key in raw:
         if key not in _KNOWN_TOP_KEYS:
             log.warning("配置未知键：%s（已忽略）", key)
@@ -45,6 +53,23 @@ def warn_unknown_keys(raw: dict[str, Any]) -> None:
                 log.warning("配置未知键：%s.%s（已忽略）", section, key)
         if spec.get("enabled") is False:
             log.warning("配置段 %s.enabled=false，该功能已关闭", section)
+    extract = raw.get("extract")
+    providers = extract.get("providers") if isinstance(extract, dict) else None
+    if isinstance(providers, dict):
+        for name, pconf in providers.items():
+            if not isinstance(pconf, dict):
+                continue
+            for key in pconf:
+                if key not in _KNOWN_PROVIDER_KEYS:
+                    log.warning("配置未知键：extract.providers.%s.%s（已忽略）", name, key)
+    feeds = raw.get("feeds")
+    if isinstance(feeds, list):
+        for i, item in enumerate(feeds):
+            if not isinstance(item, dict):
+                continue
+            for key in item:
+                if key not in _KNOWN_FEED_KEYS:
+                    log.warning("配置未知键：feeds[%d].%s（已忽略）", i, key)
 
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent

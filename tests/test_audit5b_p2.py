@@ -138,6 +138,8 @@ def test_backfill_idless_shuffled_rows_bounded_by_page_cap(monkeypatch):
         {"records": {"x": 1}},
         {"records": [{"record_id": "r1"}, "bad"]},
         {"data": 1},
+        {},
+        {"x": 1},
     ],
 )
 def test_topic_extract_container_abnormal_raises(bad):
@@ -147,7 +149,7 @@ def test_topic_extract_container_abnormal_raises(bad):
 
 @pytest.mark.parametrize(
     "empty",
-    [{}, {"x": 1}, {"records": []}, {"items": []}, {"fields": ["标题"], "data": []}],
+    [{"records": []}, {"items": []}, {"fields": ["标题"], "data": []}],
 )
 def test_topic_extract_empty_pages_return_empty(empty):
     assert topic_mod._extract_records(empty) == []

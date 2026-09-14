@@ -8,15 +8,19 @@ import re
 import unicodedata
 from typing import Any
 
+from feedkicker.fetch import is_url_token
+
 log = logging.getLogger(__name__)
 
 _REQUIRED_KEYS = ("话题名称", "可使用工具", "相关AI原理", "资讯链接", "出处来源")
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
-_THINK_RE = re.compile(r"(?is)<(think|thinking|reasoning)>.*?</\1>")
+_THINK_RE = re.compile(r"(?is)<(think|thinking|reasoning)\b[^>]*>.*?</\1\s*>")
 
-_OPEN_THINK_RE = re.compile(r"(?is)<(?:think|thinking|reasoning)\b")
+_SELF_CLOSING_THINK_RE = re.compile(r"(?is)<(?:think|thinking|reasoning)\b[^>]*/>")
+
+_OPEN_THINK_RE = re.compile(r"(?is)<(?:think|thinking|reasoning)>")
 
 
 def topic_key(name: Any) -> str:
@@ -25,14 +29,15 @@ def topic_key(name: Any) -> str:
 
 
 def strip_reasoning(text: str) -> str:
-    """剥离 thinking 模型内联的推理块，返回余文（#321）。
+    """剥离 thinking 模型内联的推理块，返回余文（#321/#323）。
 
     deepseek-flash 等 thinking 模型把 `<think>…</think>` 推理内联在 content 中；若推理含
     花括号，`_load_json_obj` 的「首个 `{` 到末个 `}`」兜底会从错误的 `{` 起步，切片错位
-    使 `json.loads` 失败、整批话题丢失。成对块重复剥离直到不再匹配（防嵌套/连续多段）；
-    仍残留未闭合开标签时自该标签处截断到末尾（响应已截断，JSON 不可能完整）。
+    使 `json.loads` 失败、整批话题丢失。三步顺序敏感：① 先移除自闭合 `<think/>`（不触发
+    截断）；② 循环剥离放宽后的成对块（允许属性/空白）；③ 仅残留**裸开标签** `<think>` 时
+    才自该处截断（属性/空白开标签不再被误当未闭合吞掉其后 JSON，#323）。
     """
-    prev = text
+    prev = _SELF_CLOSING_THINK_RE.sub("", text)
     while True:
         stripped = _THINK_RE.sub("", prev)
         if stripped == prev:
@@ -164,7 +169,7 @@ def md_link_tokens(text: str) -> list[str]:
 
     目标自 `](` 起按**括号平衡**扫描，支持任意嵌套深度（`…/a_(b_(c))`，#N4）；标签文本
     `[..]` 不参与（`[标签](url)` 不得把标签当 URL，#270）；相邻/混排链接各取各、裸链不丢
-    （#270/#288）。
+    （#270/#288）；非 URL token（正文注记、`(url "标题")` 标题）一律过滤（#329）。
     """
     tokens: list[str] = []
     rest: list[str] = []
@@ -190,4 +195,4 @@ def md_link_tokens(text: str) -> list[str]:
         rest.append(text[i:start])
         i = j
     tokens.extend("".join(rest).split())
-    return tokens
+    return [t for t in tokens if is_url_token(t)]

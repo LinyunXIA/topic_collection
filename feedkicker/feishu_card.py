@@ -7,25 +7,27 @@ import re
 from typing import Any
 
 from feedkicker.feishu_card_body import _assemble
-from feedkicker.fetch import canonicalize
+from feedkicker.fetch import dedup_key
 
 _MAX_BODY_BYTES = 20000
 SIGN_RESERVE_BYTES = 128
 _MD_SPECIAL = re.compile(r"([\\`*_\[\]()#])")
 
 
-def _dedup_by_canonical_url(
+def _dedup_by_url_key(
     new_items: list[dict[str, Any]], feed_order: list[str]
 ) -> list[dict[str, Any]]:
-    """跨源去重：同 `canonicalize(url)` 合并为一条，主归属取 `feed_order` 最靠前的源（#289）。
+    """跨源去重：同 `dedup_key(url)` 合并为一条，主归属取 `feed_order` 最靠前的源（#289/#325）。
 
-    其余同 URL 条目的来源名并入主条目 `also_seen`（渲染为「亦见 X + Y」）；空 URL 不参与
-    合并以免误并不同条目。去重在 top_n 截断与 `_assemble` 之前，计数按去重后口径。
+    与归档/提炼侧共用同一去重键（含 tracking 剥离），否则「同文不同 utm」在归档侧合并、
+    卡片侧重复渲染。其余同 URL 条目的来源名并入主条目 `also_seen`（渲染为「亦见 X + Y」）；
+    空 URL/非 URL 不参与合并以免误并不同条目。去重在 top_n 截断与 `_assemble` 之前，计数按
+    去重后口径。
     """
     rank = {name: i for i, name in enumerate(feed_order)}
     groups: dict[str, list[int]] = {}
     for idx, it in enumerate(new_items):
-        key = canonicalize(str(it.get("url") or ""))
+        key = dedup_key(str(it.get("url") or ""))
         groups.setdefault(key or f"\x00idx{idx}", []).append(idx)
 
     kept: list[dict[str, Any]] = []
@@ -69,13 +71,13 @@ def build_card(
 ) -> dict[str, Any]:
     """每源保最新 `top_n` 条（时效键=published_at/first_seen），`selected` 最旧在前（#200）。
 
-    同 `canonicalize(url)` 跨源去重（#289）先于 top_n 截断；超限裁剪（#222/#233）：
+    同 `dedup_key(url)` 跨源去重（#289/#325）先于 top_n 截断；超限裁剪（#222/#233）：
     剥 description → 丢全局 time_key 最小（最旧）者 → 丢 wiki_urls 尾部并提示。
     """
     def time_key(item: dict[str, Any]) -> str:
         return item.get("published_at") or item.get("first_seen") or ""
 
-    deduped = _dedup_by_canonical_url(new_items, feed_order)
+    deduped = _dedup_by_url_key(new_items, feed_order)
     by_feed: dict[str, list[dict[str, Any]]] = {}
     for it in deduped:
         by_feed.setdefault(it["feed_id"], []).append(it)
