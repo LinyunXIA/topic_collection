@@ -323,6 +323,14 @@ def test_build_card_trims_to_20kb():
     texts = [el.get("text", {}).get("content", "") for el in card["card"]["elements"]]
     assert any("已截断" in t for t in texts)
 
+    joined = "\n".join(texts)
+    kept = [i for i in range(40) if f"标题 {i} " in joined]
+    assert kept, "超限裁剪后应至少保留部分条目"
+    assert kept[-1] == 39, "最新条目必须保留：应从最旧条目起丢弃"
+    assert kept == list(range(kept[0], 40)), "保留条目必须是最新的连续尾部"
+    footer = next(t for t in texts if "已截断" in t)
+    assert f"已截断 {kept[0]} 条旧条目" in footer
+
     small = big_items[:2]
     card_small = feishu.build_card(small, 0, ["F"])
     small_texts = [
