@@ -741,6 +741,8 @@ def main(argv: list[str] | None = None) -> int:
     from feedkicker.config import load_config
 
     parser = argparse.ArgumentParser(prog="tc-bitable")
+    parser.add_argument("--config", default=None, help="指定 config-{env}.yaml 路径")
+    parser.add_argument("--db", default=None, help="sqlite 路径（覆盖 TC_DB 与 --env 推导）")
     parser.add_argument("--env", default=None, choices=["dev", "test", "prod"])
     parser.add_argument("--init", action="store_true", help="补字段/视图/组织内只读分享")
     parser.add_argument("--reseed", action="store_true", help="清空表内记录后全量重灌")
@@ -750,13 +752,21 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    cfg = load_config(app_env=args.env)
+    cfg = load_config(args.config, args.db, app_env=args.env)
     if not cfg.bitable.enabled:
         log.info("bitable 未启用（%s）", cfg.app_env)
         return 0
     if args.dry_run:
         _dry_run_plan(cfg, args)
         return 0
+
+    if args.reseed and not _tokens_ready(cfg.bitable):
+        log.error(
+            "拒绝 --reseed：Base 未配置或为占位 token（需既有且非占位 app_token/table_id），不执行先建后清"
+        )
+        return 2
+    if args.init and not _tokens_ready(cfg.bitable):
+        log.warning("--init 将创建/修复 Base：当前 app_token/table_id 为空或为占位")
 
     info = ensure_initialized(cfg.bitable, cfg.app_env)
     log.info("Base: %s", info["url"])

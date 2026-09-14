@@ -40,8 +40,8 @@ def _cfg(monkeypatch):
     monkeypatch.delenv("MiniMax_Key", raising=False)
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
     cfg = load_config(app_env="test")
-    cfg.salon.app_token = "TikpbwV0oaFAnYsoMCxchMRyncr"
-    cfg.salon.table_id = "tblNPcbupKIBzLAx"
+    cfg.salon.app_token = "appTokenTest"
+    cfg.salon.table_id = "tblTest"
     cfg.salon.wiki_space_id = "spc_test"
     cfg.salon.wiki_parent_token = "parent_test"
     cfg.wiki.space_id = "spc_test"
@@ -567,7 +567,7 @@ def test_salon_flow_dry_run_no_db_write_and_no_httpx(monkeypatch):
     conn = store.connect(":memory:")
     # 预埋一条已 sync 的记录，dry-run 应不新增也不覆盖
     conn.execute("INSERT INTO articles (feed_id, entry_key, title, url, description, published_at, first_seen, pushed_at, ppt_synced_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                 ("tblNPcbupKIBzLAx", "recDRY", "旧话题", "https://x", "d", None, "2026-09-03T00:00:00Z", None, "2026-09-02T00:00:00Z"))
+                 ("tblTest", "recDRY", "旧话题", "https://x", "d", None, "2026-09-03T00:00:00Z", None, "2026-09-02T00:00:00Z"))
     conn.commit()
     store.set_ppt_last_status(conn, "recDRY", "已选题")
 
@@ -655,9 +655,9 @@ def test_salon_flow_select_unsynced_filters_and_mark(monkeypatch):
     cfg = _cfg(monkeypatch)
     conn = store.connect(":memory:")
     conn.execute("INSERT INTO articles (feed_id, entry_key, title, url, description, published_at, first_seen, pushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                 ("tblNPcbupKIBzLAx", "recSynced", "已同步", "https://x/1", "d", None, "2026-09-01T00:00:00Z", None))
+                 ("tblTest", "recSynced", "已同步", "https://x/1", "d", None, "2026-09-01T00:00:00Z", None))
     conn.execute("INSERT INTO articles (feed_id, entry_key, title, url, description, published_at, first_seen, pushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                 ("tblNPcbupKIBzLAx", "recUnsync", "未同步", "https://x/2", "d", None, "2026-09-02T00:00:00Z", None))
+                 ("tblTest", "recUnsync", "未同步", "https://x/2", "d", None, "2026-09-02T00:00:00Z", None))
     conn.commit()
     conn.execute("UPDATE articles SET ppt_synced_at=? WHERE entry_key=?", ("2026-09-01T01:00:00Z", "recSynced"))
     conn.commit()
@@ -685,9 +685,9 @@ def test_salon_flow_mark_ppt_synced_bulk_and_subprocess_mock(monkeypatch):
     # 验证 store.mark_ppt_synced 批量语义及 subprocess 全 mock
     conn = store.connect(":memory:")
     conn.execute("INSERT INTO articles (feed_id, entry_key, title, url, description, published_at, first_seen, pushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                 ("tblNPcbupKIBzLAx", "recM1", "T1", "https://x/1", "d", None, "2026-09-01T00:00:00Z", None))
+                 ("tblTest", "recM1", "T1", "https://x/1", "d", None, "2026-09-01T00:00:00Z", None))
     conn.execute("INSERT INTO articles (feed_id, entry_key, title, url, description, published_at, first_seen, pushed_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                 ("tblNPcbupKIBzLAx", "recM2", "T2", "https://x/2", "d", None, "2026-09-01T00:00:00Z", None))
+                 ("tblTest", "recM2", "T2", "https://x/2", "d", None, "2026-09-01T00:00:00Z", None))
     conn.commit()
     store.mark_ppt_synced(conn, ["recM1", "recM2"], "2026-09-03T03:00:00Z")
     rows = conn.execute("SELECT entry_key, ppt_synced_at FROM articles WHERE ppt_synced_at IS NOT NULL ORDER BY entry_key").fetchall()

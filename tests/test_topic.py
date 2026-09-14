@@ -40,11 +40,11 @@ def test_fetch_selected_server_side_filter(monkeypatch):
         return FakeProc(0, stdout=json.dumps({"data": data}, ensure_ascii=False))
 
     monkeypatch.setattr(topic_mod.bitable, "_run", fake_run)
-    records = fetch_selected_topics("TikpbwV0oaFAnYsoMCxchMRyncr", "tblNPcbupKIBzLAx", limit=200)
+    records = fetch_selected_topics("appTokenTest", "tblTest", limit=200)
     assert len(records) == 1
     assert records[0]["record_id"] == "recGWg8Kb9kUDI"
-    assert captured[0][captured[0].index("--base-token") + 1] == "TikpbwV0oaFAnYsoMCxchMRyncr"
-    assert captured[0][captured[0].index("--table-id") + 1] == "tblNPcbupKIBzLAx"
+    assert captured[0][captured[0].index("--base-token") + 1] == "appTokenTest"
+    assert captured[0][captured[0].index("--table-id") + 1] == "tblTest"
     assert "--limit" in captured[0] and "--offset" in captured[0]
     # ensure limit/offset exactly as spec
     assert captured[0][captured[0].index("--limit") + 1] == "200"

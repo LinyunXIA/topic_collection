@@ -22,9 +22,23 @@ v2 **重开 = 瘦身**。真正的起点比 v1 小一个数量级：**不是一�
 | 触发 | **cron 定时**，进程运行完即退出（无常驻服务、无 Web 端口） |
 | 冷启动 | 新 feed 首跑**最多推最近 3 天**文章，更早历史不推（入库但不推） |
 | 去重/存储 | **本机 SQLite** 存档已下载新闻；靠唯一键去重，不重发 |
-| LLM / 向量检索 / 图谱 / 周报 / WebUI | 一律**不属于 v2 起点** |
+| LLM / 向量检索 / 图谱 / 周报 / WebUI | **push 主流程**不做；v0.6 起沙龙大纲（§17 F19，MiniMax）为明确例外 |
 | 部署 | 本机、本地、单用户、数据私密 |
 | 文档语言 | 中文 |
+
+### Phase 映射与当前阶段
+
+本 PRD 按 Phase 1/2/3（含各阶段「+」）组织，正文保持 §13 起的版本增量结构，映射如下：
+
+| Phase | 对应版本 | 特性 | 状态 |
+|---|---|---|---|
+| Phase 1（MVP） | v0.1 | F1–F6：抓取入库/去重/汇总卡/冷启动/失败可见/联调 | 已交付 |
+| Phase 1+ | v0.2 | F7–F10：GitHub Pages 详情页 + launchd（F7–F9 已废弃，见 §13） | 已交付（Pages 链路废弃） |
+| Phase 2 | v0.3–v0.5 | F11–F16：多维表格归档（跨源去重、双分组视图） | 已交付 |
+| Phase 3 | v0.6–v0.7 | F17–F22：AI 沙龙每周大纲（salon）+ 365 天滚动保留（purge） | 已交付 |
+| Phase 3+ | v0.7+ | F23：Wiki 首页自动索引 | **当前所处阶段** |
+
+**当前所处阶段 = Phase 3+（v0.7+，F23）**；后续新增需求先落本映射，再落 §13 起的版本增量小节。
 
 ---
 
@@ -50,12 +64,12 @@ v2 **重开 = 瘦身**。真正的起点比 v1 小一个数量级：**不是一�
 - 冷启动窗口：新源首跑最多推最近 `bootstrap_days`（默认 3 天）
 - 飞书群机器人 Webhook 推送：interactive 汇总卡片，按 feed 分组
 - 抓取失败可见性：卡片底部一行「⚠ N 个源失败」
-- 配置：`config.yaml` 维护 feed 清单 + webhook + 窗口参数
+- 配置：`config-{env}.yaml` 维护 feed 清单 + webhook + 窗口参数
 - 定时：cron + 一条 CLI 命令，无常驻进程
 - `--dry-run`：只打印卡片 payload 不发，便于联调
 
-### Out of Scope（本版本明确不做）
-- LLM 本地推理 / 摘要 / 翻译 / 实体图谱
+### Out of Scope（**push 主流程**明确不做；沙龙大纲 §17 F19 为 v0.6 起明确例外）
+- LLM 本地推理 / 摘要 / 翻译 / 实体图谱（push 主流程；§17 F19 沙龙大纲除外）
 - 向量语义检索 / WebUI Dashboard / 日报周报
 - 多用户 / 鉴权 / 云端 / 多进程分布式
 - 网页主动抓取（非 RSS，仅消费 RSS/Atom）
@@ -103,12 +117,26 @@ v2 **重开 = 瘦身**。真正的起点比 v1 小一个数量级：**不是一�
 
 | 模块 | 职责 |
 |---|---|
-| `feedkicker/config.py` | 读 `config.yaml` + 环境变量覆盖（`FEISHU_WEBHOOK`、`TC_DB`） |
+| `feedkicker/config.py` | 读 `config-{env}.yaml`（dev/test/prod 各一，均 gitignored）+ 环境变量覆盖（`FEISHU_WEBHOOK`/`FEISHU_SECRET`/`TC_APP_ENV`/`TC_DB`）；dataclass 类型化 |
 | `feedkicker/fetch.py` | `feedparser` 抓取 + 归一化 `{key,title,url,description,published_at}` + 每源错误捕获 |
-| `feedkicker/store.py` | sqlite 打开/建表/下载入库（ON CONFLICT DO NOTHING）/查待推/标已推/首跑判定 |
-| `feedkicker/feishu.py` | 构建 interactive 汇总卡片 + POST webhook + 业务码校验 |
+| `feedkicker/store.py` | sqlite 主表（articles/feeds）+ facade re-export；下载入库/查待推/标已推/首跑判定 |
+| `feedkicker/store_meta.py` | `meta` 键值表（叶子模块：连败计数等运行期状态） |
+| `feedkicker/store_salon.py` | salon 选题 sqlite 状态（ppt 同步标记/last_status/落库） |
+| `feedkicker/feishu.py` | webhook 发送 + 业务码校验 + facade re-export 卡片构建 |
+| `feedkicker/feishu_card.py` | interactive 汇总卡片构建/转义/20KB 降级裁剪/strip_actions |
 | `feedkicker/bitable.py` | 多维表格归档（lark-cli 封装、跨源去重、双分组视图，见 §14–§16） |
-| `feedkicker/push.py` | 编排主流程（先档案后推送）；`--dry-run` 只打印不发 |
+| `feedkicker/bitable_purge.py` | 滚动保留的 bitable 侧删除（§20） |
+| `feedkicker/minimax.py` | MiniMax function-calling 调用 + facade |
+| `feedkicker/minimax_schema.py` | 大纲 prompt 模板与 function-calling schema |
+| `feedkicker/wiki.py` | Wiki 归档编排 + `__main__` CLI |
+| `feedkicker/wiki_lark.py` | lark-cli docs/wiki 调用与响应解析 |
+| `feedkicker/wiki_home.py` | Wiki「首页」自动索引：node-list → 月块表格 → overwrite（§22） |
+| `feedkicker/topic.py` | 已选题分页拉取 |
+| `feedkicker/salon_flow.py` | 沙龙编排主流程（§19） |
+| `feedkicker/salon_md.py` | 大纲 markdown 生成/stub |
+| `feedkicker/salon_notify.py` | 大纲卡片与连败 SOS |
+| `feedkicker/push.py` | push 编排主流程（先档案后推送）；`--dry-run` 只打印不发 |
+| `feedkicker/purge.py` | `tc-purge` 编排：365 天滚动保留（§20） |
 
 ---
 
@@ -142,11 +170,14 @@ CREATE TABLE feeds (
 - 下载：`INSERT ... ON CONFLICT DO NOTHING`；已存在 = 已下载，跳过；新行 `pushed_at=NULL` = 待推送。
 - 首跑窗口：feed 无 `first_run_at` 时，新入库条目的 `published_at < 首跑时点 - bootstrap_days` 直接置 `pushed_at`（入档不推）。
 - 推送成功：`UPDATE articles SET pushed_at=now WHERE <本次 id>`。
-- DB 路径默认 `data/tc.sqlite3`（项目根内），`TC_DB` 覆盖。
+- DB 路径默认 `data/tc-{env}.sqlite3`（项目根内，dev/test/prod 各一库），`TC_DB` 覆盖，CLI `--db` 优先于 `TC_DB`。
+- `articles` 另含迁移列 `bitable_synced_at` / `ppt_synced_at`（connect 时 PRAGMA 检查补列），并有 `meta` 键值表；以 `store._SCHEMA` + 迁移为准。
 
 ---
 
-## 8. 配置（config.yaml）
+## 8. 配置（config-{env}.yaml）
+
+三环境分文件：`config-dev.yaml` / `config-test.yaml` / `config-prod.yaml`（均 gitignored，真实凭据只存本地文件或 env）；未指定 `--config` 时按 `TC_APP_ENV` / `--env` 推导对应文件，默认 `prod`。以 prod 为例：
 
 ```yaml
 feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/<token>"
@@ -161,7 +192,9 @@ feeds:
   - name: "某某博客"
     url: "https://example.com/feed"
 ```
-`feishu_webhook` 亦可用环境变量 `FEISHU_WEBHOOK` 覆盖（凭据不进配置文件可选）；签名密钥同理走 `FEISHU_SECRET`。
+- `feishu_webhook` 亦可用环境变量 `FEISHU_WEBHOOK` 覆盖（凭据不进配置文件可选）；签名密钥同理走 `FEISHU_SECRET`。
+- `TC_APP_ENV` 指定运行环境（`dev|test|prod`，默认 `prod`），`TC_DB` 覆盖 sqlite 路径。
+- 覆盖优先级：`--db` > `TC_DB` > `--env` > `TC_APP_ENV` > 默认 `prod`；CLI 提供 `--env` / `--config` / `--db`。
 
 ---
 
@@ -230,7 +263,7 @@ feeds:
 
 ## 12. 明确不做 / 待定（Not Now / Open）
 
-- 明确不做：LLM、图谱、周报、翻译、向量检索、WebUI、多用户、网页爬虫。
+- 明确不做（**push 主流程**）：LLM、图谱、周报、翻译、向量检索、WebUI、多用户、网页爬虫。v0.6 起沙龙大纲生成（§17 F19，MiniMax M3）为**明确例外**。
 - 待定（后续版本再议）：飞书发送失败的重试策略、description 长度上限、按源独立调度、支持多个飞书群。
 ---
 
@@ -240,11 +273,12 @@ feeds:
 
 | # | 特性 | 验收要点 | 优先级 |
 |---|---|---|---|
-| F7 | 每日详情页 | 每班跑完发布 `daily/日期.html`（当天全量、跨源去重、via 标注）+ 归档目录页；公开可访问 | P0 |
-| F8 | 摘要卡瘦身 | 每源 top N 条 + 「📰 查看全部」按钮跳当天页面；点击时页面必已可达（发布→轮询→发卡顺序） | P0 |
-| F9 | 发布降级 | Pages 发布失败仍发无按钮摘要卡；连败 ≥3 次群内纯文本求救 | P1 |
+| F7 | 每日详情页（SUPERSEDED） | 每班跑完发布 `daily/日期.html`（当天全量、跨源去重、via 标注）+ 归档目录页；公开可访问 | P0 |
+| F8 | 摘要卡瘦身（SUPERSEDED） | 每源 top N 条 + 「📰 查看全部」按钮跳当天页面；点击时页面必已可达（发布→轮询→发卡顺序） | P0 |
+| F9 | 发布降级（SUPERSEDED） | Pages 发布失败仍发无按钮摘要卡；连败 ≥3 次群内纯文本求救 | P1 |
 | F10 | 定时加固 | launchd 取代 cron（睡眠唤醒补跑），每天 8:30 / 16:00 | P1 |
 
+- **SUPERSEDED（2026-08-26 起）**：F7–F9 的 GitHub Pages 详情页链路已废弃并从代码库移除，由 §14/§16 的多维表格归档取代；设计记录见 DESIGN §15「已废弃」，勿据此实现。
 - 公开性决策：聚合内容为公开 RSS 信息，接受公网可读（修订 v0.1「数据私密」约束）
 - 明确不做不变；「description 长度上限」「多群」等待定项延续 §12
 
@@ -265,10 +299,11 @@ feeds:
 
 | # | 特性 | 验收要点 | 优先级 |
 |---|---|---|---|
-| F13 | 在线表格归档 | 三环境统一：按日期分工作表、滚动保留 1 年、组织内只读、先档案后推送 | P0 |
+| F13 | 在线表格归档（SUPERSEDED） | 三环境统一：按日期分工作表、滚动保留 1 年、组织内只读、先档案后推送 | P0 |
 | F14 | 卡片详情链接 | 摘要卡附「📰 详情见在线表格」按钮，指向对应环境的归档文件 | P0 |
 
 - 多维表格方案（§14 F11/F12）被本方案取代，Base 留作静态快照
+- **SUPERSEDED**：F13/F14 的电子表格方案已被 §16 F15/F16 取代（回归多维表格，见 DESIGN §17）；「在线表格」表述按 §16 备注统一改为「多维表格」。
 
 ---
 
@@ -286,7 +321,7 @@ feeds:
 
 ## 17. v0.6 增量（2026-09-03）— AI 沙龙每周大纲（salon_flow）
 
-每周五 10:00 自动把「AI 沙龙换题管理」多维表（Base `TikpbwV0oaFAnYsoMCxchMRyncr` / 表 `tblNPcbupKIBzLAx`）中新增的已选题，分别生成工具类与原理类两份大纲（自适应 5–8 页），以 Markdown 写入飞书 Wiki，并用同一机器人推一张带 Wiki 链接的卡片通知。
+每周五 10:00 自动把「AI 沙龙换题管理」多维表（Base `<salon-app-token>` / 表 `<salon-table-id>`）中新增的已选题，分别生成工具类与原理类两份大纲（自适应 5–8 页），以 Markdown 写入飞书 Wiki，并用同一机器人推一张带 Wiki 链接的卡片通知。
 
 | # | 特性 | 验收要点 | 优先级 |
 |---|---|---|---|

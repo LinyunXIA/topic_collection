@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
@@ -421,6 +422,29 @@ def test_run_pushes_marks_and_dedupes(monkeypatch):
     rc2 = push.run(cfg, conn)
     assert rc2 == 0
     assert len(sent) == 1
+    conn.close()
+
+
+@pytest.mark.parametrize(
+    ("env", "expect_warning"), [("dev", True), ("test", True), ("prod", False)]
+)
+def test_run_warns_only_non_prod_when_webhook_set(
+    monkeypatch, caplog, env, expect_warning
+):
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.app_env = env
+    cfg.feishu_webhook = "hook-x"
+    entries = [_norm("real hook", "https://e.com/rh1")]
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    sent = []
+    monkeypatch.setattr(feishu, "send", lambda p, *a, **kw: sent.append(p) or True)
+
+    with caplog.at_level(logging.WARNING, logger="feedkicker.push"):
+        rc = push.run(cfg, conn)
+    assert rc == 0
+    assert len(sent) == 1
+    assert any("非 prod" in r.getMessage() for r in caplog.records) is expect_warning
     conn.close()
 
 

@@ -7,7 +7,10 @@ monkeypatch bitable._run 拦截，不触网、不碰真实库/Base。
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
+
+import pytest
 
 from feedkicker import bitable
 from feedkicker.config import (
@@ -44,7 +47,7 @@ def make_cfg(tmp_path, **bt_kw) -> Config:
 
 def install_cfg_and_lark(monkeypatch, tmp_path, calls, **bt_kw) -> Config:
     cfg = make_cfg(tmp_path, enabled=True, app_token="appReal", table_id="tblReal", **bt_kw)
-    monkeypatch.setattr("feedkicker.config.load_config", lambda **kw: cfg)
+    monkeypatch.setattr("feedkicker.config.load_config", lambda *a, **kw: cfg)
 
     def fake_run(args, stdin_text=None, timeout=120):
         calls.append(list(args))
@@ -131,3 +134,72 @@ def test_reseed_without_dry_run_keeps_purge_and_sync(monkeypatch, tmp_path):
     assert bitable.main(["--reseed", "--env", "test"]) == 0
     assert any("+record-delete" in c for c in calls)
     assert synced == ["test"]
+
+
+def test_main_accepts_config_and_db(monkeypatch, tmp_path):
+    loaded: list[tuple] = []
+    cfg = make_cfg(tmp_path, enabled=True, app_token="appReal", table_id="tblReal")
+
+    def fake_load(*a, **kw):
+        loaded.append((a, kw))
+        return cfg
+
+    monkeypatch.setattr("feedkicker.config.load_config", fake_load)
+    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: FakeProc(0, stdout=PAGE))
+    cfg_file = tmp_path / "config-test.yaml"
+    db_file = tmp_path / "custom.sqlite3"
+
+    rc = bitable.main(
+        ["--dry-run", "--config", str(cfg_file), "--db", str(db_file), "--env", "test"]
+    )
+    assert rc == 0
+    assert loaded == [((str(cfg_file), str(db_file)), {"app_env": "test"})]
+
+
+@pytest.mark.parametrize(("app_token", "table_id"), [("", ""), ("<app>", "<tbl>")])
+def test_reseed_rejected_without_configured_base(
+    monkeypatch, tmp_path, app_token, table_id
+):
+    calls: list[list[str]] = []
+    cfg = make_cfg(tmp_path, enabled=True, app_token=app_token, table_id=table_id)
+    monkeypatch.setattr("feedkicker.config.load_config", lambda *a, **kw: cfg)
+    monkeypatch.setattr(
+        bitable, "_run", lambda *a, **kw: calls.append(list(a)) or FakeProc(0, "{}")
+    )
+    forbid(monkeypatch, "ensure_initialized", "sync_env")
+
+    assert bitable.main(["--reseed", "--env", "test"]) == 2
+    assert calls == []
+    assert not Path(cfg.db_path).exists()
+
+
+def test_reseed_dry_run_placeholder_still_previews(monkeypatch, tmp_path):
+    cfg = make_cfg(tmp_path, enabled=True, app_token="<app>", table_id="<tbl>")
+    monkeypatch.setattr("feedkicker.config.load_config", lambda *a, **kw: cfg)
+    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: FakeProc(0, "{}"))
+    forbid(monkeypatch, "ensure_initialized", "sync_env")
+
+    assert bitable.main(["--reseed", "--dry-run", "--env", "test"]) == 0
+    assert not Path(cfg.db_path).exists()
+
+
+def test_init_with_placeholder_warns_before_create(monkeypatch, tmp_path, caplog):
+    cfg = make_cfg(tmp_path, enabled=True, app_token="", table_id="")
+    monkeypatch.setattr("feedkicker.config.load_config", lambda *a, **kw: cfg)
+    ensure_calls: list[str] = []
+    monkeypatch.setattr(
+        bitable,
+        "ensure_initialized",
+        lambda bt, env: ensure_calls.append(env)
+        or {"app_token": "appNew", "table_id": "tblNew", "url": "u"},
+    )
+    monkeypatch.setattr(bitable, "ensure_archive_date_field", lambda a, t: True)
+    monkeypatch.setattr(bitable, "setup_view", lambda a, t: True)
+    monkeypatch.setattr(bitable, "create_date_view", lambda a, t: True)
+    monkeypatch.setattr(bitable, "set_tenant_readonly", lambda a: True)
+    monkeypatch.setattr(bitable, "sync_env", lambda bt, env, conn: 0)
+
+    with caplog.at_level(logging.WARNING, logger="feedkicker.bitable"):
+        assert bitable.main(["--init", "--env", "test"]) == 0
+    assert ensure_calls == ["test"]
+    assert any("创建" in r.getMessage() for r in caplog.records)

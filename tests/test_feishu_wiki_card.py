@@ -20,8 +20,8 @@ def _cfg(monkeypatch):
     monkeypatch.delenv("MiniMax_Key", raising=False)
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
     cfg = load_config(app_env="test")
-    cfg.salon.app_token = "TikpbwV0oaFAnYsoMCxchMRyncr"
-    cfg.salon.table_id = "tblNPcbupKIBzLAx"
+    cfg.salon.app_token = "appTokenTest"
+    cfg.salon.table_id = "tblTest"
     cfg.salon.wiki_space_id = "spc_test"
     cfg.salon.wiki_parent_token = "parent_test"
     cfg.wiki.space_id = "spc_test"
