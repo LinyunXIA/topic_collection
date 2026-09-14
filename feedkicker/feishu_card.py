@@ -30,7 +30,7 @@ def _assemble(
     dropped: int,
     total: int = 0,
     detail_url: str | None = None,
-    detail_label: str = "📰 详情见在线表格",
+    detail_label: str = "📰 详情见多维表格",
     wiki_urls: list[str] | None = None,
     wiki_label: str = "📖 查看大纲",
 ) -> dict[str, Any]:
@@ -103,7 +103,7 @@ def build_card(
     top_n: int = 0,
     detail_url: str | None = None,
     max_bytes: int = _MAX_BODY_BYTES,
-    detail_label: str = "📰 详情见在线表格",
+    detail_label: str = "📰 详情见多维表格",
     wiki_urls: list[str] | None = None,
     wiki_label: str = "📖 查看大纲",
 ) -> dict[str, Any]:
@@ -132,7 +132,7 @@ def build_card(
                 return
             h = hidden_by_feed.get(feed_name, 0)
             if h and any(n == feed_name for n, _ in selected):
-                parts.append(escape_inline(f"… 还有 {h} 条，详情见在线表格"))
+                parts.append(escape_inline(f"… 还有 {h} 条，详情见多维表格"))
 
         def close_prev() -> None:
             if prev is not None:

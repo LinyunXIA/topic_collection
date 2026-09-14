@@ -553,20 +553,20 @@ def test_build_card_top_n_and_button():
                              detail_url="https://linyunxia.github.io/topic_collection/daily/2026-08-25.html")
     content = card["card"]["elements"][0]["text"]["content"]
     assert "标题7" not in content and "标题2" in content
-    assert "还有 5 条，详情见在线表格" in content
+    assert "还有 5 条，详情见多维表格" in content
     actions = [el for el in card["card"]["elements"] if el["tag"] == "action"]
-    assert actions and actions[0]["actions"][0]["text"]["content"] == "📰 详情见在线表格"
+    assert actions and actions[0]["actions"][0]["text"]["content"] == "📰 详情见多维表格"
     assert actions[0]["actions"][0]["url"].endswith("2026-08-25.html")
     stripped = feishu.strip_actions(card)
     assert all(el["tag"] != "action" for el in stripped["card"]["elements"])
-    assert any("详情见在线表格" in el.get("text", {}).get("content", "")
+    assert any("详情见多维表格" in el.get("text", {}).get("content", "")
                for el in stripped["card"]["elements"] if el.get("tag") == "div")
 
 
 def test_build_card_no_detail_no_button():
     card = feishu.build_card(_many_items("F", 4), 0, ["F"], top_n=3)
     assert all(el["tag"] != "action" for el in card["card"]["elements"])
-    assert not any("[详情见在线表格](" in el.get("text", {}).get("content", "")
+    assert not any("[详情见多维表格](" in el.get("text", {}).get("content", "")
                    for el in card["card"]["elements"] if el.get("tag") == "div")
 
 
@@ -970,6 +970,28 @@ def test_bitable_views_creation(monkeypatch):
     assert "+view-create" in joined and "按日期" in joined
     assert "归档日期" in joined and "desc" in joined
     assert "推送时间" in joined
+
+
+def test_create_date_view_skips_existing(monkeypatch):
+    """#209：已有同名「按日期」视图时不再 +view-create（--init 幂等）。"""
+    from feedkicker import bitable
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        calls.append(list(args))
+        if "+view-list" in args:
+            return FakeProc(0, stdout=json.dumps(
+                {"data": {"views": [{"id": "vewDefault", "name": "表格"},
+                                    {"id": "vewDate", "name": "按日期"}]}},
+                ensure_ascii=False))
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    assert bitable.create_date_view("app", "tbl") is True
+    assert not any("+view-create" in c for c in calls)
+    groups = [c for c in calls if "+view-set-group" in c]
+    assert groups and groups[0][groups[0].index("--view-id") + 1] == "vewDate"
 
 
 def test_bitable_ensure_archive_date_field_idempotent(monkeypatch):

@@ -224,7 +224,7 @@ def test_reseed_rejected_without_configured_base(
     cfg = make_cfg(tmp_path, enabled=True, app_token=app_token, table_id=table_id)
     monkeypatch.setattr("feedkicker.config.load_config", lambda *a, **kw: cfg)
     monkeypatch.setattr(
-        bitable, "_run", lambda *a, **kw: calls.append(list(a)) or FakeProc(0, "{}")
+        bitable_lark, "_run", lambda *a, **kw: calls.append(list(a)) or FakeProc(0, "{}")
     )
     forbid(monkeypatch, "ensure_initialized", "sync_env")
 

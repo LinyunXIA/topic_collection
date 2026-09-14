@@ -19,6 +19,18 @@ def _view_id(app_token: str, table_id: str) -> str | None:
     return views[0].get("id") if views else None
 
 
+def _find_view(app_token: str, table_id: str, name: str) -> str | None:
+    proc = bitable_lark._run(["base", "+view-list", "--base-token", app_token, "--table-id", table_id])
+    if not bitable_lark._ok(proc):
+        return None
+    for v in bitable_lark._data(proc).get("views") or []:
+        if v.get("view_name") == name or v.get("name") == name:
+            vid = v.get("id") or v.get("view_id")
+            if isinstance(vid, str) and vid:
+                return vid
+    return None
+
+
 def setup_view(app_token: str, table_id: str) -> bool:
     vid = _view_id(app_token, table_id)
     if not vid:
@@ -75,20 +87,20 @@ def ensure_archive_date_field(app_token: str, table_id: str) -> bool:
 
 
 def create_date_view(app_token: str, table_id: str) -> bool:
-    proc = bitable_lark._run(
-        ["base", "+view-create", "--base-token", app_token,
-         "--table-id", table_id,
-         "--json", json.dumps({"name": "按日期", "type": "grid"}, ensure_ascii=False)],
-        timeout=60,
-    )
-    if not bitable_lark._ok(proc):
-        return False
-    vid = None
-    d = bitable_lark._data(proc)
-    v = (d.get("view") or {})
-    vid = v.get("view_id") or v.get("id")
+    """创建「按日期」分组视图；同名已存在则复用并重设分组/排序（幂等，#209）。"""
+    vid = _find_view(app_token, table_id, "按日期")
     if not vid:
-        vid = _view_id(app_token, table_id)
+        proc = bitable_lark._run(
+            ["base", "+view-create", "--base-token", app_token,
+             "--table-id", table_id,
+             "--json", json.dumps({"name": "按日期", "type": "grid"}, ensure_ascii=False)],
+            timeout=60,
+        )
+        if not bitable_lark._ok(proc):
+            return False
+        view = bitable_lark._data(proc).get("view") or {}
+        raw = (view.get("view_id") or view.get("id")) if isinstance(view, dict) else None
+        vid = raw if isinstance(raw, str) and raw else _view_id(app_token, table_id)
     if not vid:
         return False
     g = bitable_lark._run(

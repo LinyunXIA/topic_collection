@@ -13,6 +13,16 @@ FILTER_JSON = json.dumps({"logic": "and", "conditions": [["讨论状态", "inter
 MAX_OFFSET = 20000
 
 
+def _positive_int(value: str) -> int:
+    try:
+        n = int(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError(f"必须是正整数: {value}") from None
+    if n < 1:
+        raise argparse.ArgumentTypeError(f"必须是正整数: {value}")
+    return n
+
+
 def _extract_records(data: dict[str, Any]) -> list[dict[str, Any]]:
     records = data.get("records") or data.get("items") or []
     if records:
@@ -52,6 +62,7 @@ def fetch_selected_topics(
     """
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")
+    limit = max(1, limit)
     all_records: list[dict[str, Any]] = []
     offset = 0
     while True:
@@ -126,7 +137,7 @@ def fetch_topic_fields(app_token: str, table_id: str) -> list[dict[str, Any]]:
         log.warning("未找到 讨论状态 字段")
     else:
         ftype = str(found.get("type") or found.get("field_type") or "").lower()
-        if ftype and ftype not in ("select", "singleselect", "multiselect", "single_select", "multiple_select", "7", "3"):
+        if ftype and ftype not in ("select", "singleselect", "multiselect", "single_select", "multiple_select", "7", "3", "4"):
             log.warning("讨论状态字段类型异常: %s", ftype)
     return fields
 
@@ -136,7 +147,7 @@ if __name__ == "__main__":
     parser.add_argument("--env", default=None, choices=["dev", "test", "prod"], help="环境名，对应 config-{env}.yaml")
     parser.add_argument("--app-token", default=None, help="覆盖多维表 app_token")
     parser.add_argument("--table-id", default=None, help="覆盖表 id")
-    parser.add_argument("--limit", type=int, default=200, help="分页大小")
+    parser.add_argument("--limit", type=_positive_int, default=200, help="分页大小（正整数）")
     parser.add_argument("--dry-run", action="store_true", help="仅打印，不校验远端副作用")
     parser.add_argument("--check-fields", action="store_true", help="校验 讨论状态 字段类型")
     args = parser.parse_args()

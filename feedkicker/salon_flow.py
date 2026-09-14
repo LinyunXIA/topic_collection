@@ -43,8 +43,8 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         log.info("无已选题，跳过")
         return 0
 
-    wiki_space = cfg.salon.wiki_space_id or cfg.wiki.space_id
-    wiki_parent = cfg.salon.wiki_parent_token or cfg.wiki.parent_token
+    wiki_space = cfg.wiki.space_id or cfg.salon.wiki_space_id
+    wiki_parent = cfg.wiki.parent_token or cfg.salon.wiki_parent_token
     wiki_app = cfg.wiki.app_token or cfg.salon.app_token
 
     now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

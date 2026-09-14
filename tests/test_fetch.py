@@ -55,3 +55,21 @@ def test_fetch_feed_non_2xx_raises_before_parse(monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setattr(fetch.httpx, "get", lambda url, **kw: FakeResp(503, b"busy"))
     with pytest.raises(ValueError, match="HTTP 503"):
         fetch.fetch_feed("https://feed.example/rss", HttpConf())
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("https://EXAMPLE.com/p?x=1#frag", "https://example.com/p?x=1"),
+        ("http://[::1]:8080/p?x=1#f", "http://[::1]:8080/p?x=1"),
+        ("http://[::1]/p#f", "http://[::1]/p"),
+        ("http://example.com:80/a", "http://example.com/a"),
+        ("https://example.com:443/a", "https://example.com/a"),
+        ("https://example.com:8443/a", "https://example.com:8443/a"),
+        ("http://user:pw@EXAMPLE.com:8080/a", "http://user:pw@example.com:8080/a"),
+        ("https://例え.jp/パス", "https://xn--r8jz45g.jp/パス"),
+    ],
+)
+def test_canonicalize_boundaries(raw: str, expected: str) -> None:
+    """#207：IPv6 方括号/userinfo/默认端口省略/IDNA 归一，query 保留、fragment 去除。"""
+    assert fetch.canonicalize(raw) == expected

@@ -5,6 +5,7 @@
 - sqlite 仅删已归档到 bitable 的行（bitable_synced_at IS NOT NULL），
   超期未归档只计数 WARNING（salon 占位行 pushed_at 为 NULL 天然不匹配）；
 - bitable 侧按「推送时间」早于 cutoff 删记录（bitable_purge），
+  dev/test 共享 Base 时仅删「环境」匹配行（#208）；
   仅操作 cfg.bitable 资讯归档 Base，绝不调 ensure_initialized（防误建 Base）；
 - meta purge_last_run_at 仅在真删且 bitable 段整段成功时写入
   （跳过/首屏失败/中途分页失败/批失败不写，与 DESIGN §20.2 一致）。
@@ -110,8 +111,13 @@ def run(
         stats.bitable_skipped_reason = reason
         log.info("purge：跳过 bitable 清理（%s）", reason)
     else:
+        env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
         outcome = bitable_purge.purge_expired_records_outcome(
-            cfg.bitable.app_token, cfg.bitable.table_id, cutoff_date, dry_run=dry_run
+            cfg.bitable.app_token,
+            cfg.bitable.table_id,
+            cutoff_date,
+            dry_run=dry_run,
+            env_name=env_name,
         )
         stats.bitable_deleted = outcome.deleted
         stats.bitable_expired = outcome.expired

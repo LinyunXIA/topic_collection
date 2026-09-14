@@ -117,7 +117,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         if streak >= SOS_THRESHOLD and cfg.feishu_webhook:
             sos = (
                 f"⚠️ feedkicker 连续 {streak} 次推送失败，请检查机器人状态/网络。"
-                f"最近一班 {len(pending)} 条已入档，详情见在线表格。"
+                f"最近一班 {len(pending)} 条已入档，详情见多维表格。"
                 if detail_url
                 else f"⚠️ feedkicker 连续 {streak} 次推送失败，请检查机器人状态。最近一班 {len(pending)} 条已入档。"
             )
@@ -137,7 +137,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(
         prog="tc-push",
-        description="抓取 RSS 订阅源，写入在线表格归档并把摘要卡推送到飞书",
+        description="抓取 RSS 订阅源，写入多维表格归档并把摘要卡推送到飞书",
     )
     parser.add_argument(
         "--dry-run",

@@ -45,17 +45,23 @@ def _pushed_date(fields: dict[str, Any]) -> str | None:
 
 
 def _list_records(
-    app_token: str, table_id: str
+    app_token: str, table_id: str, env_name: str | None = None
 ) -> tuple[list[tuple[str, dict[str, Any]]], bool, bool]:
     """分页拉全表，返回 ([(record_id, fields)], 首屏成功, 全量读完)。
 
     兼容 records 包装与 fields+data 行式两种响应；中途页失败时已扫描记录
     仍返回（删除只针对其中过期者，未扫到的留待下轮巡检），complete=False，
-    purge 依此不写入 meta 成功时间（#180）。
+    purge 依此不写入 meta 成功时间（#180）；env_name 非空时请求带出「环境」
+    字段供调用方按环境过滤（#208）。
     """
     out: list[tuple[str, dict[str, Any]]] = []
     offset = 0
     first = True
+    env_args = (
+        ["--field-id", "环境", "--field-id", "推送时间", "--field-id", "归档日期"]
+        if env_name is not None
+        else []
+    )
     while True:
         proc = bitable_lark._run(
             [
@@ -65,6 +71,7 @@ def _list_records(
                 "--limit", str(_CHUNK),
                 "--offset", str(offset),
                 "--json",
+                *env_args,
             ],
             timeout=120,
         )
@@ -92,13 +99,20 @@ def _list_records(
             return out, True, True
         rids = data.get("record_ids") or data.get("recordIds") or data.get("ids") or []
         idx_push = fields.index("推送时间") if "推送时间" in fields else -1
+        idx_arch = fields.index("归档日期") if "归档日期" in fields else -1
+        idx_env = fields.index("环境") if "环境" in fields else -1
         for i, r in enumerate(rows):
             rid = str(rids[i] if i < len(rids) else "")
             if isinstance(r, dict):
                 fds = r.get("fields") or r.get("values") or r
                 out.append((rid, fds if isinstance(fds, dict) else {}))
-            elif isinstance(r, list) and idx_push >= 0 and idx_push < len(r):
-                out.append((rid, {"推送时间": r[idx_push]}))
+            elif isinstance(r, list):
+                vals: dict[str, Any] = {}
+                for name, idx in (("推送时间", idx_push), ("归档日期", idx_arch), ("环境", idx_env)):
+                    if 0 <= idx < len(r):
+                        vals[name] = r[idx]
+                if vals:
+                    out.append((rid, vals))
         if len(rows) < _CHUNK:
             return out, True, True
         offset += _CHUNK
@@ -120,18 +134,25 @@ class PurgeOutcome:
 
 
 def purge_expired_records_outcome(
-    app_token: str, table_id: str, cutoff_date: str, dry_run: bool = False
+    app_token: str,
+    table_id: str,
+    cutoff_date: str,
+    dry_run: bool = False,
+    env_name: str | None = None,
 ) -> PurgeOutcome:
     """删除推送时间早于 cutoff_date（%Y-%m-%d 字典序比较）的记录。
 
-    dry-run 时 deleted=0；首屏 list 失败返回全零且 listed_ok=False。
+    dry-run 时 deleted=0；首屏 list 失败返回全零且 listed_ok=False；
+    env_name 非空（dev/test）时仅删「环境」匹配行，prod/None 不过滤（#208）。
     """
-    pairs, list_ok, complete = _list_records(app_token, table_id)
+    pairs, list_ok, complete = _list_records(app_token, table_id, env_name)
     if not list_ok:
         return PurgeOutcome()
     expired: list[str] = []
     for rid, fds in pairs:
         if not rid:
+            continue
+        if env_name is not None and bitable_backfill._cell_str(fds.get("环境")) != env_name:
             continue
         d = _pushed_date(fds)
         if d and d < cutoff_date:

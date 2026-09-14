@@ -158,6 +158,39 @@ def test_salon_flow_placeholder_token_dry_run_uses_stub(monkeypatch):
     conn.close()
 
 
+def test_salon_flow_prefers_wiki_space_over_salon(monkeypatch):
+    """#212：wiki.* 优先于 salon.wiki_*，与 wiki_home / OPS 文档一致。"""
+    from feedkicker import salon_flow as sf
+
+    cfg = _cfg(monkeypatch)
+    cfg.wiki.space_id = "spc_wiki"
+    cfg.wiki.parent_token = "parent_wiki"
+    cfg.salon.wiki_space_id = "spc_salon"
+    cfg.salon.wiki_parent_token = "parent_salon"
+    conn = store.connect(":memory:")
+    monkeypatch.setattr(sf, "fetch_selected_topics", lambda *a, **k: [
+        {"record_id": "rec1", "fields": {"讨论状态": ["已选题"], "话题名称": "T"}},
+    ])
+    monkeypatch.setattr(
+        sf.minimax, "gen_outline",
+        lambda topic, kind="tool", api_key=None, base_url=None, model=None: {
+            "title": "t", "slides": [{"heading": "h", "bullets": ["a"]}]
+        },
+    )
+    seen: dict[str, str] = {}
+
+    def fake_wiki(app_token, space_id, parent_token, title, md_content, dry_run=False, date_str=None):
+        seen["space"] = space_id
+        seen["parent"] = parent_token
+        return "https://x/wiki/n1"
+
+    monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", fake_wiki)
+    monkeypatch.setattr(feishu, "send", lambda *a, **k: True)
+    assert sf.run(cfg, conn, dry_run=False) == 0
+    assert seen == {"space": "spc_wiki", "parent": "parent_wiki"}
+    conn.close()
+
+
 def test_salon_flow_skip_already_synced(monkeypatch):
     from feedkicker import salon_flow as sf
 
