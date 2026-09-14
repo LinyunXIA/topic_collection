@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import calendar
+import html
 import logging
 import re
 from datetime import UTC, datetime
@@ -14,7 +15,9 @@ log = logging.getLogger(__name__)
 
 _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 
-_TRACKING = {"spm", "from", "fbclid", "gclid", "ref", "ref_src", "source", "mc_cid", "mc_eid"}
+_TRACKING = frozenset(("fbclid", "gclid", "igshid", "spm"))
+
+_TRACKING_PREFIXES = ("utm_", "mc_")
 
 _BARE_HOST_RE = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:[/:?#]|$)")
 
@@ -74,13 +77,15 @@ def is_url_token(token: str) -> bool:
 
 
 def dedup_key(url: str) -> str:
-    """推送/归档/提炼共享去重键（#325）：`canonicalize` 后再剥 tracking 参数并排序 query。
+    """推送/归档/提炼共享去重键（#325）：`canonicalize` 后归一尾斜杠、剥 tracking 参数并排序 query。
 
     三处统一复用（feishu_card 跨源去重、extract_write.link_keys、bitable_records 链接比对），
-    避免「同文不同 utm」在归档侧合并、在卡片侧重复渲染（#289 未闭环）。非 URL token 返回 ""
-    （调用方须过滤空键，#329）；尾斜杠/HTML 实体等归一细化见 #332/#333（P3）。
+    避免「同文不同 utm」在归档侧合并、在卡片侧重复渲染（#289 未闭环）。`html.unescape` 后
+    再解析 query，令 `&amp;` 与 `&` 等价（#332）；仅路径非根时去尾斜杠（#332）。tracking 用
+    白名单（`utm_*`/`mc_*`/`fbclid`/`gclid`/`igshid`/`spm`），`source`/`from`/`ref` 承载内容
+    差异不得剥离（#333）。非 URL token 返回 ""（调用方须过滤空键，#329）。
     """
-    text = (url or "").strip()
+    text = html.unescape((url or "").strip())
     if not is_url_token(text):
         return ""
     canon = canonicalize(text)
@@ -90,16 +95,19 @@ def dedup_key(url: str) -> str:
         parts = urlsplit(canon)
     except ValueError:
         return canon
+    path = parts.path.rstrip("/") if len(parts.path) > 1 else parts.path
     if not parts.query:
-        return canon
+        return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
     try:
         pairs = parse_qsl(parts.query, keep_blank_values=True)
     except ValueError:
-        return canon
+        return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
     kept = sorted(
-        (k, v) for k, v in pairs if not k.lower().startswith("utm_") and k.lower() not in _TRACKING
+        (k, v)
+        for k, v in pairs
+        if not k.lower().startswith(_TRACKING_PREFIXES) and k.lower() not in _TRACKING
     )
-    return urlunsplit((parts.scheme, parts.netloc, parts.path, urlencode(kept), ""))
+    return urlunsplit((parts.scheme, parts.netloc, path, urlencode(kept), ""))
 
 
 def entry_key_of(entry) -> str:

@@ -326,7 +326,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 | `--dry-run` | store_true | 关（默认行为） | 与 `--apply` 互斥 | 仅打印待写清单，零写调用 |
 | `--since-days` | 正整数 | `None`（取 `extract.since_days=7`） | 覆盖配置 | 时间窗天数（边界含当天；取值 1..3650，#269） |
 | `--limit` | 正整数 | `None`（不限） | — | 最多处理的 RSS 行数 |
-| `--batch-size` | 正整数 | `None`（取 `extract.batch_size=30`） | 覆盖配置 | 每批条数（每批一次 LLM 调用） |
+| `--batch-size` | 正整数 | `None`（取 `extract.batch_size=30`） | 覆盖配置 | 每批条数（每批一次 LLM 调用；取值 1..200，越界 rc 2，#335） |
 | `--max-calls` | 非负整数 | `None`（取 `extract.max_calls=0`） | 覆盖配置 | LLM 调用上限，`0`=不限；达限停止剩余批 |
 | `--provider` | choice `{minimax,deepseek}`（由 provider 注册表键动态生成） | `None`（取 `extract.provider`，默认 `minimax`） | 覆盖配置 | 本次运行使用的 LLM provider；`提取工具` 随之为该 provider 的 tool_label（minimax→`MMax`，deepseek→`DS`） |
 | `--config` | str | `None` | 覆盖 `--env` 推导 | 指定 `config-{env}.yaml` 路径 |
@@ -366,7 +366,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 待写选题 2 个（dry-run，未写表；目标表已存在跳过 0 个）：
 [将写入] 1. 话题名A
 {"话题名称": "话题名A", "可使用工具": "…", "相关AI原理": "…", "资讯链接": "https://…", "出处来源": "量子位", "提炼日期": "2026-09-14", "讨论状态": ["未讨论"], "提取工具": ["MMax"]}
-{"mode": "dry-run", "since_days": 7, "batches": 1, "llm_calls": 1, "topics": 2, "written": 0, "pending": 2, "skipped": 0, "failed_batches": 0, "empty_batches": 0}
+{"mode": "dry-run", "since_days": 7, "batches": 1, "llm_calls": 1, "topics": 2, "written": 0, "pending": 2, "skipped": 0, "failed_writes": 0, "failed_batches": 0, "empty_batches": 0}
 ```
 
 退出码 `0`。副作用：读 sqlite 与 salon 表（只读 `+record-list` 去重查询），不写表。

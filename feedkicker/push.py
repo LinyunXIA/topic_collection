@@ -56,9 +56,11 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     if cfg.bitable.enabled and (cfg.bitable.url or cfg.bitable.app_token):
         detail_url = cfg.bitable.url or bitable_schema.base_url(cfg.bitable.app_token)
 
+    archived = False
     if cfg.bitable.enabled and not dry_run:
         try:
             synced_n = bitable_records.sync_env(cfg.bitable, cfg.app_env, conn, now)
+            archived = True
             detail_url = (
                 (cfg.bitable.url or bitable_schema.base_url(cfg.bitable.app_token))
                 if cfg.bitable.app_token
@@ -69,7 +71,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         except Exception as e:  # noqa: BLE001
             log.warning("多维表格同步未完成（不影响推送，保留待重试）: %s", e)
 
-    top_n = cfg.site.top_n if cfg.bitable.enabled else 0
+    top_n = cfg.site.top_n if (cfg.bitable.enabled and detail_url) else 0
     payload = feishu.build_card(
         pending,
         feed_fails,
@@ -120,12 +122,16 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         store.set_meta(conn, PUSH_FAIL_STREAK_KEY, str(streak))
         log.warning("推送未成功，连败 %d 次", streak)
         if streak >= SOS_THRESHOLD and cfg.feishu_webhook:
-            sos = (
-                f"⚠️ feedkicker 连续 {streak} 次推送失败，请检查机器人状态/网络。"
+            archive_note = (
                 f"最近一班 {len(pending)} 条已入档，详情见多维表格。"
-                if detail_url
-                else f"⚠️ feedkicker 连续 {streak} 次推送失败，请检查机器人状态。最近一班 {len(pending)} 条已入档。"
+                if archived and detail_url
+                else (
+                    f"最近一班 {len(pending)} 条已入档。"
+                    if archived
+                    else f"最近一班 {len(pending)} 条可能未入档，请查多维表格。"
+                )
             )
+            sos = f"⚠️ feedkicker 连续 {streak} 次推送失败，请检查机器人状态/网络。{archive_note}"
             sos_ok = feishu.send_text(
                 sos,
                 cfg.feishu_webhook,

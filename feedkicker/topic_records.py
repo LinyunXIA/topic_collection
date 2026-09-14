@@ -65,7 +65,11 @@ def _extract_records(data: Any) -> list[dict[str, Any]]:
                     {
                         "record_id": rid,
                         "fields": fds,
-                        **{k: v for k, v in r.items() if k not in ("fields", "record")},
+                        **{
+                            k: v
+                            for k, v in r.items()
+                            if k not in ("fields", "record", "record_id", "recordId", "id")
+                        },
                     }
                 )
             else:

@@ -9,6 +9,7 @@ import unicodedata
 from typing import Any
 
 from feedkicker.fetch import is_url_token
+from feedkicker.reasoning import strip_reasoning as strip_reasoning
 
 log = logging.getLogger(__name__)
 
@@ -16,46 +17,23 @@ _REQUIRED_KEYS = ("话题名称", "可使用工具", "相关AI原理", "资讯�
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
-_THINK_RE = re.compile(r"(?is)<(think|thinking|reasoning)\b[^>]*>.*?</\1\s*>")
-
-_SELF_CLOSING_THINK_RE = re.compile(r"(?is)<(?:think|thinking|reasoning)\b[^>]*/>")
-
-_OPEN_THINK_RE = re.compile(r"(?is)<(?:think|thinking|reasoning)>")
-
 
 def topic_key(name: Any) -> str:
     """去重/合并比较键：NFKC 归一 + strip + casefold（写入仍用原值，PRV-3）。"""
     return unicodedata.normalize("NFKC", str(name or "")).strip().casefold()
 
 
-def strip_reasoning(text: str) -> str:
-    """剥离 thinking 模型内联的推理块，返回余文（#321/#323）。
-
-    deepseek-flash 等 thinking 模型把 `<think>…</think>` 推理内联在 content 中；若推理含
-    花括号，`_load_json_obj` 的「首个 `{` 到末个 `}`」兜底会从错误的 `{` 起步，切片错位
-    使 `json.loads` 失败、整批话题丢失。三步顺序敏感：① 先移除自闭合 `<think/>`（不触发
-    截断）；② 循环剥离放宽后的成对块（允许属性/空白）；③ 仅残留**裸开标签** `<think>` 时
-    才自该处截断（属性/空白开标签不再被误当未闭合吞掉其后 JSON，#323）。
-    """
-    prev = _SELF_CLOSING_THINK_RE.sub("", text)
-    while True:
-        stripped = _THINK_RE.sub("", prev)
-        if stripped == prev:
-            break
-        prev = stripped
-    open_at = _OPEN_THINK_RE.search(prev)
-    return prev[: open_at.start()] if open_at else prev
+def _clip(text: str, limit: int) -> str:
+    return text[:limit] + "…" if len(text) > limit else text
 
 
 def build_batch_prompt(template: str, items: list[dict[str, Any]]) -> str:
-    """把本批条目（编号+标题+url+摘要）注入模板尾部；摘要截断 300 字符控 token。"""
+    """把本批条目（编号+标题+url+摘要）注入模板尾部；摘要/标题/链接截断控 prompt 体积（#335）。"""
     lines = [template.rstrip(), "", "## 本批资讯（先整合去重，再按 schema 输出 JSON）"]
     for i, it in enumerate(items, 1):
-        title = " ".join(str(it.get("title") or "").split())
-        url = str(it.get("url") or "").strip()
-        summary = " ".join(str(it.get("description") or "").split())
-        if len(summary) > 300:
-            summary = summary[:300] + "…"
+        title = _clip(" ".join(str(it.get("title") or "").split()), 200)
+        url = _clip(str(it.get("url") or "").strip(), 500)
+        summary = _clip(" ".join(str(it.get("description") or "").split()), 300)
         lines.append(f"{i}. [{it.get('feed_id') or ''}] {title}")
         lines.append(f"   链接: {url}")
         if summary:

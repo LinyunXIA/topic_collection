@@ -29,10 +29,11 @@ def record_status(rec: dict[str, Any]) -> str:
 
 
 def _slides_of(outline: Any) -> list[dict[str, Any]]:
-    """slides 归一：非 dict / slides 缺失或非列表 / 无有效页一律 raise（salon_flow 逐题捕获跳过）。
+    """slides 归一：非 dict / slides 缺失或非列表 / 无有效页 / 页缺 bullets 均 raise（salon_flow 逐题跳过）。
 
     不能把空壳大纲归一为 []：`{}`/缺 slides 会让调用方照建空 Wiki 并 mark_topic_archived，
-    该题被永久归档为「已选题」、不再生成，卡片却宣称成功（#263）。非 dict 页项跳过。
+    该题被永久归档为「已选题」、不再生成，卡片却宣称成功（#263）。每页 bullets 须至少含 1 个
+    str/int/float，否则近空页同样永久归档（#347）。非 dict 页项跳过。
     """
     if not isinstance(outline, dict):
         raise ValueError(f"大纲非对象（{type(outline).__name__}），无法渲染")
@@ -42,6 +43,12 @@ def _slides_of(outline: Any) -> list[dict[str, Any]]:
     valid = [s for s in slides if isinstance(s, dict)]
     if not valid:
         raise ValueError("大纲为空或缺 slides（需 ≥1 页），无法渲染")
+    for s in valid:
+        bullets = s.get("bullets")
+        if not isinstance(bullets, list) or not any(
+            isinstance(b, (str, int, float)) for b in bullets
+        ):
+            raise ValueError(f"大纲页缺有效 bullets（需 ≥1 个 str/int/float）: {str(s)[:200]}")
     return valid
 
 

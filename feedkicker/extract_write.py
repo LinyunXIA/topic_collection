@@ -75,6 +75,7 @@ def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
         records = _extract_records(data)
         for rec in records:
             fields = rec.get("fields") or {}
+            fields = fields if isinstance(fields, dict) else {}
             for name in _str_list(fields.get("话题名称")):
                 names.add(topic_key(name))
             links |= link_keys(fields.get("资讯链接"))

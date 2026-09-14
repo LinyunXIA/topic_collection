@@ -70,7 +70,9 @@ def test_slides_of_empty_outline_raises(bad):
 def test_slides_of_keeps_valid_pages():
     from feedkicker import salon_md
 
-    assert salon_md._slides_of({"slides": [{"heading": "h"}, "坏"]}) == [{"heading": "h"}]
+    assert salon_md._slides_of({"slides": [{"heading": "h", "bullets": ["a"]}, "坏"]}) == [
+        {"heading": "h", "bullets": ["a"]}
+    ]
 
 
 @pytest.mark.parametrize("bad_outline", [{}, {"title": "空壳"}, {"title": "x", "slides": []}])

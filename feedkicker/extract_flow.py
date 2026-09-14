@@ -10,7 +10,7 @@ from datetime import datetime
 from pathlib import Path
 
 from feedkicker import bitable_lark, extract_llm, extract_source, extract_write, store
-from feedkicker.config import PROJECT_ROOT, load_config
+from feedkicker.config import MAX_BATCH_SIZE, PROJECT_ROOT, load_config
 from feedkicker.config_models import Config
 from feedkicker.extract_report import print_dry_run as print_dry_run
 from feedkicker.extract_report import print_summary as print_summary
@@ -62,12 +62,17 @@ def run(
     since_days = ex.since_days if since_days is None else since_days
     batch_size = ex.batch_size if batch_size is None else batch_size
     max_calls = ex.max_calls if max_calls is None else max_calls
-    if not 1 <= since_days <= extract_source.MAX_SINCE_DAYS or batch_size < 1 or max_calls < 0:
+    if (
+        not 1 <= since_days <= extract_source.MAX_SINCE_DAYS
+        or not 1 <= batch_size <= MAX_BATCH_SIZE
+        or max_calls < 0
+    ):
         log.error(
-            "参数非法：since_days=%s（须 1..%d）batch_size=%s max_calls=%s",
+            "参数非法：since_days=%s（须 1..%d）batch_size=%s（须 1..%d）max_calls=%s",
             since_days,
             extract_source.MAX_SINCE_DAYS,
             batch_size,
+            MAX_BATCH_SIZE,
             max_calls,
         )
         return 2

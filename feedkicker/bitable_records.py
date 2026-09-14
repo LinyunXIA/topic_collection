@@ -77,6 +77,7 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
                 )
             for rec in records:
                 fds = rec.get("fields") or rec.get("record") or {}
+                fds = fds if isinstance(fds, dict) else {}
                 v = fds.get("链接")
                 v = v.get("link") if isinstance(v, dict) else v
                 if v and (key := dedup_key(v)):

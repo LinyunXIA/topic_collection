@@ -62,7 +62,7 @@
 | `salon` | `enabled=False`、`app_token=""`、`table_id=""`、`wiki_space_id=""`、`wiki_parent_token=""`、`trigger_weekday=4`、`trigger_hour=10`、`trigger_minute=0`（**`trigger_*` 仅记录用途，不参与调度；调度以 launchd `Weekday=5` 为准**） |
 | `minimax` | `api_key=""`、`model="MiniMax-M3"`、`base_url="https://api.minimaxi.com"` |
 | `wiki` | `space_id=""`、`parent_token=""`、`app_token=""`（未配置时回退 `salon.wiki_space_id`/`salon.wiki_parent_token`） |
-| `extract` | `enabled=False`、`since_days=7`、`batch_size=30`、`provider="minimax"`、`prompt_file="prompts/extract.md"`、`max_calls=0`（0=不限）、`providers=dict[str, ProviderConf]`（`base_url`/`model`/`api_key`/`tool_label`） |
+| `extract` | `enabled=False`、`since_days=7`、`batch_size=30`（取值 1..200，越界 rc 2）、`provider="minimax"`、`prompt_file="prompts/extract.md"`、`max_calls=0`（0=不限）、`providers=dict[str, ProviderConf]`（`base_url`/`model`/`api_key`/`tool_label`） |
 
 以 `feedkicker/config_models.py` 与 `feedkicker/config.py` 的 `load_config` 为准；未文档化别名（`salon.wiki_space`、`wiki.wiki_space_id` 等）已移除。
 
@@ -141,6 +141,23 @@ launchctl print gui/$UID/com.feedkicker.purge | grep -i calendar   # 应含 day 
 
 - ProgramArguments **不带 `--apply`**：调度只做 dry-run 巡检，`PurgeStats` 落 `logs/purge.log`。
 - 真删由人工看过日志后执行（见 §6）。
+
+### 3.3 日志轮转（newsyslog）与凭据轮换
+
+launchd 以 `StandardOutPath` 追加写 `logs/{push,salon,purge}.log`，无内置轮转（`log_setup` 只做
+stdout 输出，不引入 FileHandler）。用 macOS 自带 newsyslog 定期归档/压缩，新建
+`/etc/newsyslog.d/feedkicker.conf`（把 `<repo>` 换成仓库绝对路径）：
+
+```
+# logfilename                     [owner:group]  mode  count  size  when  flags
+<repo>/logs/*.log                 644            7     1024  *     J
+```
+
+`J` = 轮转后 bzip2 压缩，`size` 达 1024KB 触发。改后 `sudo newsyslog -n` 预演、`sudo newsyslog -v` 生效。
+
+> 历史日志（`#287` 之前）曾以 INFO 记录 httpx 请求 URL，而飞书自定义机器人 webhook URL 本身即凭据。
+> **处置**：清理 `logs/` 旧文件，并在飞书群机器人设置中**轮换该 webhook token**（旧 token 立即失效），
+> 再从环境变量 / `config-*.yaml` 更新新值。
 
 ---
 

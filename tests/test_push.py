@@ -253,12 +253,12 @@ def test_build_card_grouping():
 
 
 def test_build_card_link_paren_escaped():
-    # #118：URL 含 ) 会提前闭合 markdown 链接，百分号编码为 %29
+    # #118/#343：URL 含 () 会破坏 markdown 链接目标，括号与空格一律百分号编码
     items = [{"feed_id": "F", "entry_key": "k", "title": "t",
               "url": "https://e.com/a_(b)", "description": ""}]
     card = feishu.build_card(items, 0, ["F"])
     content = card["card"]["elements"][0]["text"]["content"]
-    assert "[t](https://e.com/a_(b%29)" in content
+    assert "[t](https://e.com/a_%28b%29)" in content
 
 
 def test_build_card_failure_footer():
