@@ -112,3 +112,12 @@ def test_select_source_rejects_non_positive_days() -> None:
         select_source(conn, 0)
     with pytest.raises(ValueError, match="since_days"):
         select_source(conn, -3)
+
+
+def test_select_source_rejects_too_many_days() -> None:
+    """#269：极大 N 不得让 `now - timedelta` 抛 OverflowError（应明确 ValueError）。"""
+    conn = store.connect(":memory:")
+
+    with pytest.raises(ValueError, match="since_days"):
+        select_source(conn, 999999999)
+    assert select_source(conn, 3650, now=_NOW) == []

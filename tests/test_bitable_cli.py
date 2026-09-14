@@ -53,7 +53,7 @@ def install_cfg_and_lark(monkeypatch, tmp_path, calls, **bt_kw) -> Config:
     def fake_run(args, stdin_text=None, timeout=120):
         calls.append(list(args))
         if "+record-list" in args:
-            return FakeProc(0, stdout=PAGE)
+            return FakeProc(0, stdout=json.dumps({"data": {"records": []}}, ensure_ascii=False))
         return FakeProc(0, stdout="{}")
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)

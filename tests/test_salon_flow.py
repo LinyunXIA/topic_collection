@@ -51,6 +51,7 @@ def _cfg(monkeypatch):
     cfg.minimax.api_key = "sk-test"
     cfg.minimax.model = "MiniMax-M3"
     cfg.minimax.base_url = "https://api.minimaxi.com"
+    cfg.salon.enabled = True
     cfg.feishu_webhook = "https://hook.test"
     cfg.http.timeout_seconds = 20
     cfg.http.user_agent = "test"
@@ -99,6 +100,26 @@ def test_salon_flow_empty_outline_skips_without_mark(monkeypatch, caplog, bad_ou
     assert store.get_ppt_last_status(conn, "recEmpty") == ""
     assert conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recEmpty'").fetchone() is None
     assert any("大纲合并失败" in r.getMessage() for r in caplog.records)
+    conn.close()
+
+
+def test_salon_flow_disabled_skips_without_fetch(monkeypatch, caplog):
+    """#280：salon.enabled=false 必须 WARNING 并跳过，不再「设 false 却照样跑」。"""
+    from feedkicker import salon_flow as sf
+
+    cfg = _cfg(monkeypatch)
+    cfg.salon.enabled = False
+    conn = store.connect(":memory:")
+
+    def boom(*a, **kw):
+        raise AssertionError("disabled 时不得拉取/生成/建 Wiki")
+
+    monkeypatch.setattr(sf, "fetch_selected_topics", boom)
+    monkeypatch.setattr(sf.minimax, "gen_outline", boom)
+
+    with caplog.at_level(logging.WARNING, logger="feedkicker.salon_flow"):
+        assert sf.run(cfg, conn, dry_run=False) == 0
+    assert any("salon.enabled" in r.getMessage() for r in caplog.records)
     conn.close()
 
 

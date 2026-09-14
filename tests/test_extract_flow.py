@@ -409,6 +409,23 @@ def test_config_errors_rc2(tmp_path, kwargs) -> None:
     assert extract_flow.main(["--dry-run", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")]) == 2
 
 
+def test_since_days_overflow_rc2_no_http(tmp_path, monkeypatch, caplog) -> None:
+    """#269：`--since-days 999999999` 必须 rc2（不 traceback、不发 HTTP、不动表）。"""
+    cfg = _write_cfg(tmp_path)
+    posts: list[str] = []
+    monkeypatch.setattr(extract_flow.extract_llm.httpx, "post", lambda *a, **k: posts.append("x"))
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, calls)
+
+    with caplog.at_level(logging.ERROR):
+        rc = extract_flow.main(
+            ["--since-days", "999999999", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")]
+        )
+
+    assert rc == 2 and posts == [] and calls == []
+    assert "since_days" in caplog.text
+
+
 def test_no_source_rows_rc0(tmp_path, monkeypatch, capsys) -> None:
     cfg = _write_cfg(tmp_path)
     calls: list[list[str]] = []

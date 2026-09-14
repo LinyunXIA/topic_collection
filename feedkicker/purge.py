@@ -37,6 +37,7 @@ class PurgeStats:
     cutoff_date_shanghai: str
     sqlite_deleted: int = 0
     sqlite_expired_unarchived: int = 0
+    sqlite_expired_archivable: int = 0
     bitable_scanned: int = 0
     bitable_expired: int = 0
     bitable_deleted: int = 0
@@ -56,8 +57,11 @@ def cutoff_iso(days: int, now: datetime | None = None) -> str:
 
 def purge_sqlite(
     conn: sqlite3.Connection, cutoff: str, dry_run: bool
-) -> tuple[int, int]:
-    """删 pushed_at < cutoff 且 bitable_synced_at 非空的行，返回 (deleted, unarchived)。"""
+) -> tuple[int, int, int]:
+    """删 pushed_at < cutoff 且 bitable_synced_at 非空的行，返回 (deleted, unarchived, archivable)。
+
+    dry_run 时 deleted=0 但 archivable 仍为「本可删除」行数，供巡检可见（#278）。
+    """
     rows = conn.execute(
         "SELECT feed_id, entry_key, bitable_synced_at FROM articles"
         " WHERE pushed_at IS NOT NULL AND pushed_at < ?",
@@ -68,10 +72,10 @@ def purge_sqlite(
     if unarchived:
         log.warning("purge：%d 条超期但未归档 bitable，保留不删", unarchived)
     if dry_run or not archivable:
-        return 0, unarchived
+        return 0, unarchived, len(archivable)
     conn.executemany("DELETE FROM articles WHERE feed_id = ? AND entry_key = ?", archivable)
     conn.commit()
-    return len(archivable), unarchived
+    return len(archivable), unarchived, len(archivable)
 
 
 def _bitable_guard(cfg: Config) -> str:
@@ -103,7 +107,13 @@ def run(
         cutoff_date_shanghai=cutoff_date,
     )
 
-    stats.sqlite_deleted, stats.sqlite_expired_unarchived = purge_sqlite(conn, cutoff, dry_run)
+    (
+        stats.sqlite_deleted,
+        stats.sqlite_expired_unarchived,
+        stats.sqlite_expired_archivable,
+    ) = purge_sqlite(conn, cutoff, dry_run)
+    if dry_run and stats.sqlite_expired_archivable:
+        log.info("purge dry-run：%d 条超期已归档行本将删除（未执行）", stats.sqlite_expired_archivable)
 
     meta_ok = False
     reason = _bitable_guard(cfg)

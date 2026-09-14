@@ -191,6 +191,7 @@ def test_cli_missing_wiki_tokens_rc2(monkeypatch):
 
 def _salon_cfg():
     cfg = load_config(app_env="test")
+    cfg.salon.enabled = True
     cfg.salon.app_token = "app"
     cfg.salon.table_id = "tbl"
     cfg.salon.wiki_space_id = "spc_test"

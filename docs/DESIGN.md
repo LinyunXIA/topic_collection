@@ -632,7 +632,7 @@ salon:
   table_id: "<salon-table-id>"
   wiki_space_id: "<wiki-space>"
   wiki_parent_token: "<wiki-parent>"
-  trigger_weekday: 4        # 0=周日 … 5=周五，默认 4
+  trigger_weekday: 4        # 仅记录用途；调度以 launchd Weekday=5 为准
   trigger_hour: 10
   trigger_minute: 0
 minimax:
@@ -668,7 +668,7 @@ wiki:
 </dict></plist>
 ```
 
-- 注意：launchd `Weekday` 为 1..7（1=周日 … 5=周五），与 `config.salon.trigger_weekday`（0=周日）相差 1；文档以 launchd 实际值 `Weekday=5` 为准，代码内 trigger_* 仅作可配置记录与后续动态生成预留
+- 注意：调度以 launchd 实际值 `Weekday=5`（10:00）为准；代码内 `trigger_weekday`/`trigger_hour`/`trigger_minute` 仅作可配置记录与后续动态生成预留，不参与实际调度
 - 加载/校验：`launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.feedkicker.salon.plist`；`launchctl print gui/$UID/com.feedkicker.salon` 应含 `Weekday 5 10:00`
 - 日志：`logs/salon.log`（与 `push.log` 分流）；手动：`python -m feedkicker.salon_flow --dry-run --env test` 打印双大纲 JSON + wiki_url stub 不写库
 

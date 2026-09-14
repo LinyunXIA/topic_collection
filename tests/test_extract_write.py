@@ -58,7 +58,8 @@ def _topic(name: str, links: list[str] | None = None, sources: list[str] | None 
     }
 
 
-def test_dry_run_zero_write_calls(monkeypatch) -> None:
+def test_dry_run_plan_zero_write_calls(monkeypatch) -> None:
+    """#283：生产 dry-run 路径 = `existing_index` + `plan_writes`，零 `+record-batch-create`。"""
     calls: list[list[str]] = []
 
     def fake_run(args, stdin_text=None, timeout=120):
@@ -67,7 +68,9 @@ def test_dry_run_zero_write_calls(monkeypatch) -> None:
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert write_topics("app", "tbl", [_topic("A"), _topic("B")], "MMax", "2026-09-14", dry_run=True) == (2, 0)
+    names, links = existing_index("app", "tbl")
+    picked, skipped = plan_writes([_topic("A"), _topic("B")], "MMax", "2026-09-14", names, links)
+    assert (len(picked), len(skipped)) == (2, 0)
     assert [c for c in calls if "+record-batch-create" in c] == []
     assert any("+record-list" in c for c in calls)
 
@@ -456,6 +459,19 @@ def test_link_keys_keeps_meaningful_query() -> None:
 
 def test_link_keys_normalizes_fragment_and_host_case() -> None:
     assert link_keys("https://Example.com/a#frag") == {"https://example.com/a"}
+
+
+def test_link_keys_markdown_label_not_treated_as_url() -> None:
+    """#270：`[量子位](url)` 的标签不得被当成 URL。"""
+    assert link_keys("[量子位](https://e.com/a)") == {"https://e.com/a"}
+
+
+def test_link_keys_multiple_markdown_links_split() -> None:
+    """#270：相邻两个 markdown 链接须各取 URL，不得被贪婪匹配吞并。"""
+    assert link_keys("[a](https://e.com/1)[b](https://e.com/2)") == {
+        "https://e.com/1",
+        "https://e.com/2",
+    }
 
 
 def test_apply_skips_when_markdown_wrapped_tracking_link_matches(monkeypatch) -> None:

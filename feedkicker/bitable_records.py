@@ -41,7 +41,8 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
     """拉取表内全部已有链接（分页）。
 
     拉不到已有链接集合时必须中止：返回空集会让全量被当新记录写入，造成重复行。
-    兼容 records 包装与 fields+data 行式两种形态；其余形态一律抛错（A3）。
+    兼容 records 包装与 fields+data 行式两种形态（行式含 list 行与 dict 行，dict 行按「链接」
+    键取，不得按下标索引 KeyError，#275）；其余形态一律抛错（A3）。
     不按「环境」过滤：dev/test 共享 Base 下跨环境 URL 也去重，test 视图可能缺行（非丢失，#229）。
     """
     links: set[str] = set()
@@ -91,7 +92,12 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
             break
         i_link = fields.index("链接")
         for r in rows:
-            v = r[i_link]
+            if isinstance(r, dict):
+                v = r.get("链接")
+            elif isinstance(r, list) and i_link < len(r):
+                v = r[i_link]
+            else:
+                continue
             v = v.get("link") if isinstance(v, dict) else v
             if v:
                 links.add(canonicalize(v))

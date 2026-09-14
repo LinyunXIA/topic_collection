@@ -61,8 +61,14 @@ def run(
     since_days = ex.since_days if since_days is None else since_days
     batch_size = ex.batch_size if batch_size is None else batch_size
     max_calls = ex.max_calls if max_calls is None else max_calls
-    if since_days < 1 or batch_size < 1 or max_calls < 0:
-        log.error("参数非法：since_days=%s batch_size=%s max_calls=%s", since_days, batch_size, max_calls)
+    if not 1 <= since_days <= extract_source.MAX_SINCE_DAYS or batch_size < 1 or max_calls < 0:
+        log.error(
+            "参数非法：since_days=%s（须 1..%d）batch_size=%s max_calls=%s",
+            since_days,
+            extract_source.MAX_SINCE_DAYS,
+            batch_size,
+            max_calls,
+        )
         return 2
     if not ex.enabled:
         log.warning("extract.enabled=false；显式 CLI 调用仍执行")

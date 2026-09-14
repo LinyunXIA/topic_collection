@@ -187,6 +187,7 @@ def test_salon_notify_empty_urls_warns(caplog):
 
 def test_salon_flow_all_topics_fail_warns_rc0(monkeypatch, caplog):
     cfg = load_config(app_env="test")
+    cfg.salon.enabled = True
     cfg.salon.app_token = "appTokenTest"
     cfg.salon.table_id = "tblTest"
     cfg.wiki.space_id = "spc_test"

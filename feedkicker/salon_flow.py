@@ -5,7 +5,6 @@ import json
 import logging
 import sys
 from datetime import UTC, datetime
-from typing import Any
 
 from feedkicker import minimax, salon_md, salon_notify, store, wiki, wiki_home
 from feedkicker.config import load_config
@@ -20,9 +19,10 @@ def _token_missing(value: str) -> bool:
 
 
 def run(cfg, conn, dry_run: bool = False) -> int:
-    app_token = cfg.salon.app_token
-    table_id = cfg.salon.table_id
-    selected: list[dict[str, Any]]
+    if not cfg.salon.enabled:
+        log.warning("salon.enabled=false，跳过周五大纲流程")
+        return 0
+    app_token, table_id = cfg.salon.app_token, cfg.salon.table_id
     if (_token_missing(app_token) or _token_missing(table_id)) and dry_run:
         selected = [
             {"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}

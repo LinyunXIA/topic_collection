@@ -216,6 +216,65 @@ def test_fetch_topic_fields_empty_token():
         fetch_topic_fields("", "tbl")
 
 
+@pytest.mark.parametrize("bad_fields", ["oops", [1, 2], {"a": 1}])
+def test_fetch_topic_fields_non_list_dict_raises(monkeypatch, bad_fields):
+    """#276：fields 为 str / list[str] / dict 时统一 RuntimeError，不得裸 AttributeError。"""
+
+    def fake_run(args, stdin_text=None, timeout=60):
+        return FakeProc(0, stdout=json.dumps({"data": {"fields": bad_fields}}, ensure_ascii=False))
+
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="fields"):
+        fetch_topic_fields("app", "tbl")
+
+
+def test_has_more_accepts_string_one():
+    """#277：has_more 字符串 "1" 视为真。"""
+    assert topic_mod._has_more_of({"has_more": "1"}) is True
+    assert topic_mod._has_more_of({"has_more": "true"}) is True
+    assert topic_mod._has_more_of({"has_more": "false"}) is False
+
+
+def test_has_more_null_falls_back_to_camel():
+    """#277：has_more 为 null 时回退看 hasMore。"""
+    assert topic_mod._has_more_of({"has_more": None, "hasMore": True}) is True
+    assert topic_mod._has_more_of({"has_more": None, "hasMore": False}) is False
+    assert topic_mod._has_more_of({}) is None
+
+
+def test_fetch_selected_short_page_advances_by_len(monkeypatch):
+    """#277：has_more=true 且本页 < limit 时须按 len(chunk) 前进，不得按 limit 跳记录。"""
+    offsets: list[str] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        off = args[args.index("--offset") + 1]
+        offsets.append(off)
+        if off == "0":
+            payload = {
+                "records": [
+                    {"record_id": "recA", "fields": {"讨论状态": ["已选题"]}},
+                    {"record_id": "recB", "fields": {"讨论状态": ["已选题"]}},
+                    {"record_id": "recC", "fields": {"讨论状态": ["已选题"]}},
+                ],
+                "has_more": True,
+            }
+        else:
+            payload = {
+                "records": [
+                    {"record_id": "recD", "fields": {"讨论状态": ["已选题"]}},
+                    {"record_id": "recE", "fields": {"讨论状态": ["已选题"]}},
+                ],
+                "has_more": False,
+            }
+        return FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False))
+
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
+    records = fetch_selected_topics("app", "tbl", limit=10)
+
+    assert offsets == ["0", "3"]
+    assert [r["record_id"] for r in records] == ["recA", "recB", "recC", "recD", "recE"]
+
+
 def test_no_full_scan_memory_filter(monkeypatch):
     # ensure no fallback pulls all without filter; if --filter-json missing we would have caught
     def fake_run(args, stdin_text=None, timeout=120):

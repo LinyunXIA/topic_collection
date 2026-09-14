@@ -9,6 +9,8 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
+import pytest
+
 from feedkicker import bitable_lark, bitable_purge, purge, store
 from feedkicker.config import (
     BitableConf,
@@ -69,6 +71,12 @@ def page(records):
     return json.dumps({"ok": True, "data": {"records": records}}, ensure_ascii=False)
 
 
+def outcome_triple(*args, **kwargs):
+    """生产 outcome 入口的 (deleted, expired, scanned) 视图（#279 删除兼容 wrapper 后测试统一用它）。"""
+    outcome = bitable_purge.purge_expired_records_outcome(*args, **kwargs)
+    return outcome.deleted, outcome.expired, outcome.scanned
+
+
 def install_fake_lark(monkeypatch, pages, delete_fail=False):
     calls: list[list[str]] = []
     deletes: list[dict] = []
@@ -98,9 +106,22 @@ def test_purge_sqlite_dry_run_counts_and_keeps():
     add_article(conn, "old-unarch", "2025-01-03T00:00:00Z", None)
     add_article(conn, "recent", "2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z")
 
-    deleted, unarchived = purge.purge_sqlite(conn, "2025-09-07T02:00:00Z", dry_run=True)
-    assert (deleted, unarchived) == (0, 1)
+    deleted, unarchived, archivable = purge.purge_sqlite(conn, "2025-09-07T02:00:00Z", dry_run=True)
+    assert (deleted, unarchived, archivable) == (0, 1, 1)
     assert conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 3
+
+
+def test_purge_dry_run_reports_would_delete_archivable(capsys):
+    """#278：dry-run 必须暴露「待删（可归档过期）」行数，且不真删。"""
+    conn = make_conn()
+    add_article(conn, "old-arch", "2025-01-01T00:00:00Z", "2025-01-02T00:00:00Z")
+
+    stats = purge.run(make_cfg(enabled=False), conn, dry_run=True, now=NOW)
+
+    assert stats.sqlite_deleted == 0
+    assert stats.sqlite_expired_archivable == 1
+    assert conn.execute("SELECT COUNT(*) FROM articles").fetchone()[0] == 1
+    assert '"sqlite_expired_archivable": 1' in capsys.readouterr().out
 
 
 def test_purge_sqlite_apply_deletes_only_archived():
@@ -109,8 +130,8 @@ def test_purge_sqlite_apply_deletes_only_archived():
     add_article(conn, "old-unarch", "2025-01-03T00:00:00Z", None)
     add_article(conn, "recent", "2026-09-01T00:00:00Z", "2026-09-02T00:00:00Z")
 
-    deleted, unarchived = purge.purge_sqlite(conn, "2025-09-07T02:00:00Z", dry_run=False)
-    assert (deleted, unarchived) == (1, 1)
+    deleted, unarchived, archivable = purge.purge_sqlite(conn, "2025-09-07T02:00:00Z", dry_run=False)
+    assert (deleted, unarchived, archivable) == (1, 1, 1)
     left = {r[0] for r in conn.execute("SELECT entry_key FROM articles")}
     assert left == {"old-unarch", "recent"}
 
@@ -125,7 +146,7 @@ def test_bitable_purge_dry_run_two_pages_no_delete(monkeypatch):
     ]
     calls, deletes = install_fake_lark(monkeypatch, pages)
 
-    deleted, expired, scanned = bitable_purge.purge_expired_records(
+    deleted, expired, scanned = outcome_triple(
         "app", "tbl", "2025-09-07", dry_run=True
     )
     assert (deleted, expired, scanned) == (0, 102, 203)
@@ -141,7 +162,7 @@ def test_bitable_purge_apply_batches_200_with_yes(monkeypatch):
     ]
     calls, deletes = install_fake_lark(monkeypatch, pages)
 
-    deleted, expired, scanned = bitable_purge.purge_expired_records(
+    deleted, expired, scanned = outcome_triple(
         "app", "tbl", "2025-09-07", dry_run=False
     )
     assert (deleted, expired, scanned) == (250, 250, 250)
@@ -159,7 +180,7 @@ def test_bitable_purge_batch_failure_stops(monkeypatch):
     ]
     calls, deletes = install_fake_lark(monkeypatch, pages, delete_fail=True)
 
-    deleted, expired, _ = bitable_purge.purge_expired_records(
+    deleted, expired, _ = outcome_triple(
         "app", "tbl", "2025-09-07", dry_run=False
     )
     assert (deleted, expired) == (0, 250)
@@ -175,7 +196,7 @@ def test_bitable_purge_first_page_failure_safe(monkeypatch):
         return FakeProc(1, stderr="boom")
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
-    assert bitable_purge.purge_expired_records("app", "tbl", "2025-09-07", dry_run=False) == (0, 0, 0)
+    assert outcome_triple("app", "tbl", "2025-09-07", dry_run=False) == (0, 0, 0)
     assert not any("+record-delete" in c for c in calls)
 
 
@@ -190,10 +211,38 @@ def test_bitable_purge_row_shape_fields_data(monkeypatch):
     )
     install_fake_lark(monkeypatch, [row_page])
 
-    deleted, expired, scanned = bitable_purge.purge_expired_records(
+    deleted, expired, scanned = outcome_triple(
         "app", "tbl", "2025-09-07", dry_run=True
     )
     assert (deleted, expired, scanned) == (0, 1, 2)
+
+
+def test_purge_unrecognized_response_raises_no_meta(monkeypatch):
+    """#274：rc0 但非 JSON（无 records/fields 容器）必须 raise，不得当合法空表假成功。"""
+    monkeypatch.setattr(
+        bitable_lark,
+        "_run",
+        lambda args, stdin_text=None, timeout=120: FakeProc(0, stdout="not json at all"),
+    )
+    conn = make_conn()
+    cfg = make_cfg(enabled=True, app_token="appReal", table_id="tblReal")
+
+    with pytest.raises(RuntimeError, match="无法识别"):
+        purge.run(cfg, conn, dry_run=False, now=NOW)
+    assert store.get_meta(conn, purge.PURGE_LAST_RUN_KEY) == ""
+    conn.close()
+
+
+def test_purge_empty_records_is_valid_ok(monkeypatch):
+    """#274 对照：明确的 `records: []` 空表是合法空集，正常 ok（写 meta）。"""
+    install_fake_lark(monkeypatch, [page([])])
+    conn = make_conn()
+    cfg = make_cfg(enabled=True, app_token="appReal", table_id="tblReal")
+
+    stats = purge.run(cfg, conn, dry_run=False, now=NOW)
+    assert (stats.bitable_deleted, stats.bitable_expired, stats.bitable_scanned) == (0, 0, 0)
+    assert store.get_meta(conn, purge.PURGE_LAST_RUN_KEY)
+    conn.close()
 
 
 def test_cutoff_date_shanghai_boundary(monkeypatch):
@@ -203,7 +252,7 @@ def test_cutoff_date_shanghai_boundary(monkeypatch):
         rec("recOld", "2025-09-06T23:00:00+08:00"),
     ])]
     install_fake_lark(monkeypatch, pages)
-    _, expired, _ = bitable_purge.purge_expired_records("app", "tbl", "2025-09-07", dry_run=True)
+    _, expired, _ = outcome_triple("app", "tbl", "2025-09-07", dry_run=True)
     assert expired == 1
 
 
@@ -247,7 +296,7 @@ def test_purge_run_skips_bitable_when_disabled_or_placeholder(monkeypatch):
     def boom(*a, **k):
         raise AssertionError("不应调用 bitable 清理")
 
-    monkeypatch.setattr(bitable_purge, "purge_expired_records", boom)
+    monkeypatch.setattr(bitable_purge, "purge_expired_records_outcome", boom)
 
     conn = make_conn()
     add_article(conn, "old-arch", "2025-01-01T00:00:00Z", "2025-01-02T00:00:00Z")
@@ -404,7 +453,7 @@ def test_cutoff_unified_shanghai_day_boundary(monkeypatch):
             )
         ],
     )
-    _, expired, _ = bitable_purge.purge_expired_records("app", "tbl", cutoff_date, dry_run=True)
+    _, expired, _ = outcome_triple("app", "tbl", cutoff_date, dry_run=True)
     assert expired == 1
 
 

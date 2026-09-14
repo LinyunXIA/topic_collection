@@ -77,6 +77,7 @@ def _salon_cfg(monkeypatch):
     monkeypatch.delenv("MiniMax_Key", raising=False)
     monkeypatch.delenv("MINIMAX_API_KEY", raising=False)
     cfg = load_config(app_env="test")
+    cfg.salon.enabled = True
     cfg.salon.app_token = "appTokenTest"
     cfg.salon.table_id = "tblTest"
     cfg.salon.wiki_space_id = "spc_test"

@@ -69,7 +69,7 @@ def load_config(
     cfg = Config(app_env=env)
     cfg.feishu_webhook = str(raw.get("feishu_webhook") or "")
     cfg.feishu_secret = str(raw.get("feishu_secret") or "")
-    cfg.bootstrap_days = int(raw.get("bootstrap_days", cfg.bootstrap_days))
+    cfg.bootstrap_days = max(1, int(raw.get("bootstrap_days", cfg.bootstrap_days)))
 
     http_raw = raw.get("http") or {}
     cfg.http = HttpConf(

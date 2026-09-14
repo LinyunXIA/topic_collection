@@ -85,6 +85,12 @@ def _list_records(
             return out, True, False
         first = False
         data = bitable_lark._data(proc)
+        if not isinstance(data, dict) or not (
+            isinstance(data.get("records"), list) or isinstance(data.get("fields"), list)
+        ):
+            raise RuntimeError(
+                f"purge：record-list 响应无法识别（无 records/fields 容器），中止以免误判空表: {str(data)[:200]}"
+            )
         prev_fp = bitable_lark._page_guard(prev_fp, data)
         records: list[dict[str, Any]] = data.get("records") or []
         if records:
@@ -188,11 +194,3 @@ def purge_expired_records_outcome(
     return PurgeOutcome(
         deleted, len(expired), len(pairs), listed_ok=True, applied_ok=batch_ok, complete=complete
     )
-
-
-def purge_expired_records(
-    app_token: str, table_id: str, cutoff_date: str, dry_run: bool = False
-) -> tuple[int, int, int]:
-    """DESIGN §20.2 的 (deleted, expired, scanned) 视图（兼容既有调用）。"""
-    outcome = purge_expired_records_outcome(app_token, table_id, cutoff_date, dry_run)
-    return outcome.deleted, outcome.expired, outcome.scanned

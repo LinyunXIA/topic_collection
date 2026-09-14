@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
+
 from feedkicker.config import load_config
 
 
@@ -47,6 +49,15 @@ def test_canonical_keys_parse_and_wiki_falls_back_to_salon(tmp_path, monkeypatch
     assert cfg.minimax.base_url == "https://api.example.com"
     assert cfg.wiki.space_id == "spc-canonical"
     assert cfg.wiki.parent_token == "parent-canonical"
+
+
+@pytest.mark.parametrize("raw", ["0", "-30"])
+def test_bootstrap_days_clamped_to_min_one(tmp_path, monkeypatch, raw):
+    """#273：YAML 0/负值不得原样接受（首跑会把全部有日期条目置 pushed，静默丢历史）。"""
+    _isolate_env(monkeypatch)
+    path = _write_config(tmp_path, _yaml(f"bootstrap_days: {raw}"))
+
+    assert load_config(config_path=path, app_env="test").bootstrap_days == 1
 
 
 def test_undocumented_aliases_are_not_honored(tmp_path, monkeypatch):
