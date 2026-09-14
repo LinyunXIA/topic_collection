@@ -47,6 +47,8 @@ config-*.yaml
 
 # ───────── lark-cli 运行工件 ─────────
 .lark-json-*.json
+.wiki-*
+.wiki-home-*
 *.manifest.json
 *.ndjson
 
