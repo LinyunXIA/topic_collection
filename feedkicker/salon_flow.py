@@ -71,9 +71,6 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             log.info("跳过已处理 %s (last_status=已选题)", rid)
             continue
 
-        if dry_run and last_status == "已选题" and not ppt_synced_is_null:
-            continue
-
         title = salon_md.topic_title(rec)
 
         if dry_run:

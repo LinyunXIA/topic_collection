@@ -74,8 +74,8 @@ def _md_temp_file(md_content: str, filename: str):
 
 
 def create_wiki_doc_from_md(
-    app_token: str,
-    space_id: str,
+    _app_token: str,
+    _space_id: str,
     parent_wiki_token: str,
     title: str,
     md_content: str,
