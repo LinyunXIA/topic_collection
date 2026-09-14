@@ -13,6 +13,7 @@ from feedkicker.bitable_backfill import (
 from feedkicker.bitable_lark import (
     SHANGHAI as SHANGHAI,
     _CHUNK as _CHUNK,
+    _LARK_CANDIDATES as _LARK_CANDIDATES,
     _data as _data,
     _has_batch_verb as _has_batch_verb,
     _json_arg as _json_arg,
@@ -37,6 +38,7 @@ from feedkicker.bitable_schema import (
     BASE_TITLES as BASE_TITLES,
     TABLE_NAME as TABLE_NAME,
     VIEW_NAME as VIEW_NAME,
+    _FIELDS as _FIELDS,
     base_url as base_url,
     create_base as create_base,
     create_table as create_table,
