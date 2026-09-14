@@ -17,6 +17,9 @@ from typing import Any
 import httpx
 
 from feedkicker.feishu_card import (
+    SIGN_RESERVE_BYTES as SIGN_RESERVE_BYTES,
+)
+from feedkicker.feishu_card import (
     build_card as build_card,
 )
 from feedkicker.feishu_card import (
@@ -27,8 +30,6 @@ from feedkicker.feishu_card import (
 )
 
 log = logging.getLogger(__name__)
-
-SIGN_RESERVE_BYTES = 128
 
 
 def gen_sign(timestamp: str, secret: str) -> str:

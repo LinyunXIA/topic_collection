@@ -71,8 +71,13 @@ def _dry_run_plan(cfg: Any, args: Any) -> None:
         log.info("dry-run：将补归档日期字段/「按来源」「按日期」视图/组织内只读分享（未执行）")
     if args.reseed:
         if _tokens_ready(bt):
-            n = bitable_records.purge_all_records(bt.app_token, bt.table_id, dry_run=True)
-            log.info("dry-run：将清空 %d 条记录后全量重灌（未删除）", n)
+            env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
+            n, purge_ok = bitable_records.purge_all_records(
+                bt.app_token, bt.table_id, dry_run=True, env_name=env_name
+            )
+            if not purge_ok:
+                log.warning("dry-run：清空预览拉取失败，%d 条仅为已扫描部分", n)
+            log.info("dry-run：将清空 %d 条记录后全量重灌（未删除；prod markdown 路径仅数首屏）", n)
         else:
             log.info("dry-run：Base 未配置或为占位 token，跳过 reseed 预览")
     if args.backfill or args.fix_archive_date:
@@ -88,6 +93,7 @@ def _dry_run_plan(cfg: Any, args: Any) -> None:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """bitable 运维 CLI：非 --init/--reseed 需既有 Base；并发 reseed 无互斥，按单点运维执行（#229）。"""
     import argparse
 
     from feedkicker import store
@@ -98,9 +104,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--db", default=None, help="sqlite 路径（覆盖 TC_DB 与 --env 推导）")
     parser.add_argument("--env", default=None, choices=["dev", "test", "prod"])
     parser.add_argument("--init", action="store_true", help="补字段/视图/组织内只读分享")
-    parser.add_argument("--reseed", action="store_true", help="清空表内记录后全量重灌")
-    parser.add_argument("--backfill", action="store_true", help="回填存量空归档日期")
-    parser.add_argument("--fix-archive-date", action="store_true", help="回填存量空归档日期（--backfill 别名）")
+    exclusive = parser.add_mutually_exclusive_group()
+    exclusive.add_argument("--reseed", action="store_true", help="清空表内记录后全量重灌")
+    exclusive.add_argument("--backfill", action="store_true", help="回填存量空归档日期")
+    exclusive.add_argument("--fix-archive-date", action="store_true", help="回填存量空归档日期（--backfill 别名）")
     parser.add_argument("--dry-run", action="store_true", help="只读预览：不建 Base、不写表、不清空")
     args = parser.parse_args(argv)
 
@@ -113,6 +120,11 @@ def main(argv: list[str] | None = None) -> int:
         _dry_run_plan(cfg, args)
         return 0
 
+    if not (args.init or args.reseed) and not _tokens_ready(cfg.bitable):
+        log.error(
+            "拒绝执行：Base 未配置或为占位 token（仅 --init/--reseed 可创建/修复 Base，其余动作需既有 Base）"
+        )
+        return 2
     if args.reseed and not _tokens_ready(cfg.bitable):
         log.error(
             "拒绝 --reseed：Base 未配置或为占位 token（需既有且非占位 app_token/table_id），不执行先建后清"
@@ -137,10 +149,16 @@ def main(argv: list[str] | None = None) -> int:
     conn = store.connect(cfg.db_path)
     try:
         if args.reseed:
-            n = bitable_records.purge_all_records(info["app_token"], info["table_id"])
-            log.info("已清空 %d 条旧记录，准备重灌", n)
             reset = store.reset_bitable_synced(conn)
-            log.info("已重置 %d 条同步标记，开始全量重灌", reset)
+            log.info("已重置 %d 条同步标记（先清标记后清表，任一中断点均可自愈重灌）", reset)
+            env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
+            n, purge_ok = bitable_records.purge_all_records(
+                info["app_token"], info["table_id"], env_name=env_name
+            )
+            if not purge_ok:
+                log.error("清理未完成（已删 %d 条），中止 reseed；标记已清，下轮可自愈重灌", n)
+                return 2
+            log.info("已清空 %d 条旧记录，准备重灌", n)
         if args.backfill or args.fix_archive_date:
             env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
             n = bitable_backfill.backfill_empty_archive_dates(

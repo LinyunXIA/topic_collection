@@ -14,6 +14,17 @@ SALON_FAIL_STREAK_KEY = "salon_fail_streak"
 SOS_THRESHOLD = 3
 
 
+def _kept_wiki_links(payload: dict[str, Any], wiki_urls: list[str]) -> int:
+    """统计裁剪后实际保留的 wiki 按钮数（超限丢尾部，可能少于输入）。"""
+    wanted = set(wiki_urls)
+    return sum(
+        1
+        for el in payload.get("card", {}).get("elements") or []
+        for act in el.get("actions") or []
+        if act.get("url") in wanted
+    )
+
+
 def send_wiki_card(
     cfg: Any, conn: Any, wiki_urls: list[str], dry_run: bool = False
 ) -> bool:
@@ -22,14 +33,20 @@ def send_wiki_card(
     失败时 strip_actions 降级为纯链接卡片重试一次；仍败则 meta 连败 +1，
     达 SOS_THRESHOLD 且 webhook 非空时发纯文本求救并清零。dry-run 只打印 payload。
     非 prod 环境且 webhook 非空时发送前 WARNING（对齐 push，防误推真实群）。
+    裁剪后 0 个 wiki 链接（输入非空）视为失败（#R4V-6）；
     返回 True 表示送达（或 dry-run / 无链接），False 表示最终失败。
     """
     if not wiki_urls:
+        log.warning("无 Wiki 链接（0 条成功），跳过卡片推送")
         return True
     payload = feishu.build_card([], 0, [], wiki_urls=wiki_urls)
+    kept = _kept_wiki_links(payload, wiki_urls)
+    if kept == 0:
+        log.warning("Wiki 卡片裁剪后 0 个链接（原始 %d 个），不发送", len(wiki_urls))
+        return False
     if dry_run:
         print(json.dumps(payload, ensure_ascii=False, indent=2))
-        log.info("dry-run 卡片预览已打印（含 %d 个 Wiki 链接）", len(wiki_urls))
+        log.info("dry-run 卡片预览已打印（含 %d 个 Wiki 链接）", kept)
         return True
     if cfg.app_env != "prod" and cfg.feishu_webhook:
         log.warning(
@@ -58,7 +75,7 @@ def send_wiki_card(
             if streak:
                 log.info("Wiki 卡片推送恢复，清零连败计数（此前 %d 次）", streak)
             store.set_meta(conn, SALON_FAIL_STREAK_KEY, "0")
-            log.info("Wiki 卡片已推送 %d 个链接", len(wiki_urls))
+            log.info("Wiki 卡片已推送 %d 个链接", kept)
             return True
         streak = int(store.get_meta(conn, SALON_FAIL_STREAK_KEY, "0")) + 1
         store.set_meta(conn, SALON_FAIL_STREAK_KEY, str(streak))

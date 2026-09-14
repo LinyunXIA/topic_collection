@@ -16,6 +16,7 @@ log = logging.getLogger(__name__)
 
 
 def is_ppt_synced(conn: sqlite3.Connection, record_id: str) -> bool:
+    """按 entry_key 判定（无 feed 过滤）；entry_key 为 URL/guid 的实际数据不会跨源碰撞（#229）。"""
     try:
         row = conn.execute(
             "SELECT 1 FROM articles WHERE entry_key = ? AND ppt_synced_at IS NOT NULL",
@@ -70,6 +71,7 @@ def mark_topic_archived(
     """选题 Wiki 建成后落库：插占位 article 行、标记 ppt 已同步、last_status=已选题。
 
     三段写入各自独立 try/except：单段失败只 WARNING，不影响已建成的 Wiki 与卡片推送；
+    INSERT 直接写 ppt_synced_at=now（不等第二步 mark 成功，否则 mark 失败会泄漏进 push/归档，#221）；
     last_status 只在「已选题」被处理时写，差异分支仅兜底部分写失败（#211，语义见 PRD §17）。
     """
     try:
@@ -80,9 +82,9 @@ def mark_topic_archived(
             conn.execute(
                 "INSERT INTO articles (feed_id, entry_key, title, url, description, "
                 "published_at, first_seen, pushed_at, ppt_synced_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, NULL) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?) "
                 "ON CONFLICT (feed_id, entry_key) DO NOTHING",
-                (feed_id, record_id, title, url, md_excerpt[:500], None, now_iso),
+                (feed_id, record_id, title, url, md_excerpt[:500], None, now_iso, now_iso),
             )
             conn.commit()
     except Exception as e:  # noqa: BLE001

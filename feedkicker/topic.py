@@ -10,7 +10,12 @@ from feedkicker import bitable_lark
 log = logging.getLogger(__name__)
 
 FILTER_JSON = json.dumps({"logic": "and", "conditions": [["讨论状态", "intersects", ["已选题"]]]}, ensure_ascii=False)
-MAX_OFFSET = 20000
+MAX_OFFSET = bitable_lark.MAX_OFFSET
+
+
+def _has_more_of(data: dict[str, Any]) -> bool | None:
+    raw = data.get("has_more") if "has_more" in data else data.get("hasMore")
+    return None if raw is None else (raw.strip().lower() == "true" if isinstance(raw, str) else bool(raw))
 
 
 def _positive_int(value: str) -> int:
@@ -92,7 +97,7 @@ def fetch_selected_topics(
             log.warning("lark-cli 业务失败: %s", msg)
             raise RuntimeError(f"lark-cli 业务失败: {msg}")
         chunk = _extract_records(data)
-        has_more = data.get("has_more") if "has_more" in data else data.get("hasMore")
+        has_more = _has_more_of(data)
         if not chunk:
             if has_more is True:
                 offset += limit
@@ -142,7 +147,15 @@ def fetch_topic_fields(app_token: str, table_id: str) -> list[dict[str, Any]]:
     return fields
 
 
-if __name__ == "__main__":
+def _stub_out(check_fields: bool) -> int:
+    if check_fields:
+        log.warning("--check-fields 被跳过：app_token/table_id 缺失，仅打印 stub")
+    stub = [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
+    print(json.dumps(stub, ensure_ascii=False, indent=2))
+    return 0
+
+
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="feedkicker.topic")
     parser.add_argument("--env", default=None, choices=["dev", "test", "prod"], help="环境名，对应 config-{env}.yaml")
     parser.add_argument("--app-token", default=None, help="覆盖多维表 app_token")
@@ -150,12 +163,11 @@ if __name__ == "__main__":
     parser.add_argument("--limit", type=_positive_int, default=200, help="分页大小（正整数）")
     parser.add_argument("--dry-run", action="store_true", help="仅打印，不校验远端副作用")
     parser.add_argument("--check-fields", action="store_true", help="校验 讨论状态 字段类型")
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
-    app_token = args.app_token
-    table_id = args.table_id
+    app_token, table_id = args.app_token, args.table_id
     if not app_token or not table_id:
         try:
             from feedkicker.config import load_config
@@ -166,26 +178,23 @@ if __name__ == "__main__":
             if not table_id:
                 table_id = cfg.salon.table_id
             if (not app_token or not table_id) and args.dry_run:
-                stub = [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
-                print(json.dumps(stub, ensure_ascii=False, indent=2))
-                raise SystemExit(0)
-        except SystemExit:
-            raise
+                return _stub_out(args.check_fields)
         except Exception:  # noqa: BLE001
             if args.dry_run:
-                stub = [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
-                print(json.dumps(stub, ensure_ascii=False, indent=2))
-                raise SystemExit(0)
+                return _stub_out(args.check_fields)
             raise
 
     if args.check_fields:
         fields = fetch_topic_fields(app_token, table_id)
         print(json.dumps(fields, ensure_ascii=False, indent=2))
+    elif args.dry_run and (not app_token or not table_id):
+        _stub_out(args.check_fields)
     else:
-        if args.dry_run and (not app_token or not table_id):
-            stub = [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
-            print(json.dumps(stub, ensure_ascii=False, indent=2))
-        else:
-            records = fetch_selected_topics(app_token, table_id, limit=args.limit)
-            print(json.dumps(records, ensure_ascii=False, indent=2))
-            log.info("已选题 %d 条", len(records))
+        records = fetch_selected_topics(app_token, table_id, limit=args.limit)
+        print(json.dumps(records, ensure_ascii=False, indent=2))
+        log.info("已选题 %d 条", len(records))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

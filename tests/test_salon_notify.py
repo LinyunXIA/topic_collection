@@ -55,17 +55,22 @@ def test_send_wiki_card_three_failures_triggers_sos_then_reset(monkeypatch):
     conn.close()
 
 
-def test_send_wiki_card_recovery_clears_streak_without_sos(monkeypatch):
+def test_send_wiki_card_recovery_clears_streak_without_sos(monkeypatch, caplog):
     cfg = _cfg(monkeypatch)
     conn = store.connect(":memory:")
     store.set_meta(conn, salon_notify.SALON_FAIL_STREAK_KEY, "2")
     sos_texts: list[str] = []
-    _patch_card(monkeypatch, True, sos_texts)
+    sends = _patch_card(monkeypatch, True, sos_texts)
+    urls = [f"https://web91vfvm7.feishu.cn/wiki/wik{'a' * 220}_{i}" for i in range(40)]
 
-    ok = salon_notify.send_wiki_card(cfg, conn, ["https://web91vfvm7.feishu.cn/wiki/wik1"])
+    with caplog.at_level(logging.INFO, logger="feedkicker.salon_notify"):
+        ok = salon_notify.send_wiki_card(cfg, conn, urls)
     assert ok is True
     assert sos_texts == []
     assert store.get_meta(conn, salon_notify.SALON_FAIL_STREAK_KEY, "0") == "0"
+    kept = sum(1 for el in sends[0]["card"]["elements"] if el.get("tag") == "action")
+    assert 0 < kept < len(urls)
+    assert any(f"已推送 {kept} 个链接" in r.getMessage() for r in caplog.records)
     conn.close()
 
 
@@ -85,7 +90,7 @@ def test_send_wiki_card_first_two_failures_no_sos(monkeypatch):
     conn.close()
 
 
-def test_send_wiki_card_empty_urls_is_ok(monkeypatch):
+def test_send_wiki_card_empty_and_all_truncated(monkeypatch, caplog):
     cfg = _cfg(monkeypatch)
     conn = store.connect(":memory:")
     sos_texts: list[str] = []
@@ -94,6 +99,12 @@ def test_send_wiki_card_empty_urls_is_ok(monkeypatch):
     assert salon_notify.send_wiki_card(cfg, conn, []) is True
     assert sends == []
     assert store.get_meta(conn, salon_notify.SALON_FAIL_STREAK_KEY, "MISSING") == "MISSING"
+
+    huge = ["https://web91vfvm7.feishu.cn/wiki/" + "a" * 30000]
+    with caplog.at_level(logging.WARNING, logger="feedkicker.salon_notify"):
+        assert salon_notify.send_wiki_card(cfg, conn, huge) is False
+    assert sends == []
+    assert any("0 个链接" in r.getMessage() for r in caplog.records)
     conn.close()
 
 

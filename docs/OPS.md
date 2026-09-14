@@ -90,6 +90,7 @@
 - `config-{dev,test,prod}.yaml` 及真实 webhook / secret **不入库**，只存本地文件或环境变量。
 - `.example` 中的值一律是占位符（`<dev-token>`、`<prod-secret>`…），不能直接当真实凭据用。
 - 文档与 issue 中不落真实 token / webhook / 签名 secret。
+- 历史提交曾含 salon `app_token`/`table_id`（标识符，不授予访问权，#225）：轮换该 Base 的 app_token 或书面记录「已接受风险」；工作树已占位化。
 
 ### 2.3 双 Base 拓扑
 

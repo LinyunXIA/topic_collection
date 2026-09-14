@@ -27,8 +27,6 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         selected = [
             {"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}
         ]
-        app_token = "stub_app"
-        table_id = "stub_tbl"
     elif _token_missing(app_token) or _token_missing(table_id):
         log.warning("salon 未配置 app_token/table_id，跳过")
         return 0
@@ -46,6 +44,9 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     wiki_space = cfg.wiki.space_id or cfg.salon.wiki_space_id
     wiki_parent = cfg.wiki.parent_token or cfg.salon.wiki_parent_token
     wiki_app = cfg.wiki.app_token or cfg.salon.app_token
+    if not dry_run and (_token_missing(wiki_space) or _token_missing(wiki_parent)):
+        log.warning("wiki space/parent 为空或占位，跳过建 Wiki 与标记（不产生孤儿文档）")
+        return 0
 
     now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     wiki_urls: list[str] = []
@@ -140,6 +141,9 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             print(json.dumps({"wiki_urls": wiki_urls}, ensure_ascii=False, indent=2))
     else:
         log.info("本轮无新增 Wiki")
+
+    if not dry_run and selected and not wiki_urls:
+        log.warning("已选题 %d 条但 0 条成功建 Wiki（生成/写入全部失败），请查上方 WARNING", len(selected))
 
     card_ok = salon_notify.send_wiki_card(cfg, conn, wiki_urls, dry_run=dry_run)
 

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import contextlib
 import json
 import logging
@@ -82,22 +83,21 @@ def create_wiki_doc_from_md(
 ) -> str:
     """在 wiki 父节点下创建 docx 并写入 markdown，返回 /wiki/<node_token> 规范链接。
 
-    流程（lark-cli，已实测）：
-    1. ``docs +create --parent-token <wiki节点> --doc-format markdown --content @file``
-       直接在 wiki 树内建 docx（obj_type=docx），取 data.document.document_id；
-    2. ``wiki +node-get --node-token <document_id>`` 反查 node_token 拼规范链接；
-       新建节点有秒级传播延迟（131005 not_found），node-get 失败时降级：
-    3. ``wiki +node-list --parent-node-token <父节点>`` 即时返回 data.nodes，
-       按 obj_token（或 objToken）== document_id、否则 title == doc_title 命中取 node_token（#140）；
-    4. 仅当 node-list 也失败/未命中，才回退 /docx/<document_id> 并发 WARNING（不阻塞话题）。
-    注意：``drive +upload --wiki-token`` 只会产出 obj_type=file 的附件节点（#133），不可用。
-    space_id/parent_wiki_token 供 node-list 兜底；app_token 保留入参兼容调用方，lark-cli 自行鉴权。
+    流程：``docs +create --parent-token``（取 data.document.document_id）→
+    ``wiki +node-get`` 反查 node_token（新建秒级传播延迟 131005，失败时降级）→
+    ``wiki +node-list`` 按 obj_token/title 命中（#140）→ 仍失败回退 /docx/ 并发 WARNING。
+    非 dry-run 且 space_id/parent 为空或占位直接抛 RuntimeError（不建孤儿 docx）。
+    app_token 保留入参兼容调用方，lark-cli 自行鉴权；``drive +upload`` 只产 file 附件（#133）。
     """
     doc_title = build_doc_title(title, date_str=date_str)
     if dry_run:
         url = wiki_url(_dry_run_token(title))
         print(url)
         return url
+    if not space_id or not parent_wiki_token or "<" in space_id or "<" in parent_wiki_token:
+        raise RuntimeError(
+            f"拒绝创建 Wiki 文档：space_id/parent 为空或占位（{space_id!r}, {parent_wiki_token!r}），会建出孤儿 docx"
+        )
     if not md_content:
         md_content = f"# {title}\n"
     with _md_temp_file(md_content, build_filename(title, date_str)) as (rel_path, _fname):
@@ -137,9 +137,7 @@ def create_wiki_doc_from_md(
         return wiki_url(node_token)
 
 
-if __name__ == "__main__":
-    import argparse
-
+def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="feedkicker.wiki")
     parser.add_argument("--app-token", default="")
     parser.add_argument("--space-id", default="")
@@ -148,7 +146,7 @@ if __name__ == "__main__":
     parser.add_argument("--file", default=None, help="MD 文件路径，默认用 title 生成示例")
     parser.add_argument("--dry-run", action="store_true", help="仅打印 wiki_url 不真传")
     parser.add_argument("--env", default=None, choices=["dev", "test", "prod"])
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
 
@@ -162,25 +160,40 @@ if __name__ == "__main__":
             dry_run=True,
         )
         print(json.dumps({"wiki_url": url, "filename": build_filename(args.title)}, ensure_ascii=False, indent=2))
-    else:
-        md = ""
-        if args.file:
+        return 0
+
+    if args.file:
+        try:
             with open(args.file, encoding="utf-8") as f:
                 md = f.read()
-        else:
-            md = f"# {args.title}\n\n示例内容\n"
-        app_token = args.app_token
-        space_id = args.space_id
-        parent = args.parent_token
-        if not app_token or not space_id:
-            try:
-                from feedkicker.config import load_config
+        except (OSError, UnicodeDecodeError) as e:
+            log.error("读取 --file 失败: %s", e)
+            return 2
+    else:
+        md = f"# {args.title}\n\n示例内容\n"
 
-                cfg = load_config(app_env=args.env)
-                app_token = app_token or cfg.wiki.app_token or cfg.salon.app_token
-                space_id = space_id or cfg.wiki.space_id
-                parent = parent or cfg.wiki.parent_token
-            except Exception:  # noqa: BLE001
-                pass
+    app_token = args.app_token
+    space_id = args.space_id
+    parent = args.parent_token
+    if not app_token or not space_id or not parent:
+        try:
+            from feedkicker.config import load_config
+
+            cfg = load_config(app_env=args.env)
+            app_token = app_token or cfg.wiki.app_token or cfg.salon.app_token
+            space_id = space_id or cfg.wiki.space_id
+            parent = parent or cfg.wiki.parent_token
+        except Exception:  # noqa: BLE001
+            pass
+
+    try:
         url = create_wiki_doc_from_md(app_token, space_id, parent, args.title, md, dry_run=False)
-        print(url)
+    except RuntimeError as e:
+        log.error("%s", e)
+        return 2
+    print(url)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

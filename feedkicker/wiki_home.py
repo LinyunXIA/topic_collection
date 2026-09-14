@@ -114,6 +114,9 @@ def update_homepage(
     except Exception as e:  # noqa: BLE001
         log.warning("Wiki 首页更新：拉取子节点失败: %s", e)
         return False
+    if not docs:
+        log.warning("Wiki 首页更新：node-list 返回空索引，跳过覆写（防瞬时空响应清空首页，#226）")
+        return False
     md = build_home_md(docs, now=now)
     if dry_run:
         print("=== Wiki 首页预览（dry-run，不写入）===")
