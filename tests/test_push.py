@@ -626,6 +626,34 @@ def test_push_bitable_fail_still_sends(monkeypatch):
     conn.close()
 
 
+def test_push_detail_url_after_auto_created_base(monkeypatch):
+    # A1：空 token 时自动找到 Base 并回写配置，详情按钮必须带真实 app_token 而非 …/base/
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.bitable.enabled = True
+    cfg.bitable.app_token = ""
+    cfg.bitable.table_id = ""
+    cfg.bitable.url = ""
+    entries = [_norm("a1 item", "https://e.com/a1")]
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    monkeypatch.setattr(
+        push.bitable, "find_base_by_title",
+        lambda title: {"app_token": "appAutoA1", "url": ""},
+    )
+    monkeypatch.setattr(push.bitable, "get_table_id", lambda tok: "tblAutoA1")
+    monkeypatch.setattr(push.bitable, "sync_records", lambda *a, **kw: True)
+    sent = []
+    monkeypatch.setattr(feishu, "send", lambda p, *a, **kw: sent.append(p) or True)
+
+    rc = push.run(cfg, conn)
+    assert rc == 0
+    actions = [el for el in sent[0]["card"]["elements"] if el.get("tag") == "action"]
+    url = actions[0]["actions"][0]["url"]
+    assert "appAutoA1" in url
+    assert not url.endswith("/base/")
+    conn.close()
+
+
 def test_run_sos_after_three_failures(monkeypatch):
     conn = make_conn()
     cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
