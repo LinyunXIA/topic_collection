@@ -58,8 +58,11 @@ def add_article(conn, key, pushed_at, synced_at=None):
     conn.commit()
 
 
-def rec(rid, pushed):
-    return {"record_id": rid, "fields": {"推送时间": pushed}}
+def rec(rid, pushed, env="test"):
+    fields = {"推送时间": pushed}
+    if env is not None:
+        fields["环境"] = env
+    return {"record_id": rid, "fields": fields}
 
 
 def page(records):
@@ -204,6 +207,39 @@ def test_cutoff_date_shanghai_boundary(monkeypatch):
     assert expired == 1
 
 
+def test_pushed_date_falls_back_to_archive_date():
+    """#198：存量行「推送时间」为空时以「归档日期」作截止键。"""
+    assert bitable_purge._pushed_date({"推送时间": "2026-01-01"}) == "2026-01-01"
+    assert bitable_purge._pushed_date({"推送时间": "", "归档日期": "2025-01-02"}) == "2025-01-02"
+    assert bitable_purge._pushed_date({"归档日期": "2025-01-02T10:00:00+08:00"}) == "2025-01-02"
+    assert bitable_purge._pushed_date({}) is None
+
+
+def test_bitable_purge_env_filter_only_target_env(monkeypatch):
+    """#208：dev/test 只删「环境」匹配行；prod/None 全表不过滤。"""
+    mixed = [
+        {"record_id": "recDev", "fields": {"推送时间": OLD_ISO, "环境": "dev"}},
+        {"record_id": "recTest", "fields": {"推送时间": OLD_ISO, "环境": "test"}},
+        {"record_id": "recLegacy", "fields": {"推送时间": OLD_ISO}},
+    ]
+    calls, deletes = install_fake_lark(monkeypatch, [page(mixed)])
+    outcome = bitable_purge.purge_expired_records_outcome(
+        "app", "tbl", "2025-09-07", dry_run=False, env_name="dev"
+    )
+    assert (outcome.deleted, outcome.expired, outcome.scanned) == (1, 1, 3)
+    assert [d["record_id_list"] for d in deletes] == [["recDev"]]
+    list_call = [c for c in calls if "+record-list" in c][0]
+    assert "环境" in list_call and "归档日期" in list_call
+
+    calls2, deletes2 = install_fake_lark(monkeypatch, [page(mixed)])
+    outcome2 = bitable_purge.purge_expired_records_outcome(
+        "app", "tbl", "2025-09-07", dry_run=False
+    )
+    assert (outcome2.deleted, outcome2.expired, outcome2.scanned) == (3, 3, 3)
+    assert sorted(deletes2[0]["record_id_list"]) == ["recDev", "recLegacy", "recTest"]
+    assert "--field-id" not in [c for c in calls2 if "+record-list" in c][0]
+
+
 # ── run() 编排 ──
 
 
@@ -228,10 +264,10 @@ def test_purge_run_skips_bitable_when_disabled_or_placeholder(monkeypatch):
 
 
 def test_purge_run_apply_writes_meta_and_calls_bitable(monkeypatch):
-    captured = {}
+    captured: dict = {}
 
-    def fake_outcome(app_token, table_id, cutoff_date, dry_run=False):
-        captured["args"] = (app_token, table_id, cutoff_date, dry_run)
+    def fake_outcome(app_token, table_id, cutoff_date, dry_run=False, env_name=None):
+        captured["args"] = (app_token, table_id, cutoff_date, dry_run, env_name)
         return bitable_purge.PurgeOutcome(3, 5, 50, listed_ok=True, applied_ok=True, complete=True)
 
     monkeypatch.setattr(bitable_purge, "purge_expired_records_outcome", fake_outcome)
@@ -239,13 +275,18 @@ def test_purge_run_apply_writes_meta_and_calls_bitable(monkeypatch):
     conn = make_conn()
     cfg = make_cfg(enabled=True, app_token="appReal", table_id="tblReal")
     stats = purge.run(cfg, conn, dry_run=False, now=NOW)
-    assert captured["args"] == ("appReal", "tblReal", "2025-09-07", False)
+    assert captured["args"] == ("appReal", "tblReal", "2025-09-07", False, "test")
     assert (stats.bitable_deleted, stats.bitable_expired, stats.bitable_scanned) == (3, 5, 50)
     assert store.get_meta(conn, purge.PURGE_LAST_RUN_KEY)
 
     conn2 = make_conn()
     purge.run(cfg, conn2, dry_run=True, now=NOW)
     assert store.get_meta(conn2, purge.PURGE_LAST_RUN_KEY) == ""
+
+    cfg_prod = make_cfg(enabled=True, app_token="appReal", table_id="tblReal")
+    cfg_prod.app_env = "prod"
+    purge.run(cfg_prod, make_conn(), dry_run=True, now=NOW)
+    assert captured["args"][4] is None
 
 
 def test_purge_run_apply_skipped_bitable_no_meta():

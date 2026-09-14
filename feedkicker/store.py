@@ -116,9 +116,10 @@ def promise_skip_old(
 
 
 def select_pending(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """待推送真实资讯行，排除 salon 占位行（占位行必有 ppt_synced_at，#196）。"""
     rows = conn.execute(
         "SELECT feed_id, entry_key, title, url, description, published_at"
-        " FROM articles WHERE pushed_at IS NULL"
+        " FROM articles WHERE pushed_at IS NULL AND ppt_synced_at IS NULL"
         " ORDER BY feed_id, first_seen, entry_key"
     ).fetchall()
     keys = ("feed_id", "entry_key", "title", "url", "description", "published_at")
@@ -161,9 +162,10 @@ def update_first_run_all(conn: sqlite3.Connection, feeds: list[Feed], now_iso: s
 
 
 def select_unsynced(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+    """待归档真实资讯行，排除 salon 占位行（理由同 select_pending，共用表，#196）。"""
     rows = conn.execute(
         "SELECT feed_id, entry_key, title, url, description, published_at, pushed_at, first_seen, bitable_synced_at"
-        " FROM articles WHERE bitable_synced_at IS NULL"
+        " FROM articles WHERE bitable_synced_at IS NULL AND ppt_synced_at IS NULL"
         " ORDER BY first_seen, feed_id"
     ).fetchall()
     keys = (
@@ -187,3 +189,10 @@ def mark_synced(conn: sqlite3.Connection, items: list[dict[str, Any]], now_iso: 
         [(now_iso, it["feed_id"], it["entry_key"]) for it in items],
     )
     conn.commit()
+
+
+def reset_bitable_synced(conn: sqlite3.Connection) -> int:
+    """清空全部同步标记，返回行数（--reseed 重灌前置，见 #197）。"""
+    cur = conn.execute("UPDATE articles SET bitable_synced_at = NULL")
+    conn.commit()
+    return max(cur.rowcount, 0)

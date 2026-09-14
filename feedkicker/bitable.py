@@ -139,6 +139,8 @@ def main(argv: list[str] | None = None) -> int:
         if args.reseed:
             n = bitable_records.purge_all_records(info["app_token"], info["table_id"])
             log.info("已清空 %d 条旧记录，准备重灌", n)
+            reset = store.reset_bitable_synced(conn)
+            log.info("已重置 %d 条同步标记，开始全量重灌", reset)
         if args.backfill or args.fix_archive_date:
             env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
             n = bitable_backfill.backfill_empty_archive_dates(

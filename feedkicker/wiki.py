@@ -168,22 +168,19 @@ if __name__ == "__main__":
             with open(args.file, encoding="utf-8") as f:
                 md = f.read()
         else:
-            if not args.app_token or not args.space_id:
-                try:
-                    from feedkicker.config import load_config
-
-                    cfg = load_config(app_env=args.env)
-                    app_token = args.app_token or cfg.wiki.app_token or cfg.salon.app_token
-                    space_id = args.space_id or cfg.wiki.space_id
-                    parent = args.parent_token or cfg.wiki.parent_token
-                except Exception:  # noqa: BLE001
-                    app_token = args.app_token
-                    space_id = args.space_id
-                    parent = args.parent_token
-            else:
-                app_token = args.app_token
-                space_id = args.space_id
-                parent = args.parent_token
             md = f"# {args.title}\n\n示例内容\n"
-            url = create_wiki_doc_from_md(app_token, space_id, parent, args.title, md, dry_run=False)
-            print(url)
+        app_token = args.app_token
+        space_id = args.space_id
+        parent = args.parent_token
+        if not app_token or not space_id:
+            try:
+                from feedkicker.config import load_config
+
+                cfg = load_config(app_env=args.env)
+                app_token = app_token or cfg.wiki.app_token or cfg.salon.app_token
+                space_id = space_id or cfg.wiki.space_id
+                parent = parent or cfg.wiki.parent_token
+            except Exception:  # noqa: BLE001
+                pass
+        url = create_wiki_doc_from_md(app_token, space_id, parent, args.title, md, dry_run=False)
+        print(url)

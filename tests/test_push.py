@@ -553,21 +553,57 @@ def test_build_card_top_n_and_button():
                              detail_url="https://linyunxia.github.io/topic_collection/daily/2026-08-25.html")
     content = card["card"]["elements"][0]["text"]["content"]
     assert "标题7" not in content and "标题2" in content
-    assert "还有 5 条，详情见在线表格" in content
+    assert "还有 5 条，详情见多维表格" in content
     actions = [el for el in card["card"]["elements"] if el["tag"] == "action"]
-    assert actions and actions[0]["actions"][0]["text"]["content"] == "📰 详情见在线表格"
+    assert actions and actions[0]["actions"][0]["text"]["content"] == "📰 详情见多维表格"
     assert actions[0]["actions"][0]["url"].endswith("2026-08-25.html")
     stripped = feishu.strip_actions(card)
     assert all(el["tag"] != "action" for el in stripped["card"]["elements"])
-    assert any("详情见在线表格" in el.get("text", {}).get("content", "")
+    assert any("详情见多维表格" in el.get("text", {}).get("content", "")
                for el in stripped["card"]["elements"] if el.get("tag") == "div")
 
 
 def test_build_card_no_detail_no_button():
     card = feishu.build_card(_many_items("F", 4), 0, ["F"], top_n=3)
     assert all(el["tag"] != "action" for el in card["card"]["elements"])
-    assert not any("[详情见在线表格](" in el.get("text", {}).get("content", "")
+    assert not any("[详情见多维表格](" in el.get("text", {}).get("content", "")
                    for el in card["card"]["elements"] if el.get("tag") == "div")
+
+
+def test_build_card_budget_reserves_signature_bytes():
+    """#201：build_card 预算须预留 send 注入 timestamp/sign 的字节余量。"""
+    from feedkicker import feishu_card
+
+    budget = feishu_card._MAX_BODY_BYTES - feishu.SIGN_RESERVE_BYTES
+    items = _many_items("F", 700)
+    unbounded = feishu.build_card(items, 0, ["F"], max_bytes=feishu_card._MAX_BODY_BYTES)
+    assert len(json.dumps(unbounded, ensure_ascii=False).encode("utf-8")) > budget
+    card = feishu.build_card(items, 0, ["F"], max_bytes=budget)
+    raw = json.dumps(card, ensure_ascii=False).encode("utf-8")
+    assert len(raw) + feishu.SIGN_RESERVE_BYTES <= feishu_card._MAX_BODY_BYTES
+
+
+def test_push_run_reserves_signature_bytes(monkeypatch):
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.feishu_webhook = "hook-x"
+    entries = parse_content(rss(item("sig", "https://e.com/sig1")))
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    from feedkicker import feishu_card
+
+    captured_kwargs: dict = {}
+    real_build = feishu.build_card
+
+    def spy(*a, **kw):
+        captured_kwargs.update(kw)
+        return real_build(*a, **kw)
+
+    monkeypatch.setattr(push.feishu, "build_card", spy)
+    monkeypatch.setattr(push.feishu, "send", lambda p, *a, **kw: True)
+    assert push.run(cfg, conn) == 0
+    assert captured_kwargs["max_bytes"] == feishu_card._MAX_BODY_BYTES - feishu.SIGN_RESERVE_BYTES
+    assert feishu.SIGN_RESERVE_BYTES >= 128
+    conn.close()
 
 
 # ── v0.2：编排顺序与降级 ──
@@ -812,6 +848,30 @@ def test_bitable_cell_fields(monkeypatch):
     assert "环境" not in prod_cell
 
 
+def test_bitable_cell_pushed_time_falls_back_to_now():
+    """#198：归档在 mark_pushed 之前，待推行 pushed_at 为空时用 now_iso 回退。"""
+    from feedkicker import bitable
+
+    cell = bitable._cell(
+        {
+            "feed_id": "F", "title": "t", "url": "https://e.com/1",
+            "description": "", "published_at": None, "pushed_at": None,
+        },
+        now_iso="2026-08-25T01:30:00Z",
+    )
+    assert cell["推送时间"] == "2026-08-25 09:30"
+    assert cell["推送时间"].startswith(cell["归档日期"])
+
+    pushed = bitable._cell(
+        {
+            "feed_id": "F", "title": "t", "url": "https://e.com/2",
+            "description": "", "published_at": None, "pushed_at": "2026-08-25T01:30:00Z",
+        },
+        now_iso="2026-09-01T00:00:00Z",
+    )
+    assert pushed["推送时间"] == "2026-08-25 09:30"
+
+
 @pytest.mark.parametrize("scenario", ["cross_midnight", "pushed_at_priority", "first_seen_chain", "dedup_batch"])
 def test_bitable_cell_archive_date_fallback(monkeypatch, scenario):
     import inspect
@@ -910,6 +970,28 @@ def test_bitable_views_creation(monkeypatch):
     assert "+view-create" in joined and "按日期" in joined
     assert "归档日期" in joined and "desc" in joined
     assert "推送时间" in joined
+
+
+def test_create_date_view_skips_existing(monkeypatch):
+    """#209：已有同名「按日期」视图时不再 +view-create（--init 幂等）。"""
+    from feedkicker import bitable
+
+    calls: list[list[str]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        calls.append(list(args))
+        if "+view-list" in args:
+            return FakeProc(0, stdout=json.dumps(
+                {"data": {"views": [{"id": "vewDefault", "name": "表格"},
+                                    {"id": "vewDate", "name": "按日期"}]}},
+                ensure_ascii=False))
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    assert bitable.create_date_view("app", "tbl") is True
+    assert not any("+view-create" in c for c in calls)
+    groups = [c for c in calls if "+view-set-group" in c]
+    assert groups and groups[0][groups[0].index("--view-id") + 1] == "vewDate"
 
 
 def test_bitable_ensure_archive_date_field_idempotent(monkeypatch):
@@ -1248,3 +1330,35 @@ def test_bitable_backfill_empty_archive_dates(monkeypatch):
     n2 = bitable.backfill_empty_archive_dates("app", "tbl", dry_run=True)
     assert n2 == 2
     assert captured == []
+
+
+def test_bitable_backfill_filters_by_env(monkeypatch):
+    """#203：dev/test 只回填「环境」匹配行；环境缺失行向后兼容不额外过滤。"""
+    from feedkicker import bitable
+
+    captured: list[dict] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "--help" in args:
+            return FakeProc(0, stdout="+record-batch-update")
+        if "+record-list" in args:
+            assert "环境" in args and "归档日期" in args and "推送时间" in args
+            payload = {
+                "data": {
+                    "records": [
+                        {"record_id": "recDev", "fields": {"归档日期": "", "推送时间": "2026-08-25T01:00:00Z", "环境": "dev"}},
+                        {"record_id": "recTest", "fields": {"归档日期": "", "推送时间": "2026-08-25T01:00:00Z", "环境": "test"}},
+                        {"record_id": "recLegacy", "fields": {"归档日期": "", "推送时间": "2026-08-25T01:00:00Z"}},
+                    ]
+                }
+            }
+            return FakeProc(0, stdout=json.dumps(payload, ensure_ascii=False))
+        if "+record-batch-update" in args:
+            captured.append(json.loads(args[args.index("--json") + 1]))
+            return FakeProc(0, stdout="{}")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    n = bitable.backfill_empty_archive_dates("app", "tbl", env_name="dev", dry_run=False)
+    assert n == 2
+    assert set(captured[0]["update_records"]) == {"recDev", "recLegacy"}

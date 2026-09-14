@@ -70,11 +70,35 @@ def _shanghai_date(s: str) -> str | None:
         return None
 
 
-def backfill_empty_archive_dates(app_token: str, table_id: str, env_name: str | None = None, dry_run: bool = False) -> int:
+def _env_ok(vals: dict[str, Any], env_name: str | None) -> bool:
+    """dev/test 共享 Base 下按「环境」过滤；字段缺失/为空不额外过滤（向后兼容）。"""
+    if env_name is None:
+        return True
+    env = _cell_str(vals.get("环境"))
+    return not env or env == env_name
+
+
+def _row_vals(fields: list[str], r: Any) -> dict[str, Any]:
+    if isinstance(r, dict):
+        vals = r.get("fields") or r.get("values")
+        return vals if isinstance(vals, dict) else r
+    if isinstance(r, list):
+        return {fields[j]: r[j] for j in range(min(len(fields), len(r)))}
+    return {}
+
+
+def backfill_empty_archive_dates(
+    app_token: str, table_id: str, env_name: str | None = None, dry_run: bool = False
+) -> int:
     verb = bitable_lark._has_batch_verb()
     if not verb:
         log.warning("lark-cli 未提供批量更新 verb（缺 +record-batch-update/+record-update），请改用 --reseed 重灌")
         return 0
+    env_args = (
+        ["--field-id", "环境", "--field-id", "归档日期", "--field-id", "推送时间"]
+        if env_name is not None
+        else []
+    )
     offset = 0
     to_fix: list[tuple[str, str]] = []
     total_scanned = 0
@@ -87,80 +111,46 @@ def backfill_empty_archive_dates(app_token: str, table_id: str, env_name: str | 
                 "--limit", "200",
                 "--offset", str(offset),
                 "--json",
+                *env_args,
             ],
             timeout=120,
         )
         if not bitable_lark._ok(proc):
             break
         data = bitable_lark._data(proc)
+        records: list[dict[str, Any]] = data.get("records") or []
         fields: list[str] = data.get("fields") or []
         rows: list[Any] = data.get("data") or []
-        records: list[dict[str, Any]] = data.get("records") or []
+        rids: list[Any] = data.get("record_ids") or data.get("recordIds") or data.get("ids") or []
+        pairs: list[tuple[str, dict[str, Any]]] = []
         if records:
             for rec in records:
-                total_scanned += 1
-                rid = rec.get("record_id") or rec.get("id") or rec.get("recordId") or ""
                 fds = rec.get("fields") or rec.get("record") or {}
-                arch = _cell_str(fds.get("归档日期"))
-                if arch.strip():
-                    continue
-                cand = _cell_str(fds.get("推送时间"))
-                d = _shanghai_date(cand) if cand else None
-                if not d:
-                    continue
-                if rid:
-                    to_fix.append((rid, d))
-            if len(records) < 200:
-                break
-            offset += 200
-            continue
-        if not fields or not rows:
+                rid = rec.get("record_id") or rec.get("id") or rec.get("recordId") or ""
+                pairs.append((str(rid or ""), fds if isinstance(fds, dict) else {}))
+            page_size = len(records)
+        elif fields and rows:
+            for i, r in enumerate(rows):
+                rid = (
+                    r.get("record_id") or r.get("id") or (rids[i] if i < len(rids) else "")
+                    if isinstance(r, dict)
+                    else (rids[i] if i < len(rids) else "")
+                )
+                pairs.append((str(rid or ""), _row_vals(fields, r)))
+            page_size = len(rows)
+        else:
             break
-        idx_arch = fields.index("归档日期") if "归档日期" in fields else -1
-        idx_push = fields.index("推送时间") if "推送时间" in fields else -1
-        rids = data.get("record_ids") or data.get("recordIds") or data.get("ids") or []
-        for i, r in enumerate(rows):
+        for rid, vals in pairs:
             total_scanned += 1
-            if isinstance(r, dict):
-                rid = r.get("record_id") or r.get("id") or (rids[i] if i < len(rids) else "")
-                vals = r.get("fields") or r.get("values") or r
-                if isinstance(vals, dict):
-                    arch = _cell_str(vals.get("归档日期"))
-                    if arch.strip():
-                        continue
-                    cand = _cell_str(vals.get("推送时间"))
-                else:
-                    arch = _cell_str(r[idx_arch]) if idx_arch >= 0 and idx_arch < len(r) else ""
-                    if arch.strip():
-                        continue
-                    cand = (
-                        _cell_str(r[idx_push])
-                        if idx_push >= 0 and idx_push < len(r)
-                        else ""
-                    )
-                d = _shanghai_date(cand) if cand else None
-                if not d or not rid:
-                    continue
-                to_fix.append((rid, d))
+            if not _env_ok(vals, env_name):
                 continue
-            if not isinstance(r, list):
+            if _cell_str(vals.get("归档日期")).strip():
                 continue
-            rid = rids[i] if i < len(rids) else ""
-            if not rid and idx_arch == -1:
-                continue
-            arch = _cell_str(r[idx_arch]) if idx_arch >= 0 and idx_arch < len(r) else ""
-            if arch.strip():
-                continue
-            cand = (
-                _cell_str(r[idx_push])
-                if idx_push >= 0 and idx_push < len(r)
-                else ""
-            )
+            cand = _cell_str(vals.get("推送时间"))
             d = _shanghai_date(cand) if cand else None
-            if not d or not rid:
-                continue
-            to_fix.append((rid, d))
-        if len(rows) < 200:
+            if d and rid:
+                to_fix.append((rid, d))
+        if page_size < 200:
             break
         offset += 200
     if dry_run:

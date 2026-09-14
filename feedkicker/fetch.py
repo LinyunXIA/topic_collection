@@ -25,13 +25,32 @@ def iso_utc(struct_time) -> str | None:
     return dt.strftime(_ISO_FMT)
 
 
+def _idna_host(host: str) -> str:
+    try:
+        return host.encode("idna").decode("ascii").lower()
+    except (UnicodeError, ValueError):
+        return host.lower()
+
+
 def canonicalize(url: str) -> str:
+    """跨源去重键：去 fragment、保留 query，host 归一（IDNA/小写）。
+
+    netloc 重组保留 userinfo 与 IPv6 方括号，省略默认端口（http:80/https:443），
+    避免非法 URL 写入卡片/归档或漏去重（#207）。
+    """
     parts = urlsplit((url or "").strip())
     if not parts.netloc:
         return urlunsplit((parts.scheme, "", parts.path, parts.query, ""))
     try:
-        host = (parts.hostname or "").lower()
-        netloc = f"{host}:{parts.port}" if parts.port else host
+        host = _idna_host(parts.hostname or "")
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
+        port = parts.port
+        default_port = (parts.scheme == "http" and port == 80) or (
+            parts.scheme == "https" and port == 443
+        )
+        userinfo = parts.netloc.rsplit("@", 1)[0] + "@" if "@" in parts.netloc else ""
+        netloc = f"{userinfo}{host}" + (f":{port}" if port and not default_port else "")
     except ValueError:
         netloc = parts.netloc.lower()
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))

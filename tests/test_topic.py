@@ -36,13 +36,13 @@ def test_fetch_selected_server_side_filter(monkeypatch):
         assert payload["logic"] == "and"
         assert payload["conditions"][0][0] == "讨论状态"
         assert "已选题" in payload["conditions"][0][2]
-        data = {"records": [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "T1"}}]}
+        data = {"records": [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "T1"}}]}
         return FakeProc(0, stdout=json.dumps({"data": data}, ensure_ascii=False))
 
     monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
     records = fetch_selected_topics("appTokenTest", "tblTest", limit=200)
     assert len(records) == 1
-    assert records[0]["record_id"] == "recGWg8Kb9kUDI"
+    assert records[0]["record_id"] == "recStub000"
     assert captured[0][captured[0].index("--base-token") + 1] == "appTokenTest"
     assert captured[0][captured[0].index("--table-id") + 1] == "tblTest"
     assert "--limit" in captured[0] and "--offset" in captured[0]
@@ -65,7 +65,7 @@ def test_fetch_selected_pagination_merge(monkeypatch):
             return FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False))
         else:
             payload = {"records": [
-                {"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"]}},
+                {"record_id": "recStub000", "fields": {"讨论状态": ["已选题"]}},
             ], "has_more": False}
             return FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False))
 
@@ -73,7 +73,7 @@ def test_fetch_selected_pagination_merge(monkeypatch):
     records = fetch_selected_topics("app", "tbl", limit=2)
     assert len(records) == 3
     assert calls == ["0", "2"]
-    assert any(r["record_id"] == "recGWg8Kb9kUDI" for r in records)
+    assert any(r["record_id"] == "recStub000" for r in records)
 
 
 def test_fetch_selected_limit_under_threshold_no_more(monkeypatch):
@@ -148,6 +148,45 @@ def test_fetch_selected_empty_pages_with_has_more_terminates(monkeypatch):
     assert calls["n"] < 300
 
 
+def test_fetch_selected_limit_zero_clamped(monkeypatch):
+    """#210：limit<=0 会令 offset 守卫失效，必须钳到 1。"""
+    captured: list[list[str]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        captured.append(list(args))
+        return FakeProc(0, stdout=json.dumps({"data": {"records": [], "has_more": False}}, ensure_ascii=False))
+
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
+    assert fetch_selected_topics("app", "tbl", limit=0) == []
+    assert captured[0][captured[0].index("--limit") + 1] == "1"
+
+
+def test_topic_cli_limit_zero_rejected(monkeypatch):
+    import runpy
+    import sys
+
+    monkeypatch.delitem(sys.modules, "feedkicker.topic", raising=False)
+    monkeypatch.setattr(sys, "argv", ["topic", "--env", "test", "--limit", "0"])
+    with pytest.raises(SystemExit) as ei:
+        runpy.run_module("feedkicker.topic", run_name="__main__")
+    assert ei.value.code == 2
+
+
+def test_fetch_topic_fields_type_four_multi_select_ok(monkeypatch, caplog):
+    """#210：多选数字码 "4" 属合法类型，不得告警。"""
+    payload = {"data": {"fields": [{"field_name": "讨论状态", "type": "4"}]}}
+
+    def fake_run(args, stdin_text=None, timeout=60):
+        assert "+field-list" in args
+        return FakeProc(0, stdout=json.dumps(payload, ensure_ascii=False))
+
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
+    with caplog.at_level("WARNING"):
+        fields = fetch_topic_fields("app", "tbl")
+    assert fields
+    assert not [r for r in caplog.records if "字段类型异常" in r.getMessage()]
+
+
 def test_fetch_topic_fields_validates_select(monkeypatch):
     def fake_run(args, stdin_text=None, timeout=60):
         assert "+field-list" in args
@@ -193,7 +232,7 @@ def test_cli_dry_run_stub(monkeypatch, capsys):
     import sys
     monkeypatch.setattr(sys, "argv", ["topic", "--env", "test", "--dry-run"])
     def fake_run(args, stdin_text=None, timeout=120):
-        payload = {"records": [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"]}}]}
+        payload = {"records": [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"]}}]}
         return FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False))
 
     monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
@@ -204,9 +243,9 @@ def test_cli_dry_run_stub(monkeypatch, capsys):
             runpy.run_module("feedkicker.topic", run_name="__main__")
         assert ei.value.code == 0
         out = capsys.readouterr().out
-        assert "recGWg8Kb9kUDI" in out
+        assert "recStub000" in out
     except SystemExit as e:
         if e.code != 0:
             raise
         out = capsys.readouterr().out
-        assert "recGWg8Kb9kUDI" in out
+        assert "recStub000" in out

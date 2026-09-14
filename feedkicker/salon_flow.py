@@ -14,17 +14,22 @@ from feedkicker.topic import fetch_selected_topics
 log = logging.getLogger(__name__)
 
 
+def _token_missing(value: str) -> bool:
+    """空值或 `<...>` 占位均视为缺失（与 bitable._tokens_ready 同口径，#204）。"""
+    return not value or "<" in value
+
+
 def run(cfg, conn, dry_run: bool = False) -> int:
     app_token = cfg.salon.app_token
     table_id = cfg.salon.table_id
     selected: list[dict[str, Any]]
-    if (not app_token or not table_id) and dry_run:
+    if (_token_missing(app_token) or _token_missing(table_id)) and dry_run:
         selected = [
-            {"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}
+            {"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}
         ]
-        app_token = app_token or "stub_app"
-        table_id = table_id or "stub_tbl"
-    elif not app_token or not table_id:
+        app_token = "stub_app"
+        table_id = "stub_tbl"
+    elif _token_missing(app_token) or _token_missing(table_id):
         log.warning("salon 未配置 app_token/table_id，跳过")
         return 0
     else:
@@ -38,8 +43,8 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         log.info("无已选题，跳过")
         return 0
 
-    wiki_space = cfg.salon.wiki_space_id or cfg.wiki.space_id
-    wiki_parent = cfg.salon.wiki_parent_token or cfg.wiki.parent_token
+    wiki_space = cfg.wiki.space_id or cfg.salon.wiki_space_id
+    wiki_parent = cfg.wiki.parent_token or cfg.salon.wiki_parent_token
     wiki_app = cfg.wiki.app_token or cfg.salon.app_token
 
     now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")

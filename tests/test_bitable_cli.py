@@ -7,12 +7,13 @@ monkeypatch bitable_lark._run 拦截，不触网、不碰真实库/Base。
 
 from __future__ import annotations
 
+import json
 import logging
 from pathlib import Path
 
 import pytest
 
-from feedkicker import bitable, bitable_lark, bitable_records, bitable_schema, bitable_views
+from feedkicker import bitable, bitable_lark, bitable_records, bitable_schema, bitable_views, store
 from feedkicker.config import (
     BitableConf,
     Config,
@@ -144,6 +145,57 @@ def test_reseed_without_dry_run_keeps_purge_and_sync(monkeypatch, tmp_path):
     assert synced == ["test"]
 
 
+def test_reseed_resets_synced_marks_and_reloads(monkeypatch, tmp_path):
+    """#197：已同步行在 --reseed 后必须重灌；#196：salon 占位行不参与。"""
+    calls: list[list[str]] = []
+    payloads: list[dict] = []
+    cfg = make_cfg(tmp_path, enabled=True, app_token="appReal", table_id="tblReal")
+    monkeypatch.setattr("feedkicker.config.load_config", lambda *a, **kw: cfg)
+    monkeypatch.setattr(
+        bitable_schema,
+        "ensure_initialized",
+        lambda bt, env: {"app_token": "appReal", "table_id": "tblReal", "url": "https://x"},
+    )
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        calls.append(list(args))
+        if "+record-list" in args and "--format" in args:
+            return FakeProc(0, stdout=PAGE)
+        if "+record-list" in args:
+            return FakeProc(0, stdout=json.dumps({"data": {"records": []}}))
+        if "+record-batch-create" in args:
+            raw = args[args.index("--json") + 1]
+            payloads.append(json.loads(Path(raw[1:]).read_text(encoding="utf-8")))
+            return FakeProc(0, stdout="{}")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    conn = store.connect(cfg.db_path)
+    store.download(
+        conn,
+        "F",
+        [{"entry_key": "k1", "title": "真实资讯", "url": "https://e.com/1", "description": "", "published_at": None}],
+        "2026-09-14T00:00:00Z",
+    )
+    conn.execute("UPDATE articles SET bitable_synced_at = ?", ("2026-09-14T01:00:00Z",))
+    conn.commit()
+    store.mark_topic_archived(
+        conn, "tblSalon", "recStub000", "沙龙选题", "https://e.com/s", "摘录", "2026-09-14T02:00:00Z"
+    )
+    conn.close()
+
+    assert bitable.main(["--reseed", "--env", "test"]) == 0
+    assert any("+record-delete" in c for c in calls)
+    flat = [rec for p in payloads for rec in p["create_records"]]
+    assert [rec["链接"] for rec in flat] == ["https://e.com/1"]
+
+    conn2 = store.connect(cfg.db_path)
+    row = conn2.execute("SELECT bitable_synced_at FROM articles WHERE entry_key = 'k1'").fetchone()
+    assert row[0] is not None
+    conn2.close()
+
+
 def test_main_accepts_config_and_db(monkeypatch, tmp_path):
     loaded: list[tuple] = []
     cfg = make_cfg(tmp_path, enabled=True, app_token="appReal", table_id="tblReal")
@@ -172,7 +224,7 @@ def test_reseed_rejected_without_configured_base(
     cfg = make_cfg(tmp_path, enabled=True, app_token=app_token, table_id=table_id)
     monkeypatch.setattr("feedkicker.config.load_config", lambda *a, **kw: cfg)
     monkeypatch.setattr(
-        bitable, "_run", lambda *a, **kw: calls.append(list(a)) or FakeProc(0, "{}")
+        bitable_lark, "_run", lambda *a, **kw: calls.append(list(a)) or FakeProc(0, "{}")
     )
     forbid(monkeypatch, "ensure_initialized", "sync_env")
 

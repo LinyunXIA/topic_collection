@@ -151,7 +151,7 @@
 
 | 环境 | 配置 / db | 凭据 / 资源 |
 |---|---|---|
-| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | MiniMax key（`MiniMax_Key` env）可占位；salon app_token/table_id 占位时 dry-run 走 stub；Wiki 若未配置则跳过写入 |
+| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | MiniMax key（`MiniMax_Key` env）可占位；salon app_token/table_id 缺失或含 `<` 占位时 dry-run 走 stub；Wiki 若未配置则跳过写入 |
 | test | `config-test.yaml` / `data/tc-test.sqlite3` | 联调真实选题 Base 与 Wiki（谨慎，会产物） |
 | prod | `config-prod.yaml` / `data/tc-prod.sqlite3` | 真实 salon 选题 Base、真实 MiniMax key、真实 Wiki space/parent |
 
@@ -235,8 +235,8 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 
 | 环境 | 配置 / db | 归档 |
 |---|---|---|
-| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | bitable 与 test 共享 Base（「环境」列区分），可按 token 清理 |
-| test | `config-test.yaml` / `data/tc-test.sqlite3` | 同上 |
+| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | bitable 与 test 共享 Base（「环境」列区分），仅删「环境」= `dev` 的超期行 |
+| test | `config-test.yaml` / `data/tc-test.sqlite3` | 同上，仅删「环境」= `test` 的超期行 |
 | prod | `config-prod.yaml` / `data/tc-prod.sqlite3` | 独立 prod Base；真实清理影响档案 |
 
 ### 示例
@@ -299,6 +299,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 - **默认就是 dry-run**：真要删必须显式 `--apply`；调度只做巡检。
 - sqlite 仅删 `pushed_at` 超期且 `bitable_synced_at` 非空（已归档）的行；超期未归档只计数 WARNING。
 - 占位 token（含 `<`）或 bitable 未启用时跳过 bitable 段，原因写入 `bitable_skipped_reason`。
+- dev/test 共享 Base：bitable 段仅删「环境」列等于当前 env 的过期行；prod 全表不过滤。存量无「环境」列的行不会被 dev/test 删除（保守方向）。
 - 绝不调 `ensure_initialized`，不误建 Base；只操作资讯归档 Base，不碰 salon 选题 Base。
 - 截止用上海日界，截止当天记录保留（保守方向）。
 
@@ -412,7 +413,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 
 | 环境 | 配置 / db | 归档 Base |
 |---|---|---|
-| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | 与 test 共享 Base（「环境」列区分）；`backfill` 时 `env_name=dev` 只处理该环境行 |
+| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | 与 test 共享 Base（「环境」列区分）；`backfill` 请求带出「环境」字段，`env_name=dev` 只处理该环境行（环境缺失/为空的行不额外过滤，向后兼容） |
 | test | `config-test.yaml` / `data/tc-test.sqlite3` | 同上，`env_name=test` |
 | prod | `config-prod.yaml` / `data/tc-prod.sqlite3` | 独立 prod Base；`env_name=None`（全表） |
 
@@ -590,7 +591,7 @@ https://<host>/wiki/wiki_dry_示例话题
 
 ```json
 [
-  { "record_id": "recGWg8Kb9kUDI", "fields": { "讨论状态": ["已选题"], "话题名称": "示例已选题话题" } }
+  { "record_id": "recStub000", "fields": { "讨论状态": ["已选题"], "话题名称": "示例已选题话题" } }
 ]
 ```
 
@@ -614,7 +615,7 @@ https://<host>/wiki/wiki_dry_示例话题
 
 ### `--dry-run` 示意输出
 
-见上 dev 段：token 缺失时打印 stub 记录（`recGWg8Kb9kUDI`）；有 token 时打印真实记录的 `--dry-run` 说明为「仅打印，不校验远端副作用」。
+见上 dev 段：token 缺失时打印 stub 记录（`recStub000`）；有 token 时打印真实记录的 `--dry-run` 说明为「仅打印，不校验远端副作用」。
 
 ### 退出码
 
