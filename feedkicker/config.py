@@ -16,7 +16,8 @@ def db_path_for(app_env: str) -> Path:
 
 
 def config_path_for(app_env: str) -> Path:
-    return Path(f"config-{app_env}.yaml")
+    """默认配置锚定仓库根，不随调用方 cwd 漂移（#163）。"""
+    return PROJECT_ROOT / f"config-{app_env}.yaml"
 
 
 @dataclass

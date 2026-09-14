@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from feedkicker import store
-from feedkicker.config import BitableConf, load_config
+from feedkicker.config import PROJECT_ROOT, BitableConf, config_path_for, load_config
 
 
 def test_baseline_load_config_test_defaults():
@@ -39,3 +39,10 @@ def test_baseline_config_env_override_feishu(monkeypatch):
     cfg = load_config(app_env="test")
     assert cfg.feishu_webhook == "https://hook.override/test"
     monkeypatch.delenv("FEISHU_WEBHOOK", raising=False)
+
+
+def test_config_path_anchored_to_project_root_not_cwd(monkeypatch, tmp_path):
+    """#163：默认 config 解析锚定仓库根，且仓外 cwd 仍能加载（conftest 注入）。"""
+    monkeypatch.chdir(tmp_path)
+    assert config_path_for("test") == PROJECT_ROOT / "config-test.yaml"
+    assert load_config(app_env="test").app_env == "test"
