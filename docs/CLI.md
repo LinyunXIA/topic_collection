@@ -1,6 +1,6 @@
-# CLI 手册 — feedkicker 8 命令详解
+# CLI 手册 — feedkicker 9 命令详解
 
-本手册覆盖 `feedkicker` 全部 **8 个命令**：4 个 entry point（`tc-push` / `tc-salon` / `tc-purge` / `tc-extract`）+ 4 个 `python -m` 模块（`feedkicker.wiki_home` / `.bitable` / `.wiki` / `.topic`）。每命令给出用途、参数表、dev/test/prod 环境差异、三环境示例（示意输出 + 退出码 + 副作用）、`--dry-run` 输出与注意事项。
+本手册覆盖 `feedkicker` 全部 **9 个命令**：5 个 entry point（`tc-push` / `tc-salon` / `tc-purge` / `tc-extract` / `tc-score`）+ 4 个 `python -m` 模块（`feedkicker.wiki_home` / `.bitable` / `.wiki` / `.topic`）。每命令给出用途、参数表、dev/test/prod 环境差异、三环境示例（示意输出 + 退出码 + 副作用）、`--dry-run` 输出与注意事项。
 
 所有 flag / 默认值 / `choices` / 退出码均取自源码 argparse 与各命令 `--help` 实跑；输出片段**示意化**（结构真实，值脱敏或截断），凭据一律占位符（`<webhook>`/`<salon-app-token>`/`<space-id>`…）。**prod 示例一律 `--dry-run`**，真跑命令单列并标 ⚠️。
 
@@ -11,6 +11,7 @@
 - [tc-salon](#tc-salon) — 已选题 → 双大纲 → Wiki 归档
 - [tc-purge](#tc-purge) — 365 天滚动保留清理
 - [tc-extract](#tc-extract) — 近 N 天资讯 → LLM 提炼选题 → salon 表
+- [tc-score](#tc-score) — 沙龙话题清单自动打分（六维加权）
 - [feedkicker.wiki_home](#wiki_home) — 重建 Wiki 首页索引
 - [feedkicker.bitable](#bitable) — 多维表格归档运维
 - [feedkicker.wiki](#wiki) — 单篇 Wiki docx 创建（联调）
@@ -35,9 +36,9 @@
 - 默认 db 路径 = `data/tc-{env}.sqlite3`；默认配置 = `<repo>/config-{env}.yaml`（锚定仓库根，不随 cwd 漂移）。
 - 未给任何环境参数时回落到 **prod**。
 
-**支持 `--env` 的命令**：全部 8 个。**支持 `--config`/`--db` 的命令**：`tc-push`、`tc-salon`、`tc-purge`、`tc-extract`、`feedkicker.wiki_home`、`feedkicker.bitable`（`feedkicker.wiki` 与 `feedkicker.topic` 无此二参数，靠 `--env` 或直接传 token）。
+**支持 `--env` 的命令**：全部 9 个。**支持 `--config`/`--db` 的命令**：`tc-push`、`tc-salon`、`tc-purge`、`tc-extract`、`tc-score`、`feedkicker.wiki_home`、`feedkicker.bitable`（`feedkicker.wiki` 与 `feedkicker.topic` 无此二参数，靠 `--env` 或直接传 token）。
 
-**命令形态约定**：所有命令均支持 `-h/--help`。4 个 entry point 由 `.venv/bin/tc-*` 调用（等价 `.venv/bin/python -m feedkicker.push|salon_flow|purge|extract_flow`）；4 个模块用 `.venv/bin/python -m feedkicker.<name>`。
+**命令形态约定**：所有命令均支持 `-h/--help`。5 个 entry point 由 `.venv/bin/tc-*` 调用（等价 `.venv/bin/python -m feedkicker.push|salon_flow|purge|extract_flow|score_flow`）；4 个模块用 `.venv/bin/python -m feedkicker.<name>`。
 
 **脱敏规则**：真实 webhook / 签名 secret / app_token / table_id / space_id / node_token 一律写占位符，如 `<webhook>`、`<salon-app-token>`、`<wiki-space-id>`、`<node_token>`；时间戳与计数保留真实结构。文档不落任何真实凭据。
 
@@ -409,6 +410,123 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 - 单批 LLM 调用失败（超时/429/529/业务可重试码）重试 1 次（总 HTTP ≤2/批，单层重试）后跳过并汇总 WARNING，不阻断其余批；模型合法返回空话题列表计 `empty_batches` 不计失败，单条非法 topic 丢弃该条不丢整批；`--max-calls` 供联调限次。
 - 行为由 `prompts/extract.md` 定义（用户提示词原文 + 输出 JSON schema），改提示词即改提炼口径。
 - 绝不调 `ensure_initialized`，不改 salon 表结构。
+
+---
+
+<a id="tc-score"></a>
+
+## tc-score
+
+**用途**：对 salon「沙龙话题清单」**全表行**逐条自动打分——六维各 0–5（0.5 档）→ 加权总分 0–5（1 位小数）→ 写回 `MMax打分`/`MMax理由`（`--provider deepseek` 时写 `DS打分`/`DS理由`）两列，供人工复核与横向排序。**默认 dry-run**，`--apply` 才写表；**默认只补空**（`打分` 列非空的行跳过），`--force` 覆盖重算。对应 DESIGN §26。
+
+**入口**：`tc-score = feedkicker.score_flow:main`。
+
+### 参数表
+
+| flag | 类型 | 默认 | 覆盖关系 | 说明 |
+|---|---|---|---|---|
+| `--apply` | store_true | 关（即默认 dry-run） | 与 `--dry-run` 互斥 | 写回目标 provider 的 `打分`/`理由` 两列 |
+| `--dry-run` | store_true | 关（默认行为） | 与 `--apply` 互斥 | 仅打印待写清单与统计，零写调用 |
+| `--provider` | choice `{deepseek,minimax}`（由列映射表键生成） | `None`（取 `score.provider`，默认 `minimax`） | 覆盖配置 | 调用方与目标列：minimax→`MMax打分`/`MMax理由`，deepseek→`DS打分`/`DS理由` |
+| `--limit` | 非负整数 | `0`（全部） | 覆盖配置 | 最多处理行数；`0`=全表 |
+| `--max-calls` | 非负整数 | `0`（不限） | 覆盖配置 | LLM 调用上限；达限停止剩余批并 WARNING |
+| `--force` | store_true | 关 | — | 忽略既有打分，对全部命中行重算并覆盖 |
+| `--config` | str | `None` | 覆盖 `--env` 推导 | 指定 `config-{env}.yaml` 路径 |
+| `--db` | str | `None` | 覆盖 `TC_DB` 与 `--env` 推导 | sqlite 路径 |
+| `--env` | choice `{dev,test,prod}` | `None`（回落 prod） | 覆盖 `TC_APP_ENV` | 决定默认配置与 db 路径 |
+
+### 环境差异
+
+| 环境 | 配置 / db | 目标表 |
+|---|---|---|
+| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | `cfg.salon.app_token/table_id`（dev/test 常共享同一 salon Base） |
+| test | `config-test.yaml` / `data/tc-test.sqlite3` | 同上 |
+| prod | `config-prod.yaml` / `data/tc-prod.sqlite3` | 真实 prod salon 话题清单 |
+
+provider key：`score.providers.<name>.api_key`，为空或占位时按 provider 取 env（`MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`）；占位值（`<` 开头）清空。未知 provider 或所选 provider 缺 key → rc 2 且**不发起任何 lark/LLM 调用**。提示词文件默认 `prompts/score.md`（仓库根相对）；目标 provider 对应两列任一不在表内 → rc 2（**不自动建列**）。
+
+### 示例
+
+**dev**（默认 dry-run，不写表）：
+
+```bash
+.venv/bin/tc-score --env dev
+```
+
+本次切 DeepSeek（key 走 `DEEPSEEK_API_KEY` 或 `score.providers.deepseek.api_key`）：
+
+```bash
+.venv/bin/tc-score --env dev --provider deepseek
+```
+
+示意输出（「示意」）：
+
+```
+2026-09-15 ... feedkicker.score_flow tc-score 运行开始：环境=dev，db=/.../data/tc-dev.sqlite3，mode=dry-run
+2026-09-15 ... feedkicker.score_flow tc-score 运行计划：环境=dev db=... 目标表=tbl… 模板=prompts/score.md provider=minimax（MMax）总行数=85 批数=1 每批行数=[85] 待打分=85 跳过=0 横向上文=0 max_calls=0 force=False
+tc-score dry-run 计划：总行数=85 批数=1 待打分=85 跳过=0
+[将写入] 1. 话题名A → 3.5 ｜ 依据 可使用工具… ｜ risk=false ｜ source=false ｜ 六维：…
+待写 85 / 跳过 0 / 分布校验 ok
+{"mode": "dry-run", "batches": 1, "llm_calls": 1, "rows": 85, "scored": 85, "skipped": 0, "written": 0, "failed_writes": 0, "failed_batches": 0, "dropped": 0, "empty_batches": 0}
+```
+
+退出码 `0`。副作用：只读 salon 表（`+record-list`/`+field-list`）并调用 LLM，**零写调用**。
+
+**test**（真写测试 Base，须确认）：
+
+```bash
+.venv/bin/tc-score --env test --apply
+```
+
+如需覆盖既有分：`.venv/bin/tc-score --env test --apply --force`。
+
+示意输出：`打分完成：模式=apply 批=1 调用=1 行=85 打分=85 跳过=0 写入=85 写入失败=0 失败批=0 丢弃=0 空批=0` 与统计 JSON（`"mode": "apply"`）。退出码 `0`（部分行/批失败仅汇总 WARNING）；`--apply` **全部写入失败**（`failed_writes>0 且 written==0`）→ `1`；配置错 `2`。副作用：写目标 provider 的 2 列（`base +record-batch-update`，≤100/批）。
+
+**prod（仅 dry-run）**：
+
+```bash
+.venv/bin/tc-score --env prod
+```
+
+⚠️ **prod 真跑**（写线上 salon 话题清单，人工确认后执行；**默认只补空**，可安全重跑）：
+
+```bash
+.venv/bin/tc-score --env prod --apply
+```
+
+### `--dry-run` 示意输出
+
+见上 dev 段：逐行打印 `[将写入] <话题名> → <总分> ｜ <理由(截断 60 字)>`，末尾 `待写 N / 跳过 M / 分布校验 <ok|violations>` 与统计 JSON，**零写调用**。
+
+### 统计 JSON 字段
+
+| 字段 | 含义 |
+|---|---|
+| `mode` | `dry-run` / `apply` |
+| `batches` | 组批数（每批 ≤100） |
+| `llm_calls` | 实际 LLM 调用次数（单批「调用+解析」共享重试预算，总 HTTP ≤2/批） |
+| `rows` | 表内总行数（受 `--limit` 影响） |
+| `scored` | 归一后成功打分的条数 |
+| `skipped` | 因 `打分` 非空而跳过（或 `plan_writes` 二次判空跳过）的条数 |
+| `written` | 实际写入条数（dry-run 恒 0） |
+| `failed_writes` | 写入失败条数（单批失败累加本批条数） |
+| `failed_batches` | LLM 调用+解析两次仍失败的批数 |
+| `dropped` | 被丢弃条数（非法返回项 / 缺返回行 / 多余行） |
+| `empty_batches` | 模型合法返回空 `scores` 的批数 |
+
+### 退出码
+
+`2` = 配置/参数非法（config 加载失败 / `prompts/score.md` 缺失或为空 / `score.batch_size>100` / `--provider` 未知（argparse choices 拒绝）/ provider 未注册 / 所选 provider 缺 key / salon token 缺失或占位 / 目标 provider 两列缺失 / 同时给 `--apply` 与 `--dry-run`）；`1` = 未捕获异常，或 `--apply` 全部写入失败（`failed_writes>0 且 written==0`）；`0` = 正常（含单行/单批失败跳过并计数）。
+
+### 注意 / 坑
+
+- **默认 dry-run**：真实写入必须显式 `--apply`。
+- **幂等只补空**：判据**仅看 `打分` 列非空**；`理由` 有值但 `打分` 空视为未完成，重算并补齐两列（自愈部分写入失败）。重复 `--apply`（无 `--force`）写入数为 0（PRD §22.10）。
+- **列映射**：`--provider minimax` → `MMax打分`/`MMax理由`；`--provider deepseek` → `DS打分`/`DS理由`；两套列互不复用。`打分` 列写**纯数字字符串**（1 位小数，如 `3.5`；全维缺失写 `缺失`）；`理由` 列单行，含 `｜ risk=… ｜ source=… ｜ 六维：…`。
+- **绝不触碰其它列**：每批 payload **只含目标 2 个键**（`+record-batch-update`），不 `batch-create`、不删行、不动 `飞书AI打分`/`人工打分` 等其它列；不新增「打分日期」列。
+- 单批 LLM 调用失败（超时/429/529/业务可重试码或契约解析失败）重试 1 次（总 HTTP ≤2/批）后计 `failed_batches` 并跳过该批，不阻断其余批；模型合法返回空列表计 `empty_batches`。
+- 分布校验：按 PRD §22.7 校验「`≥4.0` ≤20%」「`<2.0` ≥15%」，违反**仅 WARNING**，不自动调分。
+- 不抓 `资讯链接` 指向的网页正文；理由必须引用表内字段。绝不调 `ensure_initialized`，不改表结构。
 
 ---
 

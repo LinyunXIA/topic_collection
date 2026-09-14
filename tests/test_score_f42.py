@@ -1,0 +1,195 @@
+"""F42：文档一致性（CLI/OPS/AGENTS/DESIGN）+ 闸门/否决写入形态 + 多批分布校验（全离线）。"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import pytest
+
+from feedkicker import bitable_lark, score_llm, score_write
+from feedkicker.config_models import PROJECT_ROOT, ProviderConf
+
+_DIMS = {
+    "普适痛点强度": 4.0, "分层承载力": 3.5, "可演示性": 5.0,
+    "时效与稀缺": 4.0, "内容复用价值": 3.5, "讲解成本": 2.0,
+}
+
+
+class FakeProc:
+    def __init__(self, returncode: int = 0, stdout: str = "", stderr: str = "") -> None:
+        self.returncode = returncode
+        self.stdout = stdout
+        self.stderr = stderr
+
+
+def _doc(name: str) -> str:
+    return (PROJECT_ROOT / name).read_text(encoding="utf-8")
+
+
+def _item(name: str, *, total: object, scores: dict, reason: str, **over: object) -> dict:
+    item: dict[str, object] = {
+        "record_id": f"rec{name}", "话题名称": name, "weighted_total": total,
+        "scores": scores, "reason": reason, "risk_flag": False, "source_flag": False,
+    }
+    item.update(over)
+    return item
+
+
+def _json_from_args(args: list[str]) -> dict:
+    raw = args[args.index("--json") + 1]
+    if raw.startswith("@"):
+        return json.loads(Path(raw[1:]).read_text(encoding="utf-8"))
+    return json.loads(raw)
+
+
+def _stub_lark(monkeypatch: pytest.MonkeyPatch, payloads: list[dict]) -> None:
+    def fake_run(args, stdin_text=None, timeout=120):
+        if args[:2] == ["base", "--help"]:
+            return FakeProc(0, "+record-batch-update")
+        if "+record-batch-update" in args:
+            payloads.append(_json_from_args(args)["update_records"])
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+
+def test_cli_md_documents_tc_score() -> None:
+    text = _doc("docs/CLI.md")
+
+    assert "9 命令" in text and "## tc-score" in text
+    section = text.split("## tc-score", 1)[1].split("\n## ", 1)[0]
+    for flag in ("--apply", "--dry-run", "--provider", "--limit", "--max-calls", "--force", "--env", "--config", "--db"):
+        assert flag in section
+    for token in ("MMax打分", "MMax理由", "DS打分", "DS理由", "退出码", "failed_writes", "written"):
+        assert token in section
+
+
+def test_cli_md_exit_codes_and_idempotency() -> None:
+    section = _doc("docs/CLI.md").split("## tc-score", 1)[1].split("\n## ", 1)[0]
+
+    assert "全部写入失败" in section and "只补空" in section and "--force" in section
+    assert "绝不触碰其它列" in section
+
+
+def test_cli_md_help_flags_match_actual(capsys) -> None:
+    from feedkicker import score_flow
+
+    with pytest.raises(SystemExit):
+        score_flow.main(["--help"])
+    out = capsys.readouterr().out
+    section = _doc("docs/CLI.md").split("## tc-score", 1)[1].split("\n## ", 1)[0]
+
+    for flag in ("--apply", "--dry-run", "--provider", "--limit", "--max-calls", "--force"):
+        assert flag in out and flag in section
+
+
+def test_ops_md_documents_score_section() -> None:
+    text = _doc("docs/OPS.md")
+
+    assert "score` 段补充" in text
+    assert "prompts/score.md" in text
+    assert "MiniMax_Key" in text and "DEEPSEEK_API_KEY" in text
+    assert "batch_size=100" in text and "只补空" in text
+
+
+def test_design_module_tree_and_table_match_score_files() -> None:
+    design = _doc("docs/DESIGN.md")
+    files = sorted(p.name for p in (PROJECT_ROOT / "feedkicker").glob("score_*.py"))
+
+    assert files == [
+        "score_config.py", "score_flow.py", "score_llm.py", "score_parse.py",
+        "score_report.py", "score_source.py", "score_write.py",
+    ]
+    for name in files:
+        assert name in design, name
+    assert "| `score_config.py` |" in design
+
+
+def test_design_checklist_all_checked() -> None:
+    section = _doc("docs/DESIGN.md").split("### 26.11 清单", 1)[1]
+
+    for feature in ("F38", "F39", "F40", "F41", "F42"):
+        assert f"- [x] {feature} " in section, feature
+    assert "- [ ]" not in section
+
+
+def test_design_records_aligned_differences() -> None:
+    section = _doc("docs/DESIGN.md").split("### 26.12 实现说明", 1)[1]
+
+    assert "`scores`" in section and "`dimensions`" in section
+    assert 'gate: "pass"|"zero"' in section
+    assert "宽容回退" in section
+    assert "JSON schema" in section
+    assert "仅看 `打分` 列非空" in section
+
+
+def test_agents_md_has_tc_score() -> None:
+    text = _doc("AGENTS.md")
+
+    assert "tc-score" in text and "--apply" in text
+
+
+def test_agents_md_use_count_matches(request) -> None:
+    total = len(request.session.items)
+    if total < 700:
+        pytest.skip("非全量运行，跳过用例数一致性校验")
+
+    assert f"{total} 用例" in _doc("AGENTS.md")
+
+
+def test_agents_md_count_is_not_stale() -> None:
+    assert "685 用例" not in _doc("AGENTS.md")
+
+
+def test_gate_zero_write_form() -> None:
+    item = _item("A", total=0.0, scores={}, reason="无内容内核；抢救建议：改造为「财报里企业如何裁 AI 预算」")
+    cell = score_write._cell(item, "MMax")
+
+    assert cell["MMax打分"] == "0.0"
+    assert "无内容内核" in cell["MMax理由"] and "抢救建议" in cell["MMax理由"]
+
+
+def test_veto_write_form_keeps_dimensions() -> None:
+    scores = dict(_DIMS)
+    scores["普适痛点强度"] = 0
+    item = _item("A", total=0.0, scores=scores, reason="普适痛点强度=0，致命否决")
+    cell = score_write._cell(item, "MMax")
+
+    assert cell["MMax打分"] == "0.0"
+    assert "普适痛点0.0/分层承载3.5/可演示5.0/时效稀缺4.0/复用价值3.5/讲解成本2.0" in cell["MMax理由"]
+
+
+def test_write_payload_only_two_columns_for_gate_and_veto(monkeypatch) -> None:
+    payloads: list[dict] = []
+    _stub_lark(monkeypatch, payloads)
+    rows = [
+        _item("A", total=0.0, scores={}, reason="无内容内核"),
+        _item("B", total=0.0, scores={**_DIMS, "分层承载力": 0}, reason="否决"),
+    ]
+
+    stats = score_write.write_scores(score_write.WriteConf("appTest", "tblTest", "minimax"), rows, dry_run=False)
+
+    assert stats.written == 2
+    assert set(payloads[0]["recA"]) == {"MMax打分", "MMax理由"}
+    assert set(payloads[0]["recB"]) == {"MMax打分", "MMax理由"}
+
+
+def test_multi_batch_distribution_violations(monkeypatch) -> None:
+    import re
+
+    def fake_call(conf, prompt):
+        names = [n.strip() for n in re.findall(r"^\d+\. 话题名称：(.+)$", prompt, re.MULTILINE)]
+        scores = [
+            {"话题名称": n, "gate": "pass", "dimensions": {k: 5.0 for k in _DIMS}} for n in names
+        ]
+        return json.dumps({"scores": scores}, ensure_ascii=False)
+
+    monkeypatch.setattr(score_llm, "call_llm", fake_call)
+    batches = [[{"话题名称": "话题1"}], [{"话题名称": "话题2"}]]
+
+    result = score_llm.refine_batches(ProviderConf(api_key="k"), "模板", batches, [], 0)
+
+    assert len(result.scored) == 2
+    assert len(result.violations) >= 2
+    assert any("≥4.0" in v for v in result.violations)

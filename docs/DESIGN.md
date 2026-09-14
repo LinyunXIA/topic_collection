@@ -48,7 +48,7 @@ topic_collection/
 ├── prompts/score.md          # 话题自动打分提示词（用户原文 + 「本批话题（含横向上文）」注入说明，§26）
 ├── docs/
 │   ├── PRD.md / DESIGN.md    # 产品权威 / 工程实现权威
-│   ├── CLI.md                # 8 命令命令行详解（§23 F25）
+│   ├── CLI.md                # 9 命令命令行详解（§23 F25）
 │   └── OPS.md                # 运维手册：配置/凭据、launchd、飞书坑、排障（§23 F26）
 ├── data/                     # 运行时生成：tc-{env}.sqlite3（gitignore）
 ├── logs/                     # launchd 重定向写日志（gitignore）
@@ -90,7 +90,8 @@ topic_collection/
 │   ├── extract_flow.py       # tc-extract 编排 + CLI（F32，§25）
 │   ├── extract_report.py     # dry-run 清单与运行统计输出（自 extract_flow 拆出，§25.6/#252）
 │   ├── score_source.py       # 读「沙龙话题清单」全表行 + 组批（≤100）（F38/F39，§26）
-│   ├── score_llm.py          # provider 调用（复用 PROVIDERS/resolve_provider）（F38，§26）
+│   ├── score_config.py       # `score:` 配置段解析（batch_size 上界校验）（F38，§26.3）
+│   ├── score_llm.py          # provider 调用 + 提示词注入（复用 PROVIDERS/resolve_provider）（F38/F39，§26）
 │   ├── score_parse.py        # 打分契约解析/归一/否决/缺失/分布校验（F40，§26）
 │   ├── score_write.py        # 写列/幂等/统计（F41，§26）
 │   ├── score_report.py       # dry-run 清单与摘要（F40/F41，§26）
@@ -1092,6 +1093,7 @@ score_source.read_rows(app_token, table_id, limit)   # 全表分页读 5 个输�
 | 模块 | 职责 | 关键接口 | F |
 |---|---|---|---|
 | `score_source.py` | 读目标表全表行、组批（≤100）、行字段归一 | `read_rows(app_token, table_id, limit=0) -> list[dict]`、`group_batches(rows, size=MAX_SCORE_BATCH) -> list[list[dict]]` | F38/F39 |
+| `score_config.py` | `score:` 配置段解析（batch_size 上界校验、providers 占位/env 回退） | `parse_score(raw, base, providers) -> ScoreConf` | F38 |
 | `score_llm.py` | provider 调用 + 提示词注入（横向上文） | `build_prompt(template, batch, prior_scores) -> str`、`call_llm(provider, prompt) -> str` | F38/F39 |
 | `score_parse.py` | 契约解析、闸门/否决/缺失归一、分布校验 | `parse_scores(raw) -> list[dict]`、`normalize(scores) -> (list[dict], DistCheck)` | F40 |
 | `score_write.py` | 目标列存在性校验、只补空/`--force` 写入、统计 | `ensure_columns(...)`、`plan_writes(scores, existing) -> (write, skip)`、`write_scores(...) -> ScoreStats` | F41 |
@@ -1194,8 +1196,14 @@ score:
 
 ### 26.11 清单
 
-- [ ] F38 `score_flow.py` + `score:` 配置段 + 目标列缺失 rc2 + 退出码（0/1/2）
-- [ ] F39 `prompts/score.md`（原样提示词 + 注入说明）+ 组批 ≤100 + 横向上文注入
-- [ ] F40 `score_parse.py` 契约解析（闸门/六维/否决/缺失归一/分布校验）+ 重试与计数
-- [ ] F41 `score_write.py` 写入与幂等（MMax/DS 列映射、只补空/`--force`、统计、绝不触碰其它列）
-- [ ] F42 文档（CLI.md/OPS.md/AGENTS.md/DESIGN §3/§26）+ 全离线测试
+- [x] F38 `score_flow.py` + `score:` 配置段 + 目标列缺失 rc2 + 退出码（0/1/2）
+- [x] F39 `prompts/score.md`（原样提示词 + 注入说明）+ 组批 ≤100 + 横向上文注入
+- [x] F40 `score_parse.py` 契约解析（闸门/六维/否决/缺失归一/分布校验）+ 重试与计数
+- [x] F41 `score_write.py` 写入与幂等（MMax/DS 列映射、只补空/`--force`、统计、绝不触碰其它列）
+- [x] F42 文档（CLI.md/OPS.md/AGENTS.md/DESIGN §3/§26）+ 全离线测试
+
+### 26.12 实现说明（与设计稿的已对齐差异）
+
+- **契约主键**：已按 §26.4 落地权威口径 `scores` / `dimensions` / `gate: "pass"|"zero"`；同时保留 `results` 主键与 `scores` 维度键的**宽容回退**，容忍旧输出（`score_parse.parse_results` / `_normalize_item`）。
+- **提示词注入段**：`prompts/score.md` 的注入段已含 `### 输出格式（必须严格遵守）` 的 JSON schema（与 §26.4 逐字一致），用户提示词原文不改。
+- **跳过判据**：默认「只补空」的判据收紧为**仅看 `打分` 列非空**（§26.7/§26.8）；`理由` 有值但 `打分` 空视为未完成，重算并补齐两列，可自愈部分写入失败。

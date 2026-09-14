@@ -143,7 +143,7 @@ def run(
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(
         prog="tc-score",
-        description="沙龙话题清单自动打分（默认 dry-run；本阶段仅打印计划）",
+        description="沙龙话题清单自动打分（默认 dry-run，--apply 才写表）",
     )
     mode = parser.add_mutually_exclusive_group()
     mode.add_argument("--apply", action="store_true", help="写回打分/理由列（默认只补空，--force 覆盖重算）")
@@ -154,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     )
     parser.add_argument("--limit", type=_non_negative_int, default=0, help="最多处理行数（0=全部）")
     parser.add_argument("--max-calls", type=_non_negative_int, default=0, help="LLM 调用上限（0=不限）")
-    parser.add_argument("--force", action="store_true", help="忽略既有分重算（F41）")
+    parser.add_argument("--force", action="store_true", help="忽略既有打分重算（覆盖目标两列）")
     parser.add_argument("--config", default=None, help="指定 config-{env}.yaml 路径")
     parser.add_argument("--db", default=None, help="sqlite 路径（覆盖 TC_DB 与 --env 推导）")
     parser.add_argument("--env", default=None, choices=["dev", "test", "prod"], help="运行环境，决定默认配置文件与 db 路径")
