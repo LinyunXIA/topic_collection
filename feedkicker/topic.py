@@ -155,14 +155,14 @@ if __name__ == "__main__":
             if not table_id:
                 table_id = cfg.salon.table_id
             if (not app_token or not table_id) and args.dry_run:
-                stub = [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
+                stub = [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
                 print(json.dumps(stub, ensure_ascii=False, indent=2))
                 raise SystemExit(0)
         except SystemExit:
             raise
         except Exception:  # noqa: BLE001
             if args.dry_run:
-                stub = [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
+                stub = [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
                 print(json.dumps(stub, ensure_ascii=False, indent=2))
                 raise SystemExit(0)
             raise
@@ -172,7 +172,7 @@ if __name__ == "__main__":
         print(json.dumps(fields, ensure_ascii=False, indent=2))
     else:
         if args.dry_run and (not app_token or not table_id):
-            stub = [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
+            stub = [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
             print(json.dumps(stub, ensure_ascii=False, indent=2))
         else:
             records = fetch_selected_topics(app_token, table_id, limit=args.limit)

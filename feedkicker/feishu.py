@@ -28,6 +28,8 @@ from feedkicker.feishu_card import (
 
 log = logging.getLogger(__name__)
 
+SIGN_RESERVE_BYTES = 128
+
 
 def gen_sign(timestamp: str, secret: str) -> str:
     string_to_sign = f"{timestamp}\n{secret}"

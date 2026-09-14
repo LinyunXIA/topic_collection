@@ -450,3 +450,25 @@ def test_minimax_outline_mock(monkeypatch):
     result = mm.gen_outline("mock topic", kind="tool", api_key="sk")
     assert result["title"] == "Mock大纲"
     assert len(result["slides"]) == 6
+
+
+def test_gen_outline_content_array_raises_controlled(monkeypatch):
+    """#202：content 兜底解析出 JSON 数组时抛 RuntimeError，不让 AttributeError 逃逸。"""
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        return FakeResp(200, {"choices": [{"message": {"content": "[1,2]", "tool_calls": []}}]})
+
+    monkeypatch.setattr(mm.httpx, "post", fake_post)
+    with pytest.raises(RuntimeError, match="非对象"):
+        mm.gen_outline("topic", kind="tool", api_key="sk")
+
+
+def test_gen_outline_fenced_content_array_raises_controlled(monkeypatch):
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        return FakeResp(
+            200, {"choices": [{"message": {"content": "```json\n[1,2]\n```", "tool_calls": []}}]}
+        )
+
+    monkeypatch.setattr(mm.httpx, "post", fake_post)
+    with pytest.raises(RuntimeError, match="非对象"):
+        mm.gen_outline("topic", kind="tool", api_key="sk")

@@ -63,7 +63,7 @@ def test_salon_flow_dry_run_no_mark(monkeypatch, capsys):
     conn = store.connect(":memory:")
 
     monkeypatch.setattr(sf, "fetch_selected_topics", lambda app, tbl, limit=200: [
-        {"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "话题A"}},
+        {"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "话题A"}},
     ])
 
     def fake_gen(topic, kind="tool", api_key=None, base_url=None, model=None):
@@ -84,8 +84,8 @@ def test_salon_flow_dry_run_no_mark(monkeypatch, capsys):
 
     rc = sf.run(cfg, conn, dry_run=True)
     assert rc == 0
-    assert store.get_ppt_last_status(conn, "recGWg8Kb9kUDI") == ""
-    row = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recGWg8Kb9kUDI'").fetchone()
+    assert store.get_ppt_last_status(conn, "recStub000") == ""
+    row = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recStub000'").fetchone()
     assert row is None
     conn.close()
 
@@ -97,7 +97,7 @@ def test_salon_flow_happy_one_doc_two_outlines(monkeypatch):
     conn = store.connect(":memory:")
 
     monkeypatch.setattr(sf, "fetch_selected_topics", lambda app, tbl, limit=200: [
-        {"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "话题A"}},
+        {"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "话题A"}},
     ])
 
     def fake_gen(topic, kind="tool", api_key=None, base_url=None, model=None):
@@ -122,9 +122,39 @@ def test_salon_flow_happy_one_doc_two_outlines(monkeypatch):
     rc = sf.run(cfg, conn, dry_run=False)
     assert rc == 0
     assert wiki_calls == ["话题A"]
-    assert store.get_ppt_last_status(conn, "recGWg8Kb9kUDI") == "已选题"
-    row = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recGWg8Kb9kUDI'").fetchone()
+    assert store.get_ppt_last_status(conn, "recStub000") == "已选题"
+    row = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recStub000'").fetchone()
     assert row is not None and row[0] is not None
+    conn.close()
+
+
+def test_salon_flow_placeholder_token_dry_run_uses_stub(monkeypatch):
+    """#204：占位 token（含 `<`）等同缺失，dry-run 走 stub 不碰 lark-cli。"""
+    from feedkicker import bitable_lark
+    from feedkicker import salon_flow as sf
+
+    cfg = _cfg(monkeypatch)
+    cfg.salon.app_token = "<salon-app-token>"
+    cfg.salon.table_id = "<salon-table-id>"
+    conn = store.connect(":memory:")
+
+    def boom(*a, **k):
+        raise AssertionError("占位 token 不应触发真实调用")
+
+    monkeypatch.setattr(sf, "fetch_selected_topics", boom)
+    monkeypatch.setattr(sf.minimax, "gen_outline", boom)
+    monkeypatch.setattr(bitable_lark, "_run", boom)
+    titles: list[str] = []
+    monkeypatch.setattr(
+        sf.wiki,
+        "create_wiki_doc_from_md",
+        lambda app, space, parent, title, md, dry_run=False, date_str=None: (
+            titles.append(title) or "https://x/wiki/stub"
+        ),
+    )
+
+    assert sf.run(cfg, conn, dry_run=True) == 0
+    assert titles == ["示例已选题话题"]
     conn.close()
 
 
@@ -257,7 +287,7 @@ def test_salon_flow_cli_dry_run(monkeypatch, capsys):
     monkeypatch.setattr(sf, "load_config", lambda *a, **kw: cfg)
     monkeypatch.setattr(sf.store, "connect", lambda p: orig_connect(":memory:"))
     monkeypatch.setattr(sf, "fetch_selected_topics", lambda app, tbl, limit=200: [
-        {"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "T1"}},
+        {"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "T1"}},
     ])
     monkeypatch.setattr(sf.minimax, "gen_outline", lambda topic, kind="tool", api_key=None, base_url=None, model=None: {"title": "t", "slides": [{"heading": "h", "bullets": ["a", "b", "c"]}]})
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: "https://web91vfvm7.feishu.cn/wiki/wik_stub")
@@ -301,7 +331,7 @@ def test_salon_flow_21_to_1_selected_filter(monkeypatch):
     conn = store.connect(":memory:")
     # 模拟服务端 21 条中仅 1 已选题，其余为 未讨论/草稿，salon_flow 需过滤
     raw = [{"record_id": f"rec{i:02d}", "fields": {"讨论状态": ["未讨论"], "话题名称": f"T{i}"}} for i in range(20)]
-    raw.append({"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "唯一已选题"}})
+    raw.append({"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "唯一已选题"}})
     # 也混入已选题但不应重推（已 sync）
     monkeypatch.setattr(sf, "fetch_selected_topics", lambda app, tbl, limit=200: raw)
 
@@ -317,7 +347,7 @@ def test_salon_flow_21_to_1_selected_filter(monkeypatch):
     rc = sf.run(cfg, conn, dry_run=False)
     assert rc == 0
     assert wiki_calls == ["唯一已选题"]
-    assert store.get_ppt_last_status(conn, "recGWg8Kb9kUDI") == "已选题"
+    assert store.get_ppt_last_status(conn, "recStub000") == "已选题"
     for i in range(20):
         assert store.get_ppt_last_status(conn, f"rec{i:02d}") == ""
     conn.close()
@@ -353,7 +383,7 @@ def test_salon_flow_full_chain_via_httpx_subprocess(monkeypatch):
     def fake_run(args, stdin_text=None, timeout=120):
         if "+record-list" in args or "record-list" in args:
             assert "--filter-json" in args
-            payload = {"records": [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "低层话题"}}]}
+            payload = {"records": [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "低层话题"}}]}
             return FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False))
         if args[:2] == ["docs", "+create"]:
             assert "--doc-format" in args and args[args.index("--doc-format") + 1] == "markdown"
@@ -392,8 +422,8 @@ def test_salon_flow_full_chain_via_httpx_subprocess(monkeypatch):
     rc = sf.run(cfg, conn, dry_run=False)
     assert rc == 0
     assert any("minimaxi" in u for u in call_log)
-    assert store.get_ppt_last_status(conn, "recGWg8Kb9kUDI") == "已选题"
-    row = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recGWg8Kb9kUDI'").fetchone()
+    assert store.get_ppt_last_status(conn, "recStub000") == "已选题"
+    row = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recStub000'").fetchone()
     assert row is not None and row[0] is not None
     conn.close()
 
@@ -781,10 +811,10 @@ def test_salon_flow_mark_ppt_synced_bulk_and_subprocess_mock(monkeypatch):
     def fake_run(args, stdin_text=None, timeout=120):
         assert "--filter-json" in args
         assert "已选题" in args[args.index("--filter-json") + 1]
-        return FakeProc(0, stdout=json.dumps({"data": {"records": [{"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"]}}]}}, ensure_ascii=False))
+        return FakeProc(0, stdout=json.dumps({"data": {"records": [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"]}}]}}, ensure_ascii=False))
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
     monkeypatch.setattr(tp.bitable_lark, "_run", fake_run)
     recs = tp.fetch_selected_topics("app", "tbl")
-    assert recs[0]["record_id"] == "recGWg8Kb9kUDI"
+    assert recs[0]["record_id"] == "recStub000"
     conn.close()

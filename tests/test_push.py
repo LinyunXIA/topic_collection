@@ -570,6 +570,42 @@ def test_build_card_no_detail_no_button():
                    for el in card["card"]["elements"] if el.get("tag") == "div")
 
 
+def test_build_card_budget_reserves_signature_bytes():
+    """#201：build_card 预算须预留 send 注入 timestamp/sign 的字节余量。"""
+    from feedkicker import feishu_card
+
+    budget = feishu_card._MAX_BODY_BYTES - feishu.SIGN_RESERVE_BYTES
+    items = _many_items("F", 700)
+    unbounded = feishu.build_card(items, 0, ["F"], max_bytes=feishu_card._MAX_BODY_BYTES)
+    assert len(json.dumps(unbounded, ensure_ascii=False).encode("utf-8")) > budget
+    card = feishu.build_card(items, 0, ["F"], max_bytes=budget)
+    raw = json.dumps(card, ensure_ascii=False).encode("utf-8")
+    assert len(raw) + feishu.SIGN_RESERVE_BYTES <= feishu_card._MAX_BODY_BYTES
+
+
+def test_push_run_reserves_signature_bytes(monkeypatch):
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.feishu_webhook = "hook-x"
+    entries = parse_content(rss(item("sig", "https://e.com/sig1")))
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    from feedkicker import feishu_card
+
+    captured_kwargs: dict = {}
+    real_build = feishu.build_card
+
+    def spy(*a, **kw):
+        captured_kwargs.update(kw)
+        return real_build(*a, **kw)
+
+    monkeypatch.setattr(push.feishu, "build_card", spy)
+    monkeypatch.setattr(push.feishu, "send", lambda p, *a, **kw: True)
+    assert push.run(cfg, conn) == 0
+    assert captured_kwargs["max_bytes"] == feishu_card._MAX_BODY_BYTES - feishu.SIGN_RESERVE_BYTES
+    assert feishu.SIGN_RESERVE_BYTES >= 128
+    conn.close()
+
+
 # ── v0.2：编排顺序与降级 ──
 
 
@@ -1272,3 +1308,35 @@ def test_bitable_backfill_empty_archive_dates(monkeypatch):
     n2 = bitable.backfill_empty_archive_dates("app", "tbl", dry_run=True)
     assert n2 == 2
     assert captured == []
+
+
+def test_bitable_backfill_filters_by_env(monkeypatch):
+    """#203：dev/test 只回填「环境」匹配行；环境缺失行向后兼容不额外过滤。"""
+    from feedkicker import bitable
+
+    captured: list[dict] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "--help" in args:
+            return FakeProc(0, stdout="+record-batch-update")
+        if "+record-list" in args:
+            assert "环境" in args and "归档日期" in args and "推送时间" in args
+            payload = {
+                "data": {
+                    "records": [
+                        {"record_id": "recDev", "fields": {"归档日期": "", "推送时间": "2026-08-25T01:00:00Z", "环境": "dev"}},
+                        {"record_id": "recTest", "fields": {"归档日期": "", "推送时间": "2026-08-25T01:00:00Z", "环境": "test"}},
+                        {"record_id": "recLegacy", "fields": {"归档日期": "", "推送时间": "2026-08-25T01:00:00Z"}},
+                    ]
+                }
+            }
+            return FakeProc(0, stdout=json.dumps(payload, ensure_ascii=False))
+        if "+record-batch-update" in args:
+            captured.append(json.loads(args[args.index("--json") + 1]))
+            return FakeProc(0, stdout="{}")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    n = bitable.backfill_empty_archive_dates("app", "tbl", env_name="dev", dry_run=False)
+    assert n == 2
+    assert set(captured[0]["update_records"]) == {"recDev", "recLegacy"}

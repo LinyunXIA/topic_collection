@@ -128,7 +128,7 @@ def test_salon_flow_dry_run_payload_contains_wiki_button(monkeypatch, capsys):
     cfg = _cfg(monkeypatch)
     conn = store.connect(":memory:")
     monkeypatch.setattr(sf, "fetch_selected_topics", lambda app, tbl, limit=200: [
-        {"record_id": "recGWg8Kb9kUDI", "fields": {"讨论状态": ["已选题"], "话题名称": "话题A"}},
+        {"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "话题A"}},
     ])
     monkeypatch.setattr(sf.minimax, "gen_outline", lambda topic, kind="tool", api_key=None, base_url=None, model=None: {"title": f"{kind}大纲", "slides": [{"heading": "h1", "bullets": ["a", "b", "c"]}]})
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda app_token, space_id, parent_token, title, md_content, dry_run=False, date_str=None: "https://web91vfvm7.feishu.cn/wiki/wik_dry")
@@ -138,7 +138,7 @@ def test_salon_flow_dry_run_payload_contains_wiki_button(monkeypatch, capsys):
     assert "https://web91vfvm7.feishu.cn/wiki/wik_dry" in out
     assert "📖 查看大纲" in out
     assert "msg_type" in out and "interactive" in out
-    assert store.get_ppt_last_status(conn, "recGWg8Kb9kUDI") == ""
+    assert store.get_ppt_last_status(conn, "recStub000") == ""
     conn.close()
 
 

@@ -151,7 +151,7 @@
 
 | 环境 | 配置 / db | 凭据 / 资源 |
 |---|---|---|
-| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | MiniMax key（`MiniMax_Key` env）可占位；salon app_token/table_id 占位时 dry-run 走 stub；Wiki 若未配置则跳过写入 |
+| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | MiniMax key（`MiniMax_Key` env）可占位；salon app_token/table_id 缺失或含 `<` 占位时 dry-run 走 stub；Wiki 若未配置则跳过写入 |
 | test | `config-test.yaml` / `data/tc-test.sqlite3` | 联调真实选题 Base 与 Wiki（谨慎，会产物） |
 | prod | `config-prod.yaml` / `data/tc-prod.sqlite3` | 真实 salon 选题 Base、真实 MiniMax key、真实 Wiki space/parent |
 
@@ -412,7 +412,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 
 | 环境 | 配置 / db | 归档 Base |
 |---|---|---|
-| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | 与 test 共享 Base（「环境」列区分）；`backfill` 时 `env_name=dev` 只处理该环境行 |
+| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | 与 test 共享 Base（「环境」列区分）；`backfill` 请求带出「环境」字段，`env_name=dev` 只处理该环境行（环境缺失/为空的行不额外过滤，向后兼容） |
 | test | `config-test.yaml` / `data/tc-test.sqlite3` | 同上，`env_name=test` |
 | prod | `config-prod.yaml` / `data/tc-prod.sqlite3` | 独立 prod Base；`env_name=None`（全表） |
 
@@ -590,7 +590,7 @@ https://<host>/wiki/wiki_dry_示例话题
 
 ```json
 [
-  { "record_id": "recGWg8Kb9kUDI", "fields": { "讨论状态": ["已选题"], "话题名称": "示例已选题话题" } }
+  { "record_id": "recStub000", "fields": { "讨论状态": ["已选题"], "话题名称": "示例已选题话题" } }
 ]
 ```
 
@@ -614,7 +614,7 @@ https://<host>/wiki/wiki_dry_示例话题
 
 ### `--dry-run` 示意输出
 
-见上 dev 段：token 缺失时打印 stub 记录（`recGWg8Kb9kUDI`）；有 token 时打印真实记录的 `--dry-run` 说明为「仅打印，不校验远端副作用」。
+见上 dev 段：token 缺失时打印 stub 记录（`recStub000`）；有 token 时打印真实记录的 `--dry-run` 说明为「仅打印，不校验远端副作用」。
 
 ### 退出码
 

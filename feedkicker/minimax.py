@@ -142,18 +142,23 @@ def _parse_outline_from_response(data: Any) -> dict[str, Any]:
         content = msg.get("content") or ""
         if isinstance(content, str) and content.strip():
             content = content.strip()
-            try:
-                return json.loads(content)
-            except json.JSONDecodeError:
-                if content.startswith("```"):
-                    inner = content.strip().strip("`")
-                    if inner.startswith("json"):
-                        inner = inner[4:].strip()
-                    try:
-                        return json.loads(inner)
-                    except json.JSONDecodeError:
-                        pass
-                raise RuntimeError(f"无法解析大纲JSON，content: {content[:500]}")
+            candidates = [content]
+            if content.startswith("```"):
+                inner = content.strip().strip("`")
+                if inner.startswith("json"):
+                    inner = inner[4:].strip()
+                candidates.append(inner)
+            for cand in candidates:
+                try:
+                    parsed = json.loads(cand)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(parsed, dict):
+                    raise RuntimeError(
+                        f"content 非对象: {type(parsed).__name__}: {str(parsed)[:200]}"
+                    )
+                return parsed
+            raise RuntimeError(f"无法解析大纲JSON，content: {content[:500]}")
     base = data.get("base_resp")
     if isinstance(base, dict) and base.get("status_code") not in (None, 0):
         raise RuntimeError(f"MiniMax 返回错误: {base}")

@@ -6,7 +6,7 @@ import logging
 import sys
 from datetime import UTC, datetime, timedelta
 
-from feedkicker import bitable_records, bitable_schema, feishu, store
+from feedkicker import bitable_records, bitable_schema, feishu, feishu_card, store
 from feedkicker.config import load_config
 from feedkicker.fetch import fetch_feed
 
@@ -72,6 +72,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         top_n=top_n,
         detail_url=detail_url,
         detail_label="📰 详情见多维表格",
+        max_bytes=feishu_card._MAX_BODY_BYTES - feishu.SIGN_RESERVE_BYTES,
     )
 
     if dry_run:
