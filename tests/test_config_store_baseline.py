@@ -60,3 +60,28 @@ def test_load_config_feed_missing_url_raises(tmp_path):
     path.write_text("feeds:\n  - name: 只有名字\n", encoding="utf-8")
     with pytest.raises(ValueError, match=r"feeds\[0\] 缺少 url"):
         load_config(config_path=path, app_env="test")
+
+
+def test_load_config_duplicate_feed_names_raises(tmp_path):
+    # A2：重名会让 feed_id 抢占同一键，条目被静默覆盖丢失
+    path = tmp_path / "feeds-dup.yaml"
+    path.write_text(
+        "feeds:\n"
+        "  - name: 同名源\n    url: https://a.com/rss\n"
+        "  - name: 同名源\n    url: https://b.com/rss\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="重复"):
+        load_config(config_path=path, app_env="test")
+
+
+def test_load_config_duplicate_fallback_name_raises(tmp_path):
+    path = tmp_path / "feeds-dup-fallback.yaml"
+    path.write_text(
+        "feeds:\n"
+        "  - name: https://a.com/rss\n    url: https://a.com/rss\n"
+        "  - url: https://a.com/rss\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="重复"):
+        load_config(config_path=path, app_env="test")

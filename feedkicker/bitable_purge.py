@@ -5,7 +5,7 @@
 - 首屏 record-list 失败安全返回零删除（防误判全表过期）；
 - 仅操作传入的资讯归档 Base（cfg.bitable），不碰 salon 选题 Base；
 - 删除按 200/批 +record-delete --yes，批失败即终止；
-- 结果附 listed_ok/applied_ok，purge 依此判定是否写入 meta（#160）。
+- 结果附 listed_ok/applied_ok/complete，purge 依此判定是否写入 meta（#160/#180）。
 """
 
 from __future__ import annotations
@@ -37,11 +37,12 @@ def _pushed_date(fields: dict[str, Any]) -> str | None:
 
 def _list_records(
     app_token: str, table_id: str
-) -> tuple[list[tuple[str, dict[str, Any]]], bool]:
-    """分页拉全表，返回 ([(record_id, fields)], 首屏是否成功)。
+) -> tuple[list[tuple[str, dict[str, Any]]], bool, bool]:
+    """分页拉全表，返回 ([(record_id, fields)], 首屏成功, 全量读完)。
 
     兼容 records 包装与 fields+data 行式两种响应；中途页失败时已扫描记录
-    仍返回（删除只针对其中过期者，未扫到的留待下轮巡检）。
+    仍返回（删除只针对其中过期者，未扫到的留待下轮巡检），complete=False，
+    purge 依此不写入 meta 成功时间（#180）。
     """
     out: list[tuple[str, dict[str, Any]]] = []
     offset = 0
@@ -61,9 +62,9 @@ def _list_records(
         if not bitable._ok(proc):
             if first:
                 log.warning("purge：首屏 record-list 失败，跳过本次 bitable 清理")
-                return [], False
+                return [], False, False
             log.warning("purge：第 %d 页拉取失败，仅处理已扫描记录", offset // _CHUNK + 1)
-            return out, True
+            return out, True, False
         first = False
         data = bitable._data(proc)
         records: list[dict[str, Any]] = data.get("records") or []
@@ -73,13 +74,13 @@ def _list_records(
                 fds = rec.get("fields") or rec.get("record") or {}
                 out.append((rid, fds if isinstance(fds, dict) else {}))
             if len(records) < _CHUNK:
-                return out, True
+                return out, True, True
             offset += _CHUNK
             continue
         fields: list[Any] = data.get("fields") or []
         rows: list[Any] = data.get("data") or []
         if not fields or not rows:
-            return out, True
+            return out, True, True
         rids = data.get("record_ids") or data.get("recordIds") or data.get("ids") or []
         idx_push = fields.index("推送时间") if "推送时间" in fields else -1
         for i, r in enumerate(rows):
@@ -90,7 +91,7 @@ def _list_records(
             elif isinstance(r, list) and idx_push >= 0 and idx_push < len(r):
                 out.append((rid, {"推送时间": r[idx_push]}))
         if len(rows) < _CHUNK:
-            return out, True
+            return out, True, True
         offset += _CHUNK
 
 
@@ -101,11 +102,12 @@ class PurgeOutcome:
     scanned: int = 0
     listed_ok: bool = False
     applied_ok: bool = False
+    complete: bool = False
 
     @property
     def ok(self) -> bool:
-        """首屏可读且删除批全部成功才算整段成功（跳过/失败不给成功）。"""
-        return self.listed_ok and self.applied_ok
+        """首屏可读、全量分页读完且删除批全部成功才算整段成功。"""
+        return self.listed_ok and self.applied_ok and self.complete
 
 
 def purge_expired_records_outcome(
@@ -115,7 +117,7 @@ def purge_expired_records_outcome(
 
     dry-run 时 deleted=0；首屏 list 失败返回全零且 listed_ok=False。
     """
-    pairs, list_ok = _list_records(app_token, table_id)
+    pairs, list_ok, complete = _list_records(app_token, table_id)
     if not list_ok:
         return PurgeOutcome()
     expired: list[str] = []
@@ -127,7 +129,9 @@ def purge_expired_records_outcome(
             expired.append(rid)
     if dry_run:
         log.info("purge dry-run：扫描 %d 条，过期 %d 条（未删除）", len(pairs), len(expired))
-        return PurgeOutcome(0, len(expired), len(pairs), listed_ok=True, applied_ok=True)
+        return PurgeOutcome(
+            0, len(expired), len(pairs), listed_ok=True, applied_ok=True, complete=complete
+        )
     deleted = 0
     batch_ok = True
     for i in range(0, len(expired), _CHUNK):
@@ -148,7 +152,9 @@ def purge_expired_records_outcome(
             break
         deleted += len(batch)
     log.info("purge：扫描 %d 条，过期 %d 条，删除 %d 条", len(pairs), len(expired), deleted)
-    return PurgeOutcome(deleted, len(expired), len(pairs), listed_ok=True, applied_ok=batch_ok)
+    return PurgeOutcome(
+        deleted, len(expired), len(pairs), listed_ok=True, applied_ok=batch_ok, complete=complete
+    )
 
 
 def purge_expired_records(

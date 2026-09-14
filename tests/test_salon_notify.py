@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from feedkicker import salon_notify, store
 
 
@@ -111,6 +113,36 @@ def test_send_wiki_card_dry_run_no_send_no_sos_no_meta(monkeypatch, capsys):
     assert ok is True
     assert '"msg_type": "interactive"' in capsys.readouterr().out
     assert store.get_meta(conn, salon_notify.SALON_FAIL_STREAK_KEY, "MISSING") == "MISSING"
+    conn.close()
+
+
+def test_send_wiki_card_non_prod_warns_real_group(monkeypatch, caplog):
+    cfg = _cfg(monkeypatch)
+    cfg.app_env = "test"
+    conn = store.connect(":memory:")
+    sos_texts: list[str] = []
+    _patch_card(monkeypatch, True, sos_texts)
+
+    with caplog.at_level(logging.WARNING, logger="feedkicker.salon_notify"):
+        ok = salon_notify.send_wiki_card(cfg, conn, ["https://web91vfvm7.feishu.cn/wiki/wik1"])
+    assert ok is True
+    assert any(
+        "非 prod" in r.message and "真实飞书群" in r.message for r in caplog.records
+    )
+    conn.close()
+
+
+def test_send_wiki_card_prod_no_warning(monkeypatch, caplog):
+    cfg = _cfg(monkeypatch)
+    cfg.app_env = "prod"
+    conn = store.connect(":memory:")
+    sos_texts: list[str] = []
+    _patch_card(monkeypatch, True, sos_texts)
+
+    with caplog.at_level(logging.WARNING, logger="feedkicker.salon_notify"):
+        ok = salon_notify.send_wiki_card(cfg, conn, ["https://web91vfvm7.feishu.cn/wiki/wik1"])
+    assert ok is True
+    assert not any("非 prod" in r.message for r in caplog.records)
     conn.close()
 
 

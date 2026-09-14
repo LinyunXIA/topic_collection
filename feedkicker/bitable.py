@@ -109,7 +109,9 @@ def _parse(proc: subprocess.CompletedProcess[str] | None) -> tuple[bool, dict[st
         obj = json.loads(raw)
     except json.JSONDecodeError:
         return True, {}
-    if isinstance(obj, dict) and obj.get("ok") is False:
+    if not isinstance(obj, dict):
+        return True, {}
+    if obj.get("ok") is False:
         err = obj.get("error") or {}
         log.warning("lark-cli 业务失败: %s", str(err.get("message") or err)[:300])
         return False, {}
@@ -366,18 +368,28 @@ def purge_all_records(app_token: str, table_id: str, dry_run: bool = False) -> i
 
 
 def ensure_initialized(bt: Any, app_env: str = "prod") -> dict[str, Any]:
+    """解析/创建 Base 与数据表，并把解析结果回写到空配置字段（A1）。
+
+    push 在 sync_env 后按 bt.url/bt.app_token 重算详情按钮链接；
+    若不回写，自动解析出的 token 会丢在局部变量里，卡片退化成 …/base/。
+    """
     title = BASE_TITLES.get(app_env, BASE_TITLE_DEFAULT)
-    info: dict[str, Any] = {"app_token": bt.app_token, "table_id": bt.table_id,
-                  "url": bt.url or (base_url(bt.app_token) if bt.app_token else "")}
-    if not info["app_token"]:
-        found = find_base_by_title(title)
-        if found is None:
-            found = create_base(title, app_env)
-        info["app_token"] = found["app_token"]
-        info.setdefault("url", found.get("url") or base_url(info["app_token"]))
-    if not info["table_id"]:
-        info["table_id"] = get_table_id(info["app_token"]) or create_table(info["app_token"], app_env)
-    return info
+    app_token = bt.app_token
+    table_id = bt.table_id
+    url = bt.url or (base_url(app_token) if app_token else "")
+    if not app_token:
+        found = find_base_by_title(title) or create_base(title, app_env)
+        app_token = found["app_token"]
+        url = found.get("url") or base_url(app_token)
+    if not table_id:
+        table_id = get_table_id(app_token) or create_table(app_token, app_env)
+    if not bt.app_token:
+        bt.app_token = app_token
+    if not bt.table_id:
+        bt.table_id = table_id
+    if not bt.url:
+        bt.url = url
+    return {"app_token": app_token, "table_id": table_id, "url": url}
 
 
 def _cell(
@@ -410,6 +422,7 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
     """拉取表内全部已有链接（分页）。
 
     拉不到已有链接集合时必须中止：返回空集会让全量被当新记录写入，造成重复行。
+    兼容 records 包装与 fields+data 行式两种形态；其余形态一律抛错（A3）。
     """
     links: set[str] = set()
     offset = 0
@@ -429,11 +442,27 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
         if not _ok(proc):
             raise RuntimeError("拉取多维表格已有链接失败，中止本次同步以避免重复写入")
         data = _data(proc)
-        fields = data.get("fields") or []
+        if not isinstance(data, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise RuntimeError(f"多维表格已有链接响应不是 JSON 对象，中止本次同步: {str(data)[:200]}")
+        records = data.get("records")
+        if isinstance(records, list):
+            for rec in records:
+                fds = rec.get("fields") or rec.get("record") or {}
+                v = fds.get("链接")
+                v = v.get("link") if isinstance(v, dict) else v
+                if v:
+                    links.add(canonicalize(v))
+            if len(records) < _CHUNK:
+                break
+            offset += _CHUNK
+            continue
+        fields = data.get("fields")
+        rows = data.get("data")
+        if not isinstance(fields, list) or not isinstance(rows, list):
+            raise RuntimeError(f"多维表格已有链接响应无法识别，中止本次同步: {str(data)[:200]}")
         if "链接" not in fields:
             break
         i_link = fields.index("链接")
-        rows = data.get("data") or []
         for r in rows:
             v = r[i_link]
             v = v.get("link") if isinstance(v, dict) else v

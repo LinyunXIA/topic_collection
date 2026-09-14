@@ -7,7 +7,7 @@
 - bitable 侧按「推送时间」早于 cutoff 删记录（bitable_purge），
   仅操作 cfg.bitable 资讯归档 Base，绝不调 ensure_initialized（防误建 Base）；
 - meta purge_last_run_at 仅在真删且 bitable 段整段成功时写入
-  （跳过/首屏失败/批失败不写，与 DESIGN §20.2 一致）。
+  （跳过/首屏失败/中途分页失败/批失败不写，与 DESIGN §20.2 一致）。
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ import logging
 import sqlite3
 import sys
 from dataclasses import asdict, dataclass
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, datetime
 
-from feedkicker import bitable_purge, store
+from feedkicker import bitable, bitable_purge, store
 from feedkicker.config import Config, load_config
 
 log = logging.getLogger(__name__)
@@ -43,9 +43,14 @@ class PurgeStats:
 
 
 def cutoff_iso(days: int, now: datetime | None = None) -> str:
-    """UTC %Y-%m-%dT%H:%M:%SZ 截止串（字典序可比，先例 promise_skip_old）。"""
-    ref = now if now is not None else datetime.now(UTC)
-    return (ref - timedelta(days=days)).strftime("%Y-%m-%dT%H:%M:%SZ")
+    """上海日界截止的 UTC 瞬时串：<cutoff_date> 00:00 Asia/Shanghai。
+
+    与 bitable 侧 cutoff_date_shanghai 共用同一日期边界，消除 UTC/上海
+    ≤8h 偏差（#181）；字典序可比，先例 promise_skip_old。
+    """
+    day = bitable_purge.cutoff_date_shanghai(days, now=now)
+    ref = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=bitable.SHANGHAI)
+    return ref.astimezone(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
 
 
 def purge_sqlite(

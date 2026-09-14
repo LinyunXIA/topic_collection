@@ -111,7 +111,14 @@ def call_minimax_chat(
     raise RuntimeError("MiniMax 调用失败")
 
 
-def _parse_outline_from_response(data: dict[str, Any]) -> dict[str, Any]:
+def _parse_outline_from_response(data: Any) -> dict[str, Any]:
+    """从模型响应提取大纲对象。
+
+    非 dict 响应、或 tool_calls arguments 可解析但非 JSON 对象时抛
+    RuntimeError（salon_flow 逐题捕获跳过，不让 AttributeError 逃逸）。
+    """
+    if not isinstance(data, dict):
+        raise RuntimeError(f"MiniMax 响应非 dict: {type(data).__name__}: {str(data)[:200]}")
     choices = data.get("choices") or []
     if choices:
         msg = choices[0].get("message") or {}
@@ -123,9 +130,15 @@ def _parse_outline_from_response(data: dict[str, Any]) -> dict[str, Any]:
                 return args_raw
             if isinstance(args_raw, str) and args_raw.strip():
                 try:
-                    return json.loads(args_raw)
+                    args = json.loads(args_raw)
                 except json.JSONDecodeError as e:
                     log.warning("tool_calls arguments 非合法JSON，回落 content: %s", e)
+                else:
+                    if not isinstance(args, dict):
+                        raise RuntimeError(
+                            f"tool_calls arguments 非对象: {type(args).__name__}: {str(args)[:200]}"
+                        )
+                    return args
         content = msg.get("content") or ""
         if isinstance(content, str) and content.strip():
             content = content.strip()

@@ -496,6 +496,15 @@ def test_run_one_source_fails_others_push(monkeypatch):
     conn.close()
 
 
+def test_push_dry_run_help_documents_writes(capsys):
+    with pytest.raises(SystemExit) as exc:
+        push.main(["--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if ln.strip().startswith("--dry-run"))
+    assert "抓取" in line and "首跑" in line
+
+
 def test_main_missing_config_returns_error():
     rc = push.main(["--config", "/nonexistent/config.yaml"])
     assert rc == 2
@@ -623,6 +632,34 @@ def test_push_bitable_fail_still_sends(monkeypatch):
     actions = [el for el in sent[0]["card"]["elements"] if el.get("tag") == "action"]
     assert actions and "app-x" in actions[0]["actions"][0]["url"]
     assert len(store.select_unsynced(conn)) == 1
+    conn.close()
+
+
+def test_push_detail_url_after_auto_created_base(monkeypatch):
+    # A1：空 token 时自动找到 Base 并回写配置，详情按钮必须带真实 app_token 而非 …/base/
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.bitable.enabled = True
+    cfg.bitable.app_token = ""
+    cfg.bitable.table_id = ""
+    cfg.bitable.url = ""
+    entries = [_norm("a1 item", "https://e.com/a1")]
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    monkeypatch.setattr(
+        push.bitable, "find_base_by_title",
+        lambda title: {"app_token": "appAutoA1", "url": ""},
+    )
+    monkeypatch.setattr(push.bitable, "get_table_id", lambda tok: "tblAutoA1")
+    monkeypatch.setattr(push.bitable, "sync_records", lambda *a, **kw: True)
+    sent = []
+    monkeypatch.setattr(feishu, "send", lambda p, *a, **kw: sent.append(p) or True)
+
+    rc = push.run(cfg, conn)
+    assert rc == 0
+    actions = [el for el in sent[0]["card"]["elements"] if el.get("tag") == "action"]
+    url = actions[0]["actions"][0]["url"]
+    assert "appAutoA1" in url
+    assert not url.endswith("/base/")
     conn.close()
 
 
@@ -1022,6 +1059,30 @@ def test_bitable_sync_aborts_when_existing_links_fail(monkeypatch):
     with pytest.raises(RuntimeError, match="已有链接"):
         bitable.sync_records("app", "tbl", items)
     assert created == []
+
+
+def test_existing_links_records_shape(monkeypatch):
+    # A3：record-list 的 records 包装形态必须解析，不得静默返回空集合
+    from feedkicker import bitable
+
+    payload = {"records": [
+        {"record_id": "rec1", "fields": {"链接": {"link": "https://E.com/a#frag"}}},
+        {"record_id": "rec2", "fields": {"链接": "https://e.com/b?q=1"}},
+    ]}
+    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: FakeProc(
+        0, stdout=json.dumps({"data": payload}, ensure_ascii=False)))
+    assert bitable.existing_links("app", "tbl") == {"https://e.com/a", "https://e.com/b?q=1"}
+
+
+def test_existing_links_unknown_shape_raises(monkeypatch):
+    # A3：无法识别的响应形态必须中止（返回空集会把全量当新记录重复写入）
+    from feedkicker import bitable
+
+    for payload in ({"unexpected": []}, [1, 2]):
+        monkeypatch.setattr(bitable, "_run", lambda *a, _p=payload, **kw: FakeProc(
+            0, stdout=json.dumps({"data": _p}, ensure_ascii=False)))
+        with pytest.raises(RuntimeError, match="无法识别|不是 JSON 对象"):
+            bitable.existing_links("app", "tbl")
 
 
 def test_bitable_sync_env_ok_false_not_marked(monkeypatch):

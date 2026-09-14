@@ -232,7 +232,7 @@ def test_purge_run_apply_writes_meta_and_calls_bitable(monkeypatch):
 
     def fake_outcome(app_token, table_id, cutoff_date, dry_run=False):
         captured["args"] = (app_token, table_id, cutoff_date, dry_run)
-        return bitable_purge.PurgeOutcome(3, 5, 50, listed_ok=True, applied_ok=True)
+        return bitable_purge.PurgeOutcome(3, 5, 50, listed_ok=True, applied_ok=True, complete=True)
 
     monkeypatch.setattr(bitable_purge, "purge_expired_records_outcome", fake_outcome)
 
@@ -290,6 +290,83 @@ def test_purge_run_apply_success_writes_meta(monkeypatch):
     assert store.get_meta(conn, purge.PURGE_LAST_RUN_KEY)
 
 
+def test_purge_outcome_ok_requires_complete():
+    assert not bitable_purge.PurgeOutcome(1, 1, 1, listed_ok=True, applied_ok=True).ok
+    assert not bitable_purge.PurgeOutcome(
+        1, 1, 1, listed_ok=True, applied_ok=True, complete=False
+    ).ok
+    assert bitable_purge.PurgeOutcome(1, 1, 1, listed_ok=True, applied_ok=True, complete=True).ok
+
+
+def test_purge_run_apply_partial_page_failure_no_meta(monkeypatch):
+    calls: list[list[str]] = []
+    deletes: list[dict] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        calls.append(list(args))
+        if "+record-list" in args:
+            if sum(1 for c in calls if "+record-list" in c) == 1:
+                return FakeProc(0, stdout=page([rec(f"rec{i}", OLD_ISO) for i in range(200)]))
+            return FakeProc(1, stderr="boom")
+        if "+record-delete" in args:
+            deletes.append(json.loads(args[args.index("--json") + 1]))
+            return FakeProc(0, stdout="{}")
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable, "_run", fake_run)
+    conn = make_conn()
+    cfg = make_cfg(enabled=True, app_token="appReal", table_id="tblReal")
+
+    stats = purge.run(cfg, conn, dry_run=False, now=NOW)
+    assert (stats.bitable_deleted, stats.bitable_expired, stats.bitable_scanned) == (200, 200, 200)
+    assert len(deletes) == 1 and len(deletes[0]["record_id_list"]) == 200
+    assert store.get_meta(conn, purge.PURGE_LAST_RUN_KEY) == ""
+
+
+def test_purge_run_apply_full_two_page_walk_writes_meta(monkeypatch):
+    install_fake_lark(
+        monkeypatch,
+        [
+            page([rec(f"rec{i}", OLD_ISO) for i in range(200)]),
+            page([rec("recNew", RECENT_ISO)]),
+        ],
+    )
+    conn = make_conn()
+    cfg = make_cfg(enabled=True, app_token="appReal", table_id="tblReal")
+
+    stats = purge.run(cfg, conn, dry_run=False, now=NOW)
+    assert (stats.bitable_deleted, stats.bitable_expired, stats.bitable_scanned) == (200, 200, 201)
+    assert store.get_meta(conn, purge.PURGE_LAST_RUN_KEY)
+
+
+def test_cutoff_unified_shanghai_day_boundary(monkeypatch):
+    cutoff_date = bitable_purge.cutoff_date_shanghai(365, now=NOW)
+    assert cutoff_date == "2025-09-07"
+    assert purge.cutoff_iso(365, now=NOW) == "2025-09-06T16:00:00Z"
+
+    conn = make_conn()
+    add_article(conn, "cutoff-day", "2025-09-07T00:00:00Z", "2025-09-07T01:00:00Z")
+    add_article(conn, "day-before", "2025-09-06T15:59:59Z", "2025-09-06T16:00:00Z")
+    stats = purge.run(make_cfg(enabled=False), conn, dry_run=False, now=NOW)
+    assert stats.cutoff_iso == "2025-09-06T16:00:00Z"
+    left = {r[0] for r in conn.execute("SELECT entry_key FROM articles")}
+    assert left == {"cutoff-day"}
+
+    install_fake_lark(
+        monkeypatch,
+        [
+            page(
+                [
+                    rec("recSameDay", "2025-09-07T08:00:00+08:00"),
+                    rec("recDayBefore", "2025-09-06T23:00:00+08:00"),
+                ]
+            )
+        ],
+    )
+    _, expired, _ = bitable_purge.purge_expired_records("app", "tbl", cutoff_date, dry_run=True)
+    assert expired == 1
+
+
 def test_retention_days_default_and_override():
     assert BitableConf().retention_days == 365
     conn = make_conn()
@@ -305,7 +382,7 @@ def test_retention_days_default_and_override():
     stats2 = purge.run(make_cfg(enabled=False), conn2, dry_run=False, retention_days=30, now=NOW)
     assert stats2.retention_days == 30
     assert stats2.sqlite_deleted == 1
-    assert stats2.cutoff_iso == "2026-08-08T02:00:00Z"
+    assert stats2.cutoff_iso == "2026-08-07T16:00:00Z"
 
 
 # ── CLI ──
@@ -360,13 +437,13 @@ def test_retention_days_clamped_to_min_one():
 
     stats_zero = purge.run(make_cfg(enabled=False), conn, dry_run=True, retention_days=0, now=NOW)
     assert stats_zero.retention_days == 1
-    assert stats_zero.cutoff_iso == "2026-09-06T02:00:00Z"
+    assert stats_zero.cutoff_iso == "2026-09-05T16:00:00Z"
 
     stats_neg = purge.run(
         make_cfg(enabled=False), make_conn(), dry_run=True, retention_days=-30, now=NOW
     )
     assert stats_neg.retention_days == 1
-    assert stats_neg.cutoff_iso == "2026-09-06T02:00:00Z"
+    assert stats_neg.cutoff_iso == "2026-09-05T16:00:00Z"
 
 
 def test_purge_cli_retention_days_zero_and_negative_clamped(monkeypatch, tmp_path, capsys):

@@ -221,3 +221,29 @@ def test_ensure_initialized_reuses_found_base(monkeypatch: pytest.MonkeyPatch):
     info = bitable.ensure_initialized(_bt(), app_env="prod")
     assert info["app_token"] == "appFound"
     assert info["table_id"] == "tblFound"
+
+
+def test_ensure_initialized_writes_resolved_tokens_back(monkeypatch: pytest.MonkeyPatch):
+    # A1：自动找到/创建的 Base 必须把 token/url 回写到调用方配置，否则卡片详情按钮丢失 token
+    monkeypatch.setattr(bitable, "create_base", lambda *a, **kw: (_ for _ in ()).throw(
+        AssertionError("已找到 Base 不得重复创建")))
+    monkeypatch.setattr(
+        bitable, "find_base_by_title", lambda title: {"app_token": "appAuto", "url": ""}
+    )
+    monkeypatch.setattr(bitable, "get_table_id", lambda tok: "tblAuto")
+    bt = _bt()
+    info = bitable.ensure_initialized(bt, app_env="prod")
+    assert info["app_token"] == "appAuto"
+    assert info["table_id"] == "tblAuto"
+    assert info["url"].endswith("/base/appAuto")
+    assert bt.app_token == "appAuto"
+    assert bt.table_id == "tblAuto"
+    assert bt.url == info["url"]
+
+
+def test_parse_top_level_array_does_not_crash(monkeypatch: pytest.MonkeyPatch):
+    # A4：顶层 JSON 数组不得让 _parse 的 .get 抛 AttributeError
+    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: FakeProc(0, stdout="[1, 2]"))
+    assert bitable._parse(FakeProc(0, stdout="[1, 2]")) == (True, {})
+    assert bitable.find_base_by_title("任意标题") is None
+    assert bitable.get_table_id("appToken") is None

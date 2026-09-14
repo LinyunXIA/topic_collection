@@ -133,6 +133,21 @@ def test_fetch_selected_empty_token_raises():
         fetch_selected_topics("app", "")
 
 
+def test_fetch_selected_empty_pages_with_has_more_terminates(monkeypatch):
+    # A5：has_more 恒真 + 空页不得死循环，超安全上限必须报错中止
+    calls = {"n": 0}
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        calls["n"] += 1
+        assert calls["n"] < 300, "分页未在安全上限内终止（死循环）"
+        return FakeProc(0, stdout=json.dumps({"data": {"records": [], "has_more": True}}))
+
+    monkeypatch.setattr(topic_mod.bitable, "_run", fake_run)
+    with pytest.raises(RuntimeError, match="分页"):
+        fetch_selected_topics("app", "tbl")
+    assert calls["n"] < 300
+
+
 def test_fetch_topic_fields_validates_select(monkeypatch):
     def fake_run(args, stdin_text=None, timeout=60):
         assert "+field-list" in args

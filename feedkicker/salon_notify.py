@@ -21,6 +21,7 @@ def send_wiki_card(
 
     失败时 strip_actions 降级为纯链接卡片重试一次；仍败则 meta 连败 +1，
     达 SOS_THRESHOLD 且 webhook 非空时发纯文本求救并清零。dry-run 只打印 payload。
+    非 prod 环境且 webhook 非空时发送前 WARNING（对齐 push，防误推真实群）。
     返回 True 表示送达（或 dry-run / 无链接），False 表示最终失败。
     """
     if not wiki_urls:
@@ -30,6 +31,11 @@ def send_wiki_card(
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         log.info("dry-run 卡片预览已打印（含 %d 个 Wiki 链接）", len(wiki_urls))
         return True
+    if cfg.app_env != "prod" and cfg.feishu_webhook:
+        log.warning(
+            "环境 %s 非 prod：将向已配置的真实飞书群（webhook 非空）发送，请确认这是预期测试群",
+            cfg.app_env,
+        )
     try:
         ok = feishu.send(
             payload,
