@@ -791,6 +791,32 @@ def test_push_detail_url_recomputed_when_sync_writes_zero(monkeypatch):
     conn.close()
 
 
+def test_push_detail_url_none_when_no_token_or_url(monkeypatch):
+    """N2：enabled 但 token/url 均空且 sync_env 返回 0 时，detail_url 不得退化成 `…/base/`。"""
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.bitable.enabled = True
+    cfg.bitable.app_token = ""
+    cfg.bitable.table_id = ""
+    cfg.bitable.url = ""
+    entries = [_norm("z item", "https://e.com/z1")]
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    monkeypatch.setattr(push.bitable_records, "sync_env", lambda bt, env, c, now_iso=None: 0)
+    seen: dict = {}
+    real_build = feishu.build_card
+
+    def spy(*a, **kw):
+        seen.update(kw)
+        return real_build(*a, **kw)
+
+    monkeypatch.setattr(push.feishu, "build_card", spy)
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
+
+    assert push.run(cfg, conn) == 0
+    assert seen["detail_url"] is None
+    conn.close()
+
+
 def test_run_sos_after_three_failures(monkeypatch):
     conn = make_conn()
     cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])

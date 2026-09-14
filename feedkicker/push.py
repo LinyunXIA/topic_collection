@@ -58,7 +58,11 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     if cfg.bitable.enabled and not dry_run:
         try:
             synced_n = bitable_records.sync_env(cfg.bitable, cfg.app_env, conn, now)
-            detail_url = cfg.bitable.url or bitable_schema.base_url(cfg.bitable.app_token)
+            detail_url = (
+                (cfg.bitable.url or bitable_schema.base_url(cfg.bitable.app_token))
+                if cfg.bitable.app_token
+                else None
+            )
             if synced_n:
                 log.info("多维表格已写入 %d 条", synced_n)
         except Exception as e:  # noqa: BLE001

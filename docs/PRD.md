@@ -339,7 +339,7 @@ feeds:
 | F20 | Wiki 归档 | 单话题单 Wiki doc（含双大纲 MD 代码块），返回 wiki_url | P0 |
 | F21 | 机器人通知 | 同一 webhook，卡片含双 Wiki 链接，20KB 降级 + strip_actions + SOS 复用 | P1 |
 
-- 配置可配：`config.salon.trigger_weekday/trigger_hour/trigger_minute`（默认 4/10/0 = 周五 10:00），MiniMax Key 走 `MiniMax_Key` 环境变量覆盖
+- 配置可配：`config.salon.trigger_weekday/trigger_hour/trigger_minute`（仅记录用途，调度以 launchd `Weekday=5` 为准），MiniMax Key 走 `MiniMax_Key` 环境变量覆盖
 - 不产 PPTX，不混入 `push.py` 主流程，去重列 `ppt_synced_at`（只生成从未处理过的题目）；`ppt_last_status_{rid}` 的差异分支仅为部分写失败兜底（服务端 filter 只返回「已选题」，生产不会出现非「已选题」值），失败单条 WARNING 不阻断他条
 
 ---
