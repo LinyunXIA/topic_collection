@@ -420,6 +420,7 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
     """拉取表内全部已有链接（分页）。
 
     拉不到已有链接集合时必须中止：返回空集会让全量被当新记录写入，造成重复行。
+    兼容 records 包装与 fields+data 行式两种形态；其余形态一律抛错（A3）。
     """
     links: set[str] = set()
     offset = 0
@@ -439,11 +440,27 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
         if not _ok(proc):
             raise RuntimeError("拉取多维表格已有链接失败，中止本次同步以避免重复写入")
         data = _data(proc)
-        fields = data.get("fields") or []
+        if not isinstance(data, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
+            raise RuntimeError(f"多维表格已有链接响应不是 JSON 对象，中止本次同步: {str(data)[:200]}")
+        records = data.get("records")
+        if isinstance(records, list):
+            for rec in records:
+                fds = rec.get("fields") or rec.get("record") or {}
+                v = fds.get("链接")
+                v = v.get("link") if isinstance(v, dict) else v
+                if v:
+                    links.add(canonicalize(v))
+            if len(records) < _CHUNK:
+                break
+            offset += _CHUNK
+            continue
+        fields = data.get("fields")
+        rows = data.get("data")
+        if not isinstance(fields, list) or not isinstance(rows, list):
+            raise RuntimeError(f"多维表格已有链接响应无法识别，中止本次同步: {str(data)[:200]}")
         if "链接" not in fields:
             break
         i_link = fields.index("链接")
-        rows = data.get("data") or []
         for r in rows:
             v = r[i_link]
             v = v.get("link") if isinstance(v, dict) else v

@@ -1052,6 +1052,30 @@ def test_bitable_sync_aborts_when_existing_links_fail(monkeypatch):
     assert created == []
 
 
+def test_existing_links_records_shape(monkeypatch):
+    # A3：record-list 的 records 包装形态必须解析，不得静默返回空集合
+    from feedkicker import bitable
+
+    payload = {"records": [
+        {"record_id": "rec1", "fields": {"链接": {"link": "https://E.com/a#frag"}}},
+        {"record_id": "rec2", "fields": {"链接": "https://e.com/b?q=1"}},
+    ]}
+    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: FakeProc(
+        0, stdout=json.dumps({"data": payload}, ensure_ascii=False)))
+    assert bitable.existing_links("app", "tbl") == {"https://e.com/a", "https://e.com/b?q=1"}
+
+
+def test_existing_links_unknown_shape_raises(monkeypatch):
+    # A3：无法识别的响应形态必须中止（返回空集会把全量当新记录重复写入）
+    from feedkicker import bitable
+
+    for payload in ({"unexpected": []}, [1, 2]):
+        monkeypatch.setattr(bitable, "_run", lambda *a, _p=payload, **kw: FakeProc(
+            0, stdout=json.dumps({"data": _p}, ensure_ascii=False)))
+        with pytest.raises(RuntimeError, match="无法识别|不是 JSON 对象"):
+            bitable.existing_links("app", "tbl")
+
+
 def test_bitable_sync_env_ok_false_not_marked(monkeypatch):
     # #114：批量写入 API 报错（rc=0 + ok:false）视为失败：sync_env 抛错且不打同步标
     from feedkicker import bitable
