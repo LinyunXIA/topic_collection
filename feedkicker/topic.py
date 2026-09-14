@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from feedkicker import bitable_lark
+from feedkicker.log_setup import PLAIN_FORMAT, setup_logging
 from feedkicker.topic_records import _extract_records as _extract_records
 
 log = logging.getLogger(__name__)
@@ -153,7 +154,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check-fields", action="store_true", help="校验 讨论状态 字段类型")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    setup_logging(logging.INFO, PLAIN_FORMAT)
 
     app_token, table_id = args.app_token, args.table_id
     if not app_token or not table_id:

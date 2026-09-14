@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from feedkicker import bitable_lark, wiki_lark
 from feedkicker.feishu_host import feishu_host
+from feedkicker.log_setup import PLAIN_FORMAT, setup_logging
 
 log = logging.getLogger(__name__)
 
@@ -148,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env", default=None, choices=["dev", "test", "prod"])
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    setup_logging(logging.INFO, PLAIN_FORMAT)
 
     if args.dry_run:
         url = create_wiki_doc_from_md(

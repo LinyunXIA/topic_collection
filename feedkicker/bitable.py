@@ -54,6 +54,7 @@ from feedkicker.bitable_views import (
     set_tenant_readonly as set_tenant_readonly,
     setup_view as setup_view,
 )
+from feedkicker.log_setup import PLAIN_FORMAT, setup_logging
 
 log = logging.getLogger(__name__)
 
@@ -115,7 +116,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--dry-run", action="store_true", help="只读预览：不建 Base、不写表、不清空")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    setup_logging(logging.INFO, PLAIN_FORMAT)
     cfg = load_config(args.config, args.db, app_env=args.env)
     if not cfg.bitable.enabled:
         log.info("bitable 未启用（%s）", cfg.app_env)

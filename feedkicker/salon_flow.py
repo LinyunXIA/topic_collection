@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from feedkicker import minimax, salon_md, salon_notify, store, wiki, wiki_home
 from feedkicker.config import load_config
+from feedkicker.log_setup import setup_logging
 from feedkicker.topic import fetch_selected_topics
 
 log = logging.getLogger(__name__)
@@ -177,7 +178,7 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    setup_logging(logging.INFO)
     try:
         cfg = load_config(args.config, args.db, app_env=args.env)
     except Exception as e:  # noqa: BLE001
