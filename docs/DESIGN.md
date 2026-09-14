@@ -1024,7 +1024,7 @@ tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-s
 
 ### 25.8 清单
 
-- [ ] F28 `extract_source.py`：`ppt_synced_at IS NULL` + `COALESCE(published_at, first_seen) >= cutoff` + 升序/limit
+- [x] F28 `extract_source.py`：`ppt_synced_at IS NULL` + `COALESCE(published_at, first_seen) >= cutoff` + 升序/limit
 - [ ] F29 `extract:` 配置段 + `extract_llm.call_llm` provider 抽象（minimax/deepseek），缺 key 明确报错
 - [ ] F30 `prompts/extract.md` + `build_batch_prompt`/`parse_topics`/`merge_topics`
 - [ ] F31 `extract_write.py`：字段映射 + 「话题名称」去重 + ≤200/批；dry-run 零写
