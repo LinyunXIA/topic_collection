@@ -27,6 +27,9 @@ env/
 # ───────── Claude Code 项目配置 ─────────
 .claude/
 
+# ───────── OhMyOpenCode 会话状态 ─────────
+.omo/
+
 # ───────── 项目运行时产物（CLAUDE.md §16 目录约定） ─────────
 data/
 logs/
