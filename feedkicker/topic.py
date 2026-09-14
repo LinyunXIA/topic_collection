@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from feedkicker import bitable_lark
+from feedkicker.log_setup import PLAIN_FORMAT, setup_logging
 from feedkicker.topic_records import _extract_records as _extract_records
 
 log = logging.getLogger(__name__)
@@ -42,8 +43,8 @@ def fetch_selected_topics(
 
     响应兼容 records/items 包装与 data.fields+data.data 行式两种形态；
     空页且 has_more 非真即终止，has_more 缺失时以不足一页判定结束；
-    翻页与 bitable 各路径统一走 offset 绝对兜底 + 页指纹守卫（#245），
-    has_more 恒真或 lark-cli 忽略 --offset 都不会死循环。
+    翻页走页指纹守卫（#245）+ 页数上限（`offset // _CHUNK`，与 --limit 无关）与 offset 双兜底（#290/#N2）：
+    has_more 恒真时连续空页第 2 页即熔断；lark-cli 忽略 --offset 都不会死循环。
     """
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")
@@ -51,8 +52,10 @@ def fetch_selected_topics(
     all_records: list[dict[str, Any]] = []
     offset = 0
     prev_fp = ""
+    empty_pages = 0
     while True:
         bitable_lark._guard_offset(offset)
+        bitable_lark.guard_pages(offset // bitable_lark._CHUNK + 1)
         args = [
             "base", "+record-list",
             "--base-token", app_token,
@@ -79,9 +82,13 @@ def fetch_selected_topics(
         has_more = _has_more_of(data)
         if not chunk:
             if has_more is True:
+                empty_pages += 1
+                if empty_pages >= 2:
+                    raise RuntimeError("分页连续空页但 has_more 恒真，疑似分页异常，中止以避免死循环")
                 offset += limit
                 continue
             break
+        empty_pages = 0
         all_records.extend(chunk)
         if has_more is not None:
             if not has_more:
@@ -153,7 +160,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--check-fields", action="store_true", help="校验 讨论状态 字段类型")
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    setup_logging(logging.INFO, PLAIN_FORMAT)
 
     app_token, table_id = args.app_token, args.table_id
     if not app_token or not table_id:

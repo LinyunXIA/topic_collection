@@ -123,6 +123,29 @@ def test_salon_flow_disabled_skips_without_fetch(monkeypatch, caplog):
     conn.close()
 
 
+def test_salon_flow_disabled_dry_run_still_previews(monkeypatch, capsys):
+    """#316：salon.enabled=false 时非 dry-run 跳过，dry-run 仍出 stub 预览。"""
+    from feedkicker import salon_flow as sf
+
+    cfg = _cfg(monkeypatch)
+    cfg.salon.enabled = False
+    conn = store.connect(":memory:")
+
+    monkeypatch.setattr(sf, "fetch_selected_topics", lambda *a, **k: [
+        {"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "话题A"}},
+    ])
+    monkeypatch.setattr(
+        sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: "https://x/wiki/stub"
+    )
+
+    rc = sf.run(cfg, conn, dry_run=True)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "工具类大纲" in out and "原理类大纲" in out
+    conn.close()
+
+
 def test_salon_flow_dry_run_no_mark(monkeypatch, capsys):
     from feedkicker import salon_flow as sf
 
@@ -288,8 +311,8 @@ def test_salon_flow_skip_already_synced(monkeypatch):
     conn.close()
 
 
-def test_salon_flow_stale_last_status_partial_write_fallback_regen(monkeypatch):
-    """meta 缺/异 = 部分写失败兜底：非生产可达的真实「翻转」（#211）。"""
+def test_salon_flow_stale_last_status_with_ppt_synced_skips_regen(monkeypatch):
+    """#292：ppt_synced 已置、last_status 异值（部分写残留）时按 is_ppt_synced 跳过，不重建 Wiki。"""
     from feedkicker import salon_flow as sf
 
     cfg = _cfg(monkeypatch)
@@ -308,7 +331,7 @@ def test_salon_flow_stale_last_status_partial_write_fallback_regen(monkeypatch):
 
     sf.run(cfg, conn, dry_run=False)
     assert store.get_ppt_last_status(conn, "rec1") == "已选题"
-    # 构造态：手工写「待讨论」模拟部分写失败残留；生产服务端 filter 只返回「已选题」，真实翻转不可达（#211）
+    # 构造态：手工写「待讨论」模拟部分写失败残留；ppt_synced_at 仍在 → 按 #292 跳过
     store.set_ppt_last_status(conn, "rec1", "待讨论")
     calls = []
 
@@ -321,9 +344,8 @@ def test_salon_flow_stale_last_status_partial_write_fallback_regen(monkeypatch):
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: (wiki_calls.append(1), "https://web91vfvm7.feishu.cn/wiki/wik2")[1])
 
     sf.run(cfg, conn, dry_run=False)
-    assert calls == ["tool", "principle"]
-    assert len(wiki_calls) == 1
-    assert store.get_ppt_last_status(conn, "rec1") == "已选题"
+    assert calls == []
+    assert wiki_calls == []
     conn.close()
 
 
@@ -693,8 +715,8 @@ def test_salon_flow_wiki_nodeget_fails_nodelist_objtoken_fallback(monkeypatch):
     assert any(a[:2] == ["wiki", "+node-list"] for a in seen)
 
 
-def test_salon_flow_wiki_nodeget_fails_nodelist_title_fallback(monkeypatch):
-    """node-list 无 obj_token 匹配时按 title 命中（含 nodeToken 驼峰字段），仍回规范 /wiki/ 链接（#140）"""
+def test_salon_flow_wiki_nodeget_fails_nodelist_title_only_falls_back_docx(monkeypatch):
+    """#306：node-list 仅 title 同名（obj_token 不匹配）不得采信旧节点，回退新 docx 链接。"""
     import feedkicker.wiki as wk
     import feedkicker.wiki_lark as wl
     from feedkicker import bitable_lark
@@ -714,7 +736,8 @@ def test_salon_flow_wiki_nodeget_fails_nodelist_title_fallback(monkeypatch):
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
     url = wk.create_wiki_doc_from_md("app", "spc", "parent", "话题", "# md\n", dry_run=False, date_str="2026-09-04")
-    assert url == "https://web91vfvm7.feishu.cn/wiki/wiknode_title"
+    assert url == "https://web91vfvm7.feishu.cn/docx/docx_nl_002"
+    assert "wiknode_title" not in url
 
 
 def test_salon_flow_wiki_nodeget_fails_nodelist_failure_fallback_docx_url(monkeypatch):
@@ -739,7 +762,8 @@ def test_salon_flow_wiki_nodeget_fails_nodelist_failure_fallback_docx_url(monkey
     assert url == "https://web91vfvm7.feishu.cn/docx/docx_fb_003"
 
 
-def test_salon_flow_flip_twice_regen_with_ppt_synced(monkeypatch):
+def test_salon_flow_flip_with_ppt_synced_skips_regen(monkeypatch):
+    """#292：ppt_synced 已置时即便 last_status 翻转也跳过，不再重复建 Wiki。"""
     from feedkicker import salon_flow as sf
 
     cfg = _cfg(monkeypatch)
@@ -748,28 +772,46 @@ def test_salon_flow_flip_twice_regen_with_ppt_synced(monkeypatch):
     monkeypatch.setattr(sf.minimax, "gen_outline", lambda topic, kind="tool", api_key=None, base_url=None, model=None: {"title": "t", "slides": [{"heading": "h", "bullets": ["a"]}]})
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: "https://web91vfvm7.feishu.cn/wiki/wik1")
     monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
-    # 首次 已选题
+
     sf.run(cfg, conn, dry_run=False)
     first_synced = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recF'").fetchone()[0]
     assert first_synced is not None
-    # 翻转到 未讨论（模拟外部把 ppt_last_status 改为 未讨论，保持 ppt_synced_at 非空以触发重生成逻辑）
+
+    # 翻转到 未讨论（ppt_synced_at 仍非空）→ 按 #292 跳过，不重建
     store.set_ppt_last_status(conn, "recF", "未讨论")
-    # 再次 已选题 触发二次
     wiki2 = []
     monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: (wiki2.append(1), "https://web91vfvm7.feishu.cn/wiki/wik2")[1])
     sf.run(cfg, conn, dry_run=False)
-    assert wiki2 == [1]
-    assert store.get_ppt_last_status(conn, "recF") == "已选题"
-    second_synced = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recF'").fetchone()[0]
-    assert second_synced is not None
-    assert second_synced >= first_synced
-    # Dry-run 翻转不应改库
-    store.set_ppt_last_status(conn, "recF", "未讨论")
-    before = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recF'").fetchone()[0]
-    monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: "https://web91vfvm7.feishu.cn/wiki/wik_dry_flip")
-    sf.run(cfg, conn, dry_run=True)
-    after = conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recF'").fetchone()[0]
-    assert before == after
+
+    assert wiki2 == []
+    assert store.get_ppt_last_status(conn, "recF") == "未讨论"
+    assert conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recF'").fetchone()[0] == first_synced
+    conn.close()
+
+
+def test_salon_flow_third_segment_failure_no_rebuild(monkeypatch):
+    """#292：第三段 set_meta 失败致 last_status 留空，下一轮仍按 is_ppt_synced 跳过，不重建 Wiki。"""
+    from feedkicker import salon_flow as sf
+    from feedkicker import store_salon
+
+    cfg = _cfg(monkeypatch)
+    conn = store.connect(":memory:")
+    monkeypatch.setattr(sf, "fetch_selected_topics", lambda *a, **kw: [{"record_id": "rec3", "fields": {"讨论状态": ["已选题"], "话题名称": "T3"}}])
+    monkeypatch.setattr(sf.minimax, "gen_outline", lambda topic, kind="tool", api_key=None, base_url=None, model=None: {"title": "t", "slides": [{"heading": "h", "bullets": ["a"]}]})
+    wiki_calls: list[int] = []
+    monkeypatch.setattr(sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: (wiki_calls.append(1), "https://web91vfvm7.feishu.cn/wiki/wik3")[1])
+    monkeypatch.setattr(feishu, "send", lambda *a, **kw: True)
+    # 第三段（set_ppt_last_status 底层 set_meta）抛错，仅 WARNING 不阻断
+    monkeypatch.setattr(store_salon, "set_meta", lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("meta boom")))
+
+    sf.run(cfg, conn, dry_run=False)
+    assert store.is_ppt_synced(conn, "rec3") is True
+    assert store.get_ppt_last_status(conn, "rec3") == ""
+    assert len(wiki_calls) == 1
+
+    wiki_calls.clear()
+    sf.run(cfg, conn, dry_run=False)
+    assert wiki_calls == []
     conn.close()
 
 

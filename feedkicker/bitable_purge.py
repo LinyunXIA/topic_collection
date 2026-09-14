@@ -65,6 +65,7 @@ def _list_records(
     )
     while True:
         bitable_lark._guard_offset(offset)
+        bitable_lark.guard_pages(offset // _CHUNK + 1)
         proc = bitable_lark._run(
             [
                 "base", "+record-list",
@@ -92,7 +93,9 @@ def _list_records(
                 f"purge：record-list 响应无法识别（无 records/fields 容器），中止以免误判空表: {str(data)[:200]}"
             )
         prev_fp = bitable_lark._page_guard(prev_fp, data)
-        records: list[dict[str, Any]] = data.get("records") or []
+        records: list[Any] = data.get("records") or []
+        if records and not all(isinstance(rec, dict) for rec in records):
+            raise RuntimeError(f"purge：records 子项非 dict，中止以免误判空表: {str(records)[:200]}")
         if records:
             for rec in records:
                 rid = str(rec.get("record_id") or rec.get("id") or rec.get("recordId") or "")

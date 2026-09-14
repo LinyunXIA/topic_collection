@@ -27,8 +27,8 @@ def print_dry_run(planned: list[dict[str, Any]], skipped: list[dict[str, Any]]) 
 def print_summary(stats: dict[str, Any]) -> None:
     print(json.dumps(stats, ensure_ascii=False))
     log.info(
-        "提炼完成：模式=%s 批=%d 调用=%d 话题=%d 写入=%d 待写=%d 跳过=%d 失败批=%d 空批=%d",
+        "提炼完成：模式=%s 批=%d 调用=%d 话题=%d 写入=%d 待写=%d 跳过=%d 写入失败=%d 失败批=%d 空批=%d",
         stats["mode"], stats["batches"], stats["llm_calls"], stats["topics"],
-        stats["written"], stats["pending"], stats["skipped"], stats["failed_batches"],
-        stats["empty_batches"],
+        stats["written"], stats["pending"], stats["skipped"], stats["failed_writes"],
+        stats["failed_batches"], stats["empty_batches"],
     )

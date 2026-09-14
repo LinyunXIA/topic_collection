@@ -47,13 +47,14 @@ topic_collection/
 ├── prompts/extract.md        # 资讯→选题提炼提示词（用户原文 + 输出 JSON schema，§25）
 ├── docs/
 │   ├── PRD.md / DESIGN.md    # 产品权威 / 工程实现权威
-│   ├── CLI.md                # 7 命令命令行详解（§23 F25）
+│   ├── CLI.md                # 8 命令命令行详解（§23 F25）
 │   └── OPS.md                # 运维手册：配置/凭据、launchd、飞书坑、排障（§23 F26）
 ├── data/                     # 运行时生成：tc-{env}.sqlite3（gitignore）
 ├── logs/                     # launchd 重定向写日志（gitignore）
 ├── feedkicker/
 │   ├── config.py             # 读 config-{env}.yaml + env 覆盖 + facade re-export（§21.2）
 │   ├── config_models.py      # 路径常量与全部配置 dataclass（叶子模块，§21.2）
+│   ├── log_setup.py          # 共享日志初始化：basicConfig + 静音 httpx/httpcore（#287）
 │   ├── fetch.py              # feedparser 抓取 + 归一化
 │   ├── store.py              # sqlite 主表 + facade re-export（§21.2）
 │   ├── store_conn.py         # sqlite 连接/schema 迁移：WAL + busy_timeout（§21.2/#239）
@@ -79,8 +80,10 @@ topic_collection/
 │   ├── salon_md.py / salon_notify.py  # 大纲 markdown/stub / 卡片与连败 SOS
 │   ├── extract_source.py     # 近 N 天 RSS 行选源（F28，§25）
 │   ├── extract_llm.py        # LLM provider 抽象 / 批量提示词 / JSON 解析与多源合并（F29–F30，§25）
+│   ├── extract_parse.py      # 提示词构建与 JSON 解析（自 extract_llm 拆出，§25.4/#250）
 │   ├── extract_write.py      # 选题表字段映射 + 「资讯链接 OR 话题名称」双键去重写入（F31，§25）
 │   ├── extract_flow.py       # tc-extract 编排 + CLI（F32，§25）
+│   ├── extract_report.py     # dry-run 清单与运行统计输出（自 extract_flow 拆出，§25.6/#252）
 │   ├── push.py               # push 编排主流程
 │   └── purge.py              # tc-purge 编排：365 天滚动保留（§20）
 └── tests/                    # 全离线，subprocess/httpx 一律 mock（test_push/test_salon_*/test_purge 等）
@@ -96,7 +99,7 @@ topic_collection/
 ```yaml
 feishu_webhook: "https://open.feishu.cn/open-apis/bot/v2/hook/<token>"
 feishu_secret: "<签名密钥>"   # 机器人开启「签名校验」安全设置时的密钥；未开启则留空
-bootstrap_days: 3      # 冷启动窗口：新源首跑最多推最近 N 天
+bootstrap_days: 3      # 冷启动窗口：新源首跑最多推最近 N 天（下限 1，上限 3650，超限 rc 2）
 site:
   top_n: 5             # 摘要卡每源保留的最新条数（site 段仅此项生效；enabled 已不再被读取）
 http:
@@ -436,6 +439,8 @@ v0.2 起 macOS 用 **launchd** 取代 cron：`StartCalendarInterval` 在机器�
 
 - **全局去重**：`canonicalize(url)` 相同的条目合并为一条，主归属 = feed_order 中最靠前的源，
   其余源标注「亦见 X + Y」（修复 HN 热榜 ∩ HN AI 高赞跨源重复推送问题）
+  （site.py 已废弃；同一规则现由推送侧 `feishu_card.build_card` 在渲染层执行，#289：
+  去重先于 top_n 截断与计数，`mark_pushed` 仍按原始 pending 全量标记避免孤儿）
 - 按 feed 分组（保 config 顺序）；description `html.escape` 后原样展示；纯 stdlib 字符串模板零依赖
 - `render_index`：按日期倒序归档目录（取最近 60 天有数据的日期）
 
@@ -621,7 +626,7 @@ python -m feedkicker.sheets_archive --env prod [--init]   # [--init] 设置组�
 
 - 每周五 10:00（可配置）自动将 Tikp 多维表「AI 沙龙换题管理」(`<salon-app-token>` / `<salon-table-id>`) 中新增的「已选题」增量生成双大纲并入 Wiki
 - 仅产 Markdown 大纲（自适应 5–8 页），不产 PPTX；独立进程 `feedkicker.salon_flow`，不混入 `push.py` 编排；配置与调度可验证（`--help` / `launchctl print`）
-- 增量语义（F18，#211）：服务端 filter 只返回「已选题」，本流程只对**首次**进入「已选题」且从未处理（`ppt_synced_at IS NULL`）的题目生成；`ppt_last_status_{rid}` 的差异分支（非「已选题」→ 重生成）**仅为部分写失败兜底**（`mark_topic_archived` 三段写入单段失败可能残留异值），生产正常路径不会出现非「已选题」值。
+- 增量语义（F18，#211；#292 修订）：服务端 filter 只返回「已选题」，本流程只对**首次**进入「已选题」且从未处理（`ppt_synced_at IS NULL`）的题目生成；跳过判据**仅** `is_ppt_synced(rid)`（`ppt_synced_at IS NOT NULL`），`ppt_last_status_{rid}` 仅作诊断、**不参与**跳过判定——第三段 `mark_topic_archived` 写 `last_status` 失败不再导致下轮重建 Wiki。
 
 ### 19.2 配置（config.yaml 新增段）
 
@@ -694,14 +699,14 @@ wiki:
 
 - `feedkicker/purge.py`（CLI 编排，`tc-purge = "feedkicker.purge:main"`）：argparse 同构范式（`--apply` / `--retention-days` / `--config` / `--db` / `--env`），返回码 2=配置错误、1=异常、0=正常；末尾打印 `PurgeStats` JSON。**默认 dry-run，`--apply` 才真删**。
 - `feedkicker/bitable_purge.py`（bitable 侧清理，~130 行，新逻辑不进 bitable.py，见 §21.4）。
-- `config.BitableConf.retention_days`（默认 365，`config-{env}.yaml` 的 `bitable.retention_days` 可配，下限 1）。
+- `config.BitableConf.retention_days`（默认 365，`config-{env}.yaml` 的 `bitable.retention_days` 可配，下限 1，上限 36500，超限 `load_config` 报错 → rc 2）。
 
 ### 20.2 算法
 
 - 截止时点（统一上海日界，#181）：`cutoff_date_shanghai(days)` = 上海时区 `now - days` 的 `%Y-%m-%d` 日期串；sqlite 侧 `cutoff_iso(days)` 取该日期 `00:00 Asia/Shanghai` 的 UTC 瞬时 `%Y-%m-%dT%H:%M:%SZ`（字典序可比，先例 `promise_skip_old`）——两库同一截止日，边界当天条目均保留。
 - **sqlite**（`purge_sqlite`）：选 `pushed_at IS NOT NULL AND pushed_at < cutoff`；其中仅 `bitable_synced_at IS NOT NULL`（已在线归档）的行可删，超期未归档只计数 WARNING；dry-run 只计数，apply 才 `DELETE` + commit。salon 占位行 `pushed_at` 为 NULL，天然不匹配。
 - **bitable**（`purge_expired_records_outcome`）：`+record-list --json --limit 200 --offset N` 分页拉全表（records 包装 / fields+data 行式双形态兼容，范本 backfill），「推送时间」经 `bitable._cell_str` + `bitable._shanghai_date`（epoch 毫秒/ISO/纯日期兼容；「推送时间」为空时回退「归档日期」，#198）归一成上海日期串；dev/test 共享 Base 时请求带出「环境」字段并**仅删除 `环境 == env_name` 的行**（prod/None 全表不过滤，#208），**客户端过滤** `d < cutoff_date`（字典序；截止当天的记录保留，保守方向）；apply 按 200/批 `+record-delete --json '{"record_id_list":[...]}' --yes`，批失败即终止。返回 `(deleted, expired, scanned)`。
-- **安全条件**：bitable 段仅在 `enabled` 且 app_token/table_id 非空且不含 `<`（占位守卫）时执行；**绝不调 `ensure_initialized`**（防误建 Base）；只操作 `cfg.bitable` 资讯归档 Base，不碰 salon 选题 Base；首屏 list 失败返回 `(0,0,0)` 零删除；全量分页读完（`complete`）且删除批全部成功才写 meta `purge_last_run_at`，中途分页失败仍删已扫到的过期行但不写 meta（#180）。bitable 运维 CLI（`python -m feedkicker.bitable`）已落地同口径守卫：**非 `--init`/`--reseed`（含无 flag 与仅 `--backfill`/`--fix-archive-date`）且 token 未就绪/占位 → log.error + rc 2，不自动建 Base**；`--init`/`--reseed` 才允许创建/修复；`--reseed`/`--backfill`/`--fix-archive-date` 互斥（#224/#229）；`--reseed` 先 reset 同步标记再清表，dev/test 按「环境」列**仅清本环境行**、prod 全清，任一批失败即 rc 2 中止（#218）；dev/test 下「环境」为空或不匹配的行保守保留不删但记 WARNING（#235）。
+- **安全条件**：bitable 段仅在 `enabled` 且 app_token/table_id 非空且不含 `<`（占位守卫）时执行；**绝不调 `ensure_initialized`**（防误建 Base）；只操作 `cfg.bitable` 资讯归档 Base，不碰 salon 选题 Base；首屏 list 失败返回 `(0,0,0)` 零删除；全量分页读完（`complete`）且删除批全部成功才写 meta `purge_last_run_at`，中途分页失败仍删已扫到的过期行但不写 meta（#180）。bitable 运维 CLI（`python -m feedkicker.bitable`）已落地同口径守卫：**非 `--init`/`--reseed`（含无 flag 与仅 `--backfill`/`--fix-archive-date`）且 token 未就绪/占位 → log.error + rc 2，不自动建 Base**；`--init`/`--reseed` 才允许创建/修复（`--init` 遇 `<...>` 占位 token 亦 rc 2，#262）；`--reseed`/`--backfill`/`--fix-archive-date` 互斥（#224/#229）；`--reseed` 先 reset 同步标记再清表，dev/test 按「环境」列**仅清本环境行**、prod 全清，任一批失败即 rc 2 中止（#218）；dev/test 下「环境」为空或不匹配的行保守保留不删但记 WARNING（#235）。
 
 ### 20.3 调度（launchd，每月 1 号 dry-run 巡检）
 
@@ -745,7 +750,7 @@ wiki:
 
 - **OBS1（P2）卡片连败 SOS**：Wiki 大纲卡片推送从「strip_actions 重试 1 次 + WARNING、`run()` 恒返回 0」对齐 push.py 的成熟模式——失败累计 meta `salon_fail_streak`，连续 3 次且 webhook 非空时发纯文本 SOS（`feishu.send_text`，文案含「连续 N 次」与最近一班 Wiki 已建成的提示）后清零；成功即清零（有旧值记恢复日志）。逻辑收敛在 `salon_notify.send_wiki_card(cfg, conn, wiki_urls, dry_run) -> bool`，`salon_flow.run()` 据返回值返回 0/1（卡片最终失败 rc=1，launchd 记失败，与 push 一致）。
 - **OBS2（P2）dry-run 不得计费**：`--dry-run` 无条件使用 `salon_md.stub_outlines(title)` 占位大纲（5 页工具/原理页，标题含「工具类大纲」标记），不再因配置了真实 MiniMax key 而发起计费调用（原先每题 2 次）。测试以「gen_outline 被调即抛 AssertionError」做真守卫（旧守卫的 AssertionError 被 broad except 吞掉而假通过）。
-- **OBS3（P3）死逻辑移除**：`_unsynced_keys` 的 if/else 两分支都赋 `ppt_synced_is_null=True`，整段删除；同步判定改为单一来源 `store.is_ppt_synced(conn, rid)`（`ppt_synced_at IS NOT NULL`），死代码 `select_pushed_since` / `select_unsynced_topics` 一并删除；`ppt_last_status_{rid}` 差异分支语义见 §19.1（#211）。
+- **OBS3（P3）死逻辑移除**：`_unsynced_keys` 的 if/else 两分支都赋 `ppt_synced_is_null=True`，整段删除；同步判定改为单一来源 `store.is_ppt_synced(conn, rid)`（`ppt_synced_at IS NOT NULL`），死代码 `select_pushed_since` / `select_unsynced_topics` 一并删除；跳过判据仅 `is_ppt_synced`，`ppt_last_status` 仅作诊断、不参与跳过判定（#292，见 §19.1）。
 
 ### 21.2 模块拆分（依赖单向无环）
 
@@ -891,19 +896,19 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 | 交付物 | 路径 | 定位 | 对应功能 | PRD |
 |---|---|---|---|---|
 | 项目总览 | `README.md`（根） | 新读者入口：定位/环境/安装/配置概览/快速上手/命令总览/导航 | F24 | §20 |
-| 命令行详解 | `docs/CLI.md` | 7 命令 × dev/test/prod，参数/退出码/副作用/dry-run/错误码 | F25 | §20 |
+| 命令行详解 | `docs/CLI.md` | 8 命令 × dev/test/prod，参数/退出码/副作用/dry-run/错误码 | F25 | §20 |
 | 运维手册 | `docs/OPS.md` | 配置与凭据、launchd 定时、飞书三坑、排障、环境纪律 | F26 | §20 |
 
 ### 23.2 各文档定位与结构
 
-- **README（F24）**：一句话定位 → 架构一句话（链 §1）→ 运行环境（Python ≥3.12 / 仓库内 `.venv` / 外部 `lark-cli` 已登录）→ 安装（`pip install -e .[dev]`）→ 配置与凭据概览（三份 `config-{env}.yaml` + 覆盖顺序一行 + 细节链 OPS）→ 快速上手（dev `--dry-run` 跑通 `tc-push`）→ 7 命令总览表（锚点链 `docs/CLI.md`）→ 目录导航（README/CLI/OPS/PRD/DESIGN/AGENTS）。保持入口性，不铺开逐命令细节。
+- **README（F24）**：一句话定位 → 架构一句话（链 §1）→ 运行环境（Python ≥3.12 / 仓库内 `.venv` / 外部 `lark-cli` 已登录）→ 安装（`pip install -e .[dev]`）→ 配置与凭据概览（三份 `config-{env}.yaml` + 覆盖顺序一行 + 细节链 OPS）→ 快速上手（dev `--dry-run` 跑通 `tc-push`）→ 8 命令总览表（锚点链 `docs/CLI.md`）→ 目录导航（README/CLI/OPS/PRD/DESIGN/AGENTS）。保持入口性，不铺开逐命令细节。
 - **CLI（F25，核心）**：顶部「通用约定」（env 覆盖顺序 `--db` > `TC_DB` > `--env` > `TC_APP_ENV` > prod；`--env dev|test|prod`；`--config`/`--db`；**prod 示例一律 `--dry-run`**、真跑单列标 ⚠️；脱敏规则）。每命令一节：① 用途 + DESIGN 章节号；② 参数表（flag / 类型 / 默认 / 覆盖关系 / 说明，取自 argparse）；③ 环境差异（config / `data/tc-{env}.sqlite3` / 凭据）；④ dev/test/prod 三示例（示意输出 + 退出码 + 副作用）；⑤ `--dry-run` 示意输出；⑥ 注意/坑。附录：错误码对照表（11246 / 131005 / >20KB，取自代码与 AGENTS.md，不臆造）。
 - **OPS（F26）**：① 配置（三份 yaml 字段对齐 `config_models.py` dataclass + `.example` 引用 + 覆盖顺序 + db 分流）；② 凭据（`FEISHU_WEBHOOK`/`FEISHU_SECRET`/`MiniMax_Key`/`TC_SALON_TOKEN`；yaml gitignored；prod 与 dev-test 双 Base，dev/test 共享文件用「环境」列区分）；③ launchd 三 plist（push 8:30/16:00、salon 周五 10:00、purge 每月 1 号 10:30 仅 dry-run）+ `launchctl bootout && bootstrap`；④ 飞书三坑；⑤ 排障（症状→排查→处置）；⑥ 环境分级纪律（prod 默认禁写；purge `--apply` 必须人工）。引用 §4/§8/§9/§16/§20 + AGENTS.md。
 
 ### 23.3 清单
 
 - [x] F24 `README.md`：定位/环境/安装/配置概览/快速上手/命令总览表/目录导航
-- [x] F25 `docs/CLI.md`：7 命令详解 + dev/test/prod 示例 + 错误码附录（参数/默认/退出码经 `--help`+源码核对）
+- [x] F25 `docs/CLI.md`：8 命令详解 + dev/test/prod 示例 + 错误码附录（参数/默认/退出码经 `--help`+源码核对）
 - [x] F26 `docs/OPS.md`：配置/凭据/launchd/飞书三坑/排障/环境纪律
 - [x] F27 三件套一致性自检（独立后续任务，2026-09-14 完成）
 
@@ -924,16 +929,19 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 - **`canonicalize` 键规则漂移**：省略默认端口/保留 userinfo 等归一变更会让 guid-less 源旧行 `entry_key` 与新 key 不一致，升级首轮可能重复推卡一次（一次性影响）。
 - **`is_ppt_synced` 无 feed 过滤**：仅按 `entry_key` 判定，理论碰撞才误伤；实际 `entry_key` 为 URL/guid，不会跨源碰撞。
 - **salon 全失败返回码不变**：`selected` 非空且**有尝试**但 0 条成功时仅 `log.warning`（salon_flow），rc 仍 0，不触发 SOS；稳态全跳过（去重命中）不再误报（#237）。
+- **接受项（记录不修）**：① 超大 `detail_url` 时 `build_card` 不保证 ≤20KB（`detail_url` 由 config 控制、现实值远小于预算；本轮只保证常规条目路径 ≤20KB，#239）；② `is_ppt_synced` 无 feed 过滤（理论碰撞，见上）；③ `select_pending` 无 lease + `mark_pushed` 无条件（数据流见 §1）→ 并发/人工重叠可能重复推送，需运行级锁方免，本机单进程运维下视为取舍；④ `#265/#274` 对「rc0 非 JSON / `data=={}`」硬 raise（安全方向：宁可中止也不误删/误写）。
 
 ### 24.2 第五轮审计修复语义补充（#231–#239，2026-09-14）
 
-- **分页防死循环改为页指纹**（#232/#243/#245）：`bitable_lark._page_guard` 以本页 id 集合的 sorted 指纹、无 id 时按行内容排序哈希比对上一页，相同即判 `--offset` 被忽略并中止（行序抖动不再漏检）；绝对兜底 = `_CHUNK × _MAX_PAGES` = 20 万 offset（1000 页，仅防指纹失效），`topic.fetch_selected_topics` 与 bitable 各路径统一使用，合法大表（≥20200 行）不再误杀。`bitable --backfill` 异常捕获后 log.error + rc 2（不再冒 traceback）；缺 lark-cli 时 `bitable.main` 非 dry-run 路径提前 rc 2、`backfill_empty_archive_dates` 直接 raise（不再静默 rc0，dry-run 预览降级 WARNING）。
+- **分页防死循环改为页指纹**（#232/#243/#245）：`bitable_lark._page_guard` 以本页 record id 集合的 sorted 指纹比对上一页，相同即判 `--offset` 被忽略并中止（行序抖动不再漏检）；（#290 起）`bitable_lark.guard_pages` 以 `_MAX_PAGES`=1000 做页数上限（与 `--limit` 无关，各分页路径统一调用）叠加 `_guard_offset` 的 `_CHUNK × _MAX_PAGES` = 20 万 offset 天花板；`topic.fetch_selected_topics` 另对「空页 + `has_more` 恒真」第 2 页即熔断。（#303）指纹**仅基于 record id**（`records`/`items`/顶层 ids），无 id 返回 `""` 不熔断——原先的 `data` 行内容哈希会让「同值满页」的均匀表被误判为未翻页而永久无法归档/清理，有界性交给 `guard_pages`。`bitable --backfill` 异常捕获后 log.error + rc 2（不再冒 traceback）；缺 lark-cli 时 `bitable.main` 非 dry-run 路径提前 rc 2、`backfill_empty_archive_dates` 直接 raise（不再静默 rc0，dry-run 预览降级 WARNING）。
 - **salon 逐题隔离**（#234）：`build_combined_md` 纳入逐题 try，`outline_to_md` 对 `slides`/`bullets`/`speaker_note` 类型归一（slides 非列表显式 raise 由逐题 try 跳过），单条坏 LLM 响应只 WARNING，不拖垮整批、不丢通知。
 - **reseed/markdown/existing_links 健壮性**（#235/#242）：dev/test reseed 对「环境」为空/不匹配行保守保留并 WARNING（§20）；prod markdown 路径仅当存在数据行却解析零 record id 时判 `ok=False` 中止（整页删净后重拉只剩表头属正常空表，`ok=True` 不再误阻断，#242）；fields+data 行式缺「链接」字段且有行时 raise（不静默空集）。
 - **脱敏 canary 哈希化**（#236）：真实 prod record id 不再以明文（含拼接）留在 tracked；测试改为 sha256 比对 + 长 token 无匹配断言，非 git 工作树显式失败（OPS §2.2 同口径记录）。
 - **边界**（#237/#244）：topic 响应容器异常（顶层非 dict / records 非空但非 list[dict] / data 非 list）抛 `RuntimeError` 中止，真正空页才返回 `[]`（#244 收紧 #237 的「空页 + WARNING」吞错）；salon 记录 skipped/attempted 计数；缺 lark-cli 时 `_run` 返回 None、`wiki.main` 统一 rc 2 不 traceback；`wiki_home` space/parent 复用「空或含 `<`」占位守卫 rc 2；minimax 成功码 `"0"` 归一为 0（`_parse_outline_from_response` 复用同款归一，#245）。
 - **配置/并发**（#239）：`feishu_webhook`/`feishu_secret` 的 `<...>` 占位在 `load_config` 统一清空（send 层判空即跳过）；`store_conn.connect` 设 `busy_timeout=5000` + `journal_mode=WAL`，ALTER 迁移容忍 duplicate column。
-- **接受项（记录不修）**：① 超大 `detail_url` 时 `build_card` 不保证 ≤20KB（`detail_url` 由 config 控制、现实值远小于预算；本轮只保证常规条目路径 ≤20KB，#239）；② `is_ppt_synced` 无 feed 过滤（理论碰撞，见 §24.1）。
+### 24.3 第六轮审计修复登记（#262–#283，2026-09-14）
+
+第六轮全量审计（P2×7 + P3×15）修复落于 commit #286（P2 批 + P3 批 + 独立验证补遗）。行为要点：base 解析 / `--init` 占位 rc2（#262）；空大纲守卫（#263）；extract 去重索引（#264）；响应容器异常硬 raise（#265）；分页/解析健壮性（#269/#270/#271）；dry-run 可见性（#272）；`bootstrap_days` 下限（#273）；`fields+data` 行式守卫（#274/#275）；`fields` 非 `list[dict]` 统一 raise（#276）；`has_more` 归一（#277）；`sqlite_expired_archivable` 巡检可见（#278）；`detail_url` 防御（#279）；`salon.enabled=false` 可见（#280）；占位 token 守卫（#281/#282）；dry-run 零写同源（#283）。
 
 ---
 
@@ -959,9 +967,11 @@ select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(p
 | 模块 | 职责 | 关键接口 |
 |---|---|---|
 | `extract_source.py` | sqlite 选源 | `select_source(conn, since_days, limit=None, now=None)` |
-| `extract_llm.py` | provider 抽象 + 提示词/解析 + 批量提炼编排 | `call_llm(cfg, prompt) -> str`、`build_batch_prompt(template, items)`、`parse_topics(raw) -> (list[dict], dropped)`、`merge_topics(topics) -> list[dict]`、`refine_batches(ex, template, batches, max_calls) -> (topics, calls, failed, empty)`、`resolve_provider(cfg, name=None)` |
-| `extract_write.py` | 字段映射与写入 | `existing_index(app_token, table_id) -> tuple[set[str], set[str]]`、`build_record(topic, provider_label, run_date, status="未讨论") -> dict`、`write_topics(...) -> tuple[int, int]` |
+| `extract_parse.py` | 提示词构建与 JSON 解析（自 extract_llm 拆出，#250） | `build_batch_prompt(template, items)`、`parse_topics(raw) -> (list[dict], dropped)`、`merge_topics(topics) -> list[dict]` |
+| `extract_llm.py` | provider 抽象 + 批量提炼编排 | `call_llm(cfg, prompt) -> str`、`refine_batches(ex, template, batches, max_calls) -> (topics, calls, failed, empty)`、`resolve_provider(cfg, name=None)` |
+| `extract_write.py` | 字段映射与写入 | `existing_index(app_token, table_id) -> tuple[set[str], set[str]]`、`build_record(topic, provider_label, run_date, status="未讨论") -> dict`、`write_topics(...) -> tuple[int, int, int]` |
 | `extract_flow.py` | 编排 + CLI | `run(cfg, conn, *, apply, since_days=None, limit=None, batch_size=None, max_calls=None, provider=None) -> int`、`main(argv) -> int` |
+| `extract_report.py` | dry-run 清单与运行统计输出（自 extract_flow 拆出，#252） | `print_dry_run(planned, skipped)`、`print_summary(stats)` |
 
 - provider 注册表（`extract_llm.PROVIDERS`）：`minimax`（base_url `https://api.minimaxi.com/v1`、model `MiniMax-M3`、key env `MiniMax_Key`/`MINIMAX_API_KEY`、tool_label `MMax`）、`deepseek`（base_url `https://api.deepseek.com/v1`、model `deepseek-chat`、key env `DEEPSEEK_API_KEY`、tool_label `DS`）；`tool_label` 必须是 salon 表 `提取工具` select 字段的**表内已有选项**（`MMax`/`DS`，`飞书` 留给人工路径）；yaml `providers.<name>` 非空字段覆盖注册表默认。
 - 调用形态统一 OpenAI 兼容 `POST {base_url}/chat/completions`，取 `choices[0].message.content` 原始文本返回；`_post_chat` **单次尝试**：超时/HTTP 429/529/业务可重试码（1002/1004/1039）抛可重试 `RuntimeError`，重试仅由 `refine_batches` 外层做 1 次（总 HTTP ≤2/批，单层重试，PRV-8）；缺 key/占位 key 抛 `RuntimeError` 且**不发起 HTTP**。
@@ -1017,6 +1027,7 @@ tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-s
 ```
 
 - 默认 dry-run：打印合并后的待写清单（逐条 `[将写入]`/`[已存在跳过]` 前缀标注，数量与 summary `pending`/`skipped` 同源一致）与统计（批数/调用数/话题数/将写/将跳过/失败批/空批 `empty_batches`），**零写调用**。
+- `--since-days` 取值 1..3650（对齐 `extract_source.MAX_SINCE_DAYS`，#269）；越界 rc 2，不发 HTTP。
 - `--provider`：单次运行覆盖 `extract.provider`（缺省取配置，默认 `minimax`）；choices 由 `extract_llm.PROVIDERS` 注册表键动态给出；`run` 用 `dataclasses.replace` 构造有效 `ex`，`resolve_provider`/`refine_batches`（内含 `call_llm`）与 `提取工具` 均取该 provider（minimax→`MMax`，deepseek→`DS`），运行日志打印实际 provider。
 - `--apply`：写入 `cfg.salon.app_token/table_id`（不调 `ensure_initialized`，不改表结构）。
 - 退出码：2 配置错（config 加载失败 / prompt 文件缺失 / `--provider` 未知 / provider 未注册 / 所选 provider 缺 key（配置与 env 均无，不发起 HTTP）/ salon token 占位或缺失）；1 未捕获异常；0 正常（含部分批失败跳过）。

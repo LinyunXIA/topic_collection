@@ -75,6 +75,8 @@ def ensure_archive_date_field(app_token: str, table_id: str) -> bool:
     if bitable_lark._ok(proc):
         d = bitable_lark._data(proc)
         items = d.get("fields") or d.get("items") or []
+        if not isinstance(items, list) or not all(isinstance(f, dict) for f in items):
+            raise RuntimeError(f"field-list 响应 fields 非 list[dict]: {str(items)[:200]}")
         for f in items:
             names.add(f.get("field_name") or f.get("name"))
     if "归档日期" in names:

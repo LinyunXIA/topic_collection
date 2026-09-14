@@ -11,6 +11,7 @@ from zoneinfo import ZoneInfo
 
 from feedkicker import bitable_lark, wiki_lark
 from feedkicker.feishu_host import feishu_host
+from feedkicker.log_setup import PLAIN_FORMAT, setup_logging
 
 log = logging.getLogger(__name__)
 
@@ -85,7 +86,7 @@ def create_wiki_doc_from_md(
 
     流程：``docs +create --parent-token``（取 data.document.document_id）→
     ``wiki +node-get`` 反查 node_token（新建秒级传播延迟 131005，失败时降级）→
-    ``wiki +node-list`` 按 obj_token/title 命中（#140）→ 仍失败回退 /docx/ 并发 WARNING。
+    ``wiki +node-list`` 仅按 obj_token 命中（title-only 不采信，防命中同名旧节点，#306）→ 仍失败回退 /docx/ 并发 WARNING。
     非 dry-run 且 space_id/parent 为空或占位直接抛 RuntimeError（不建孤儿 docx）。
     app_token 保留入参兼容调用方，lark-cli 自行鉴权；``drive +upload`` 只产 file 附件（#133）。
     """
@@ -121,7 +122,7 @@ def create_wiki_doc_from_md(
             nodes = wiki_lark.parse_node_list(wiki_lark.lark_node_list(space_id, parent_wiki_token))
             hit = next(
                 (n for n in nodes if (n.get("obj_token") or n.get("objToken")) == doc_id),
-                next((n for n in nodes if n.get("title") == doc_title), None),
+                None,
             )
             cand = (hit.get("node_token") or hit.get("nodeToken")) if hit is not None else None
             if isinstance(cand, str) and cand:
@@ -148,7 +149,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--env", default=None, choices=["dev", "test", "prod"])
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    setup_logging(logging.INFO, PLAIN_FORMAT)
 
     if args.dry_run:
         url = create_wiki_doc_from_md(

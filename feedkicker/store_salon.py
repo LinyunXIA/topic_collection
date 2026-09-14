@@ -72,7 +72,7 @@ def mark_topic_archived(
 
     三段写入各自独立 try/except：单段失败只 WARNING，不影响已建成的 Wiki 与卡片推送；
     INSERT 直接写 ppt_synced_at=now（不等第二步 mark 成功，否则 mark 失败会泄漏进 push/归档，#221）；
-    last_status 只在「已选题」被处理时写，差异分支仅兜底部分写失败（#211，语义见 PRD §17）。
+    第三段 set_ppt_last_status 仅为诊断留存：跳过判据只看 is_ppt_synced，第三段失败不再致下轮重建 Wiki（#292）。
     """
     try:
         exists = conn.execute(

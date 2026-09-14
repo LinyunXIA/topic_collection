@@ -68,7 +68,7 @@
 |---|---|---|---|
 | dev | `config-dev.yaml` | `data/tc-dev.sqlite3` | webhook/secret 为占位或留空（不推真实群）；bitable 与 dev/test 共享 Base，用「环境」列区分 |
 | test | `config-test.yaml` | `data/tc-test.sqlite3` | 同上；用于联调真实归档与卡片 |
-| prod | `config-prod.yaml` | `data/tc-prod.sqlite3` | 真实 webhook/secret；独立 prod Base；完整源清单、`bootstrap_days=3` |
+| prod | `config-prod.yaml` | `data/tc-prod.sqlite3` | 真实 webhook/secret；独立 prod Base；完整源清单、`bootstrap_days=3`（下限 1，上限 3650） |
 
 ### 示例
 
@@ -228,7 +228,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 | flag | 类型 | 默认 | 覆盖关系 | 说明 |
 |---|---|---|---|---|
 | `--apply` | store_true | 关（即默认 dry-run） | — | 真删；缺省仅 dry-run 巡检 |
-| `--retention-days` | int | `None`（取 `config.bitable.retention_days=365`） | 覆盖配置值（下限 1） | 保留天数 |
+| `--retention-days` | int | `None`（取 `config.bitable.retention_days=365`） | 覆盖配置值（下限 1，上限 36500，超限 rc 2） | 保留天数 |
 | `--config` | str | `None` | 覆盖 `--env` 推导 | 指定 `config-{env}.yaml` 路径 |
 | `--db` | str | `None` | 覆盖 `TC_DB` 与 `--env` 推导 | sqlite 路径 |
 | `--env` | choice `{dev,test,prod}` | `None`（回落 prod） | 覆盖 `TC_APP_ENV` | 决定默认配置与 db 路径 |
@@ -259,12 +259,15 @@ https://<host>/wiki/wiki_dry_示例已选题话题
   "cutoff_date_shanghai": "2025-09-14",
   "sqlite_deleted": 0,
   "sqlite_expired_unarchived": 0,
+  "sqlite_expired_archivable": 0,
   "bitable_scanned": 120,
   "bitable_expired": 0,
   "bitable_deleted": 0,
   "bitable_skipped_reason": ""
 }
 ```
+
+`sqlite_expired_archivable`：超期且已归档、本可删除的行数（dry-run 下仍计数，供巡检可见，#278）。
 
 退出码：`0`。副作用：无（只计数不删）。
 
@@ -321,7 +324,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 |---|---|---|---|---|
 | `--apply` | store_true | 关（即默认 dry-run） | 与 `--dry-run` 互斥 | 执行多维表格写入 |
 | `--dry-run` | store_true | 关（默认行为） | 与 `--apply` 互斥 | 仅打印待写清单，零写调用 |
-| `--since-days` | 正整数 | `None`（取 `extract.since_days=7`） | 覆盖配置 | 时间窗天数（边界含当天） |
+| `--since-days` | 正整数 | `None`（取 `extract.since_days=7`） | 覆盖配置 | 时间窗天数（边界含当天；取值 1..3650，#269） |
 | `--limit` | 正整数 | `None`（不限） | — | 最多处理的 RSS 行数 |
 | `--batch-size` | 正整数 | `None`（取 `extract.batch_size=30`） | 覆盖配置 | 每批条数（每批一次 LLM 调用） |
 | `--max-calls` | 非负整数 | `None`（取 `extract.max_calls=0`） | 覆盖配置 | LLM 调用上限，`0`=不限；达限停止剩余批 |
@@ -569,14 +572,14 @@ dry-run：跳过 sync_env（不写记录）
 
 ### 退出码
 
-`0` = 正常 / 未启用 / dry-run；`2` = `--reseed` 但 Base 未配置或为占位 token（拒绝执行，防「先建后清」），或**非 `--init`/`--reseed`（含无 flag 与仅 `--backfill`/`--fix-archive-date`）且 `app_token`/`table_id` 未就绪/占位**（log.error，不自动建 Base），或互斥 flag 同时给出（argparse usage 错误）；配置加载异常未捕获，进程以 Python 异常非 0 结束。
+`0` = 正常 / 未启用 / dry-run；`2` = `--reseed` 但 Base 未配置或为占位 token（拒绝执行，防「先建后清」），或 `--init` 时 `app_token`/`table_id` 仍为 `<...>` 占位（#262），或**非 `--init`/`--reseed`（含无 flag 与仅 `--backfill`/`--fix-archive-date`）且 `app_token`/`table_id` 未就绪/占位**（log.error，不自动建 Base），或互斥 flag 同时给出（argparse usage 错误）；配置加载异常未捕获，进程以 Python 异常非 0 结束。
 
 ### 注意 / 坑
 
 - `bitable.enabled=false` 时直接 `return 0`（日志 `bitable 未启用`）。
 - `--reseed` 要求既有且非占位 `app_token`/`table_id`，否则返回 2；执行顺序为**先 reset 本地同步标记 → 按环境清表 → sync_env**，清表任一批失败即 log.error + rc 2 中止（标记已清，下轮可自愈重灌）。
 - `--backfill` 与 `--fix-archive-date` 等价；`--reseed`/`--backfill`/`--fix-archive-date` 三者互斥，同时给会以 usage 错误退出 rc `2`。
-- 无 flag 或仅回填类 flag 且 token 空/占位时 log.error + rc `2`（**不自动建 Base**）；仅 `--init`/`--reseed` 允许创建/修复 Base。
+- 无 flag 或仅回填类 flag 且 token 空/占位时 log.error + rc `2`（**不自动建 Base**）；仅 `--init`/`--reseed` 允许创建/修复 Base；`--init` 遇 `<...>` 占位 token 亦 rc `2`（#262）。
 - 占位 token（含 `<`）在 dry-run 下只提示「跳过预览」。
 
 ---
@@ -733,7 +736,7 @@ https://<host>/wiki/wiki_dry_示例话题
 
 - 无 `--config`/`--db`；token 只能走 `--env` 配置或显式参数。
 - `--check-fields` 会校验「讨论状态」字段类型（select/multiSelect 等视为合法），字段缺失或类型异常仅 WARNING。
-- 分页与 bitable 路径统一：页指纹熔断（lark-cli 忽略 `--offset` 时第 2 页即报错）+ 20 万 offset 绝对兜底（`_CHUNK × _MAX_PAGES`），`has_more` 恒真时不会死循环（#245）。
+- 分页与 bitable 路径统一：页指纹熔断（lark-cli 忽略 `--offset` 时重复页即报错）+ 页数上限 `_MAX_PAGES`=1000（与 `--limit` 无关）与 20 万 offset（`_CHUNK × _MAX_PAGES`）双兜底；`has_more` 恒真 + 连续空页时第 2 页即熔断（#290），不会死循环。
 
 ---
 

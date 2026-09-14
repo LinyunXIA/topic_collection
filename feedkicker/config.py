@@ -21,11 +21,17 @@ from feedkicker.config_models import (
     SiteConf as SiteConf,
     WikiConf as WikiConf,
     env_key_for as env_key_for,
+    warn_unknown_keys as warn_unknown_keys,
 )
 
 
 def db_path_for(app_env: str) -> Path:
     return PROJECT_ROOT / "data" / f"tc-{app_env}.sqlite3"
+
+
+MAX_BOOTSTRAP_DAYS = 3650
+
+MAX_RETENTION_DAYS = 36500
 
 
 def config_path_for(app_env: str) -> Path:
@@ -66,10 +72,15 @@ def load_config(
         )
 
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if isinstance(raw, dict):
+        warn_unknown_keys(raw)
     cfg = Config(app_env=env)
     cfg.feishu_webhook = str(raw.get("feishu_webhook") or "")
     cfg.feishu_secret = str(raw.get("feishu_secret") or "")
-    cfg.bootstrap_days = max(1, int(raw.get("bootstrap_days", cfg.bootstrap_days)))
+    boot_days = max(1, int(raw.get("bootstrap_days", cfg.bootstrap_days)))
+    if boot_days > MAX_BOOTSTRAP_DAYS:
+        raise ValueError(f"bootstrap_days={boot_days} 超过上界 {MAX_BOOTSTRAP_DAYS}（对齐 extract_source.MAX_SINCE_DAYS）")
+    cfg.bootstrap_days = boot_days
 
     http_raw = raw.get("http") or {}
     cfg.http = HttpConf(
@@ -96,12 +107,15 @@ def load_config(
     cfg.site = SiteConf(top_n=max(1, int(site_raw.get("top_n", cfg.site.top_n))))
 
     bt_raw = raw.get("bitable") or {}
+    retention = max(1, int(bt_raw.get("retention_days", cfg.bitable.retention_days)))
+    if retention > MAX_RETENTION_DAYS:
+        raise ValueError(f"bitable.retention_days={retention} 超过上界 {MAX_RETENTION_DAYS}（对齐 purge）")
     cfg.bitable = BitableConf(
         enabled=bool(bt_raw.get("enabled", cfg.bitable.enabled)),
         app_token=str(bt_raw.get("app_token") or ""),
         table_id=str(bt_raw.get("table_id") or ""),
         url=str(bt_raw.get("url") or ""),
-        retention_days=max(1, int(bt_raw.get("retention_days", cfg.bitable.retention_days))),
+        retention_days=retention,
     )
 
     salon_raw = raw.get("salon") or {}
@@ -159,9 +173,9 @@ def load_config(
     if env_secret:
         cfg.feishu_secret = env_secret
 
-    if cfg.feishu_webhook.strip().startswith("<"):
+    if "<" in cfg.feishu_webhook:
         cfg.feishu_webhook = ""
-    if cfg.feishu_secret.strip().startswith("<"):
+    if "<" in cfg.feishu_secret:
         cfg.feishu_secret = ""
 
     env_db = os.environ.get("TC_DB")

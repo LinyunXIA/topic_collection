@@ -9,6 +9,7 @@ from datetime import UTC, datetime, timedelta
 from feedkicker import bitable_records, bitable_schema, feishu, store
 from feedkicker.config import load_config
 from feedkicker.fetch import fetch_feed
+from feedkicker.log_setup import setup_logging
 
 log = logging.getLogger(__name__)
 
@@ -31,13 +32,13 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         try:
             entries = fetch_feed(feed.url, cfg.http)
             store.download(conn, feed.name, entries, now)
-            ok_feeds.append(feed.name)
             store.clear_fail(conn, feed.name)
             if store.is_first_run(conn, feed.name):
                 cutoff = (now_dt - timedelta(days=cfg.bootstrap_days)).strftime(
                     "%Y-%m-%dT%H:%M:%SZ"
                 )
                 store.promise_skip_old(conn, feed.name, cutoff, now)
+            ok_feeds.append(feed.name)
         except Exception as e:  # noqa: BLE001
             feed_fails += 1
             store.bump_fail(conn, feed.name, feed.url)
@@ -125,14 +126,17 @@ def run(cfg, conn, dry_run: bool = False) -> int:
                 if detail_url
                 else f"⚠️ feedkicker 连续 {streak} 次推送失败，请检查机器人状态。最近一班 {len(pending)} 条已入档。"
             )
-            feishu.send_text(
+            sos_ok = feishu.send_text(
                 sos,
                 cfg.feishu_webhook,
                 cfg.http.timeout_seconds,
                 cfg.http.user_agent,
                 secret=cfg.feishu_secret,
             )
-            store.set_meta(conn, PUSH_FAIL_STREAK_KEY, "0")
+            if sos_ok:
+                store.set_meta(conn, PUSH_FAIL_STREAK_KEY, "0")
+            else:
+                log.warning("求救纯文本发送失败，保留连败计数 %d（下轮重试）", streak)
 
     store.update_first_run_all(conn, ok_feed_objs, now)
     return 0 if ok else 1
@@ -158,9 +162,7 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(
-        level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s"
-    )
+    setup_logging(logging.INFO)
     try:
         cfg = load_config(args.config, args.db, app_env=args.env)
     except Exception as e:  # noqa: BLE001

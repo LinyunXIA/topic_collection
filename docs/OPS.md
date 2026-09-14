@@ -19,6 +19,8 @@
 
 `config-dev.yaml` / `config-test.yaml` / `config-prod.yaml` **全部 gitignored**，真实凭据只存本地文件或环境变量。三份各有 `.example` 模板（`config-{dev,test,prod}.yaml.example`，入库）可复制起步。
 
+> **安装方式**：仅支持 editable 安装（`pip install -e '.[dev]'`）；`config-*.yaml`、`prompts/` 位于仓库根（包外），非 editable 安装不随包分发、运行时不可用。
+
 未指定 `--config` 时按环境推导默认文件；默认配置锚定仓库根，不随调用方 cwd 漂移（`config_path_for`，DESIGN §4）。
 
 ### 1.2 覆盖顺序
@@ -57,7 +59,7 @@
 | 段 | 字段（默认） |
 |---|---|
 | `bitable` | `enabled=False`、`app_token=""`、`table_id=""`、`url=""`、`retention_days=365` |
-| `salon` | `enabled=False`、`app_token=""`、`table_id=""`、`wiki_space_id=""`、`wiki_parent_token=""`、`trigger_weekday=4`、`trigger_hour=10`、`trigger_minute=0` |
+| `salon` | `enabled=False`、`app_token=""`、`table_id=""`、`wiki_space_id=""`、`wiki_parent_token=""`、`trigger_weekday=4`、`trigger_hour=10`、`trigger_minute=0`（**`trigger_*` 仅记录用途，不参与调度；调度以 launchd `Weekday=5` 为准**） |
 | `minimax` | `api_key=""`、`model="MiniMax-M3"`、`base_url="https://api.minimaxi.com"` |
 | `wiki` | `space_id=""`、`parent_token=""`、`app_token=""`（未配置时回退 `salon.wiki_space_id`/`salon.wiki_parent_token`） |
 | `extract` | `enabled=False`、`since_days=7`、`batch_size=30`、`provider="minimax"`、`prompt_file="prompts/extract.md"`、`max_calls=0`（0=不限）、`providers=dict[str, ProviderConf]`（`base_url`/`model`/`api_key`/`tool_label`） |

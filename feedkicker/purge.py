@@ -22,7 +22,8 @@ from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 
 from feedkicker import bitable, bitable_purge, store
-from feedkicker.config import Config, load_config
+from feedkicker.config import MAX_RETENTION_DAYS, Config, load_config
+from feedkicker.log_setup import setup_logging
 
 log = logging.getLogger(__name__)
 
@@ -166,7 +167,10 @@ def main(argv: list[str] | None = None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    setup_logging(logging.INFO)
+    if args.retention_days is not None and args.retention_days > MAX_RETENTION_DAYS:
+        log.error("--retention-days 超过上界 %d：%s", MAX_RETENTION_DAYS, args.retention_days)
+        return 2
     try:
         cfg = load_config(args.config, args.db, app_env=args.env)
     except Exception as e:  # noqa: BLE001

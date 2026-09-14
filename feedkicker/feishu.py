@@ -32,6 +32,17 @@ from feedkicker.feishu_card import (
 log = logging.getLogger(__name__)
 
 
+def _is_zero_code(code: Any) -> bool:
+    """业务码判定：数值 0 与字符串 `"0"` 均视为成功，其余（含 None/非法串/非零）失败（#N10）。
+
+    飞书实测返回数值 0，字符串形态属理论反向风险；对齐 minimax 的成功码归一思路。
+    """
+    try:
+        return int(str(code).strip()) == 0
+    except (TypeError, ValueError):
+        return False
+
+
 def gen_sign(timestamp: str, secret: str) -> str:
     string_to_sign = f"{timestamp}\n{secret}"
     hmac_code = hmac.new(
@@ -67,8 +78,11 @@ def _post(
             log.warning("推送失败：HTTP %d", resp.status_code)
             return False
         data = resp.json()
-        code = data.get("StatusCode", data.get("code", 0))
-        if code != 0:
+        if not isinstance(data, dict) or ("StatusCode" not in data and "code" not in data):
+            log.warning("推送响应缺少 StatusCode/code 业务码，视为失败：%s", data)
+            return False
+        code = data["StatusCode"] if "StatusCode" in data else data["code"]
+        if not _is_zero_code(code):
             log.warning("推送被飞书拒绝，业务码非 0：%s", data)
             return False
         return True

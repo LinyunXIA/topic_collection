@@ -3,18 +3,16 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from feedkicker import bitable_lark
-from feedkicker.extract_parse import _str_list, topic_key
+from feedkicker.extract_parse import _str_list, md_link_tokens, topic_key
 from feedkicker.fetch import canonicalize
 from feedkicker.topic_records import _extract_records
 
 log = logging.getLogger(__name__)
 
-_MD_LINK = re.compile(r"\[(?P<inner>.*?)\]\((?P<target>.*?)\)", re.DOTALL)
 _TRACKING = {"spm", "from", "fbclid", "gclid", "ref", "ref_src", "source", "mc_cid", "mc_eid"}
 
 
@@ -42,15 +40,13 @@ def link_keys(raw: Any) -> set[str]:
     """把表内/候选的 `资讯链接` 原值归一为去重键集合（`existing_index`/`plan_writes` 共用）。
 
     真跑表内值常是 markdown 包裹 + 换行拼接 + tracking 参数的单字符串（旧 `canonicalize(str)`
-    永不命中，skipped=0 已证）：**只取 markdown 目标 URL**（`[标签](url)` 不得把标签当 URL，
-    相邻多链接各取各，#270）→ 按空白拆多个 URL → `_link_key` 去 tracking（`utm_*` 与常见
-    广告参数）并保留有意义 query；非 markdown 原值按空白直接拆；详见 DESIGN §25.5。
+    永不命中，skipped=0 已证）：目标 URL 由 `md_link_tokens` 按括号平衡扫描（任意嵌套，#N4）、
+    标签不当 URL（#270）、相邻/混排各取各（#288）→ `_link_key` 去 tracking（`utm_*` 与常见
+    广告参数）并保留有意义 query；详见 DESIGN §25.5。
     """
     keys: set[str] = set()
     for item in _str_list(raw):
-        targets = [m.group("target") for m in _MD_LINK.finditer(item)]
-        text = "\n".join(targets) if targets else item
-        for url in text.split():
+        for url in md_link_tokens(item):
             if key := _link_key(url):
                 keys.add(key)
     return keys
@@ -70,6 +66,7 @@ def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
     prev_fp = ""
     while True:
         bitable_lark._guard_offset(offset)
+        bitable_lark.guard_pages(offset // bitable_lark._CHUNK + 1)
         proc = bitable_lark._run(
             [
                 "base", "+record-list",
@@ -94,8 +91,8 @@ def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
         has_rec = isinstance(data.get("records"), list) or isinstance(data.get("items"), list)
         if not (has_rec or (fields_list and isinstance(data.get("data"), list))):
             raise RuntimeError(f"选题表响应无法识别（无 records/items 或 fields+data 容器），中止写入以避免重复行: {str(data)[:200]}")
-        if not (data.get("records") or data.get("items")) and fields_list and fields_raw and "话题名称" not in fields_raw:
-            raise RuntimeError("选题表响应为 fields+data 形态但缺「话题名称」列，中止写入以避免重复行")
+        if not (data.get("records") or data.get("items")) and fields_list and data.get("data") and "话题名称" not in fields_raw:
+            raise RuntimeError("选题表响应为 fields+data 形态但缺「话题名称」列（含空 fields 有数据行），中止写入以避免重复行")
         records = _extract_records(data)
         for rec in records:
             fields = rec.get("fields") or {}
@@ -138,7 +135,7 @@ def plan_writes(
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     """去重规划：返回 (将写入记录, 将跳过记录)，`write_topics` 与 dry-run 打印共用（标注/计数/写入同源）。
 
-    双键：话题名归一或任一 `资讯链接` 归一命中表内/本批已见即跳过；两者皆无才写（本批内同链接亦跳过）。
+    双键：话题名归一或任一 `资讯链接` 归一命中表内/本批已见即跳过；跳过项也须并入本批 seen 集合（否则按名跳过后同链接会误写，#293）。
     """
     picked: list[dict[str, Any]] = []
     skipped: list[dict[str, Any]] = []
@@ -147,18 +144,17 @@ def plan_writes(
     for topic in topics:
         key = topic_key(topic.get("话题名称"))
         links = link_keys(topic.get("资讯链接"))
-        if (
+        hit = (
             not key
             or key in existing_names
             or key in seen_names
             or bool(links & existing_links)
             or bool(links & seen_links)
-        ):
-            skipped.append(build_record(topic, provider_label, run_date))
-            continue
-        seen_names.add(key)
+        )
+        if key:
+            seen_names.add(key)
         seen_links |= links
-        picked.append(build_record(topic, provider_label, run_date))
+        (skipped if hit else picked).append(build_record(topic, provider_label, run_date))
     return picked, skipped
 
 
@@ -168,10 +164,11 @@ def write_topics(
     topics: list[dict[str, Any]],
     provider_label: str,
     run_date: str,
-) -> tuple[int, int]:
+) -> tuple[int, int, int]:
     """按双键查重跳过（幂等）后真写；dry-run 由 `extract_flow` 走 `existing_index`+`plan_writes`（#283）。
 
-    真写走 +record-batch-create ≤200/批；块失败 WARNING 后继续，返回实际成功数。
+    真写走 +record-batch-create ≤200/批；块失败 WARNING 后继续，返回 `(written, skipped, failed)`
+    （failed = picked − written，使 summary 的 written+skipped+failed == topics，#298）。
     """
     if not app_token or not table_id:
         raise RuntimeError("写入选题表需要 app_token 与 table_id（salon 配置段）")
@@ -195,4 +192,4 @@ def write_topics(
             log.warning("选题批量写入失败（第 %d 批 %d 条）", i // bitable_lark._CHUNK + 1, len(chunk))
             continue
         written += len(chunk)
-    return written, len(skipped)
+    return written, len(skipped), len(picked) - written

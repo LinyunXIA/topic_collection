@@ -28,7 +28,7 @@ v2 **重开 = 瘦身**。真正的起点比 v1 小一个数量级：**不是一�
 
 ### Phase 映射与当前阶段
 
-本 PRD 按 Phase 1/2/3（含各阶段「+」）组织，正文保持 §13 起的版本增量结构，映射如下：
+本 PRD 按 Phase 1–4（含各阶段「+」）组织，正文保持 §13 起的版本增量结构，映射如下：
 
 | Phase | 对应版本 | 特性 | 状态 |
 |---|---|---|---|
@@ -373,12 +373,12 @@ feeds:
 
 ## 20. v0.7+ 增量（2026-09-14）— 项目文档三件套（F24–F27）
 
-仓库当前无 README，`docs/` 仅有 PRD/DESIGN/AUDIT（面向设计与审计），日常操作靠 `AGENTS.md` 命令速查，缺「按环境展开 + 带预期输出/退出码/错误码对照」的操作手册。本增量补齐**面向运维的项目文档三件套**，核心是**命令行详解**（7 命令 × dev/test/prod 三环境示例）。
+仓库当前无 README，`docs/` 仅有 PRD/DESIGN/AUDIT（面向设计与审计），日常操作靠 `AGENTS.md` 命令速查，缺「按环境展开 + 带预期输出/退出码/错误码对照」的操作手册。本增量补齐**面向运维的项目文档三件套**，核心是**命令行详解**（8 命令 × dev/test/prod 三环境示例）。
 
 | # | 特性 | 验收要点 | 优先级 |
 |---|---|---|---|
-| F24 | README 总览与快速上手 | 根 `README.md`：一句话定位 + 架构一句话（链 DESIGN §1）、运行环境（Python ≥3.12 / 仓库内 `.venv` / 外部 `lark-cli` 已登录）、安装、配置与凭据概览（三份 `config-{env}.yaml` + 覆盖顺序）、dev `--dry-run` 跑通 `tc-push` 的最小步骤、7 命令总览表（链 CLI.md 锚点）、目录导航 | P2 |
-| F25 | 命令行详解（7 命令） | `docs/CLI.md`：`tc-push`/`tc-salon`/`tc-purge`/`feedkicker.wiki_home`/`.bitable`/`.wiki`/`.topic` 逐命令分节——用途 + DESIGN 章节号、参数表（源码 argparse + `--help` 实跑）、dev/test/prod 环境差异、三环境示例（示意输出 + 退出码 + 副作用）、`--dry-run` 输出、注意/坑；附录错误码对照（11246/131005/>20KB） | P2 |
+| F24 | README 总览与快速上手 | 根 `README.md`：一句话定位 + 架构一句话（链 DESIGN §1）、运行环境（Python ≥3.12 / 仓库内 `.venv` / 外部 `lark-cli` 已登录）、安装、配置与凭据概览（三份 `config-{env}.yaml` + 覆盖顺序）、dev `--dry-run` 跑通 `tc-push` 的最小步骤、8 命令总览表（链 CLI.md 锚点）、目录导航 | P2 |
+| F25 | 命令行详解（8 命令） | `docs/CLI.md`：`tc-push`/`tc-salon`/`tc-purge`/`feedkicker.wiki_home`/`.bitable`/`.wiki`/`.topic` 逐命令分节——用途 + DESIGN 章节号、参数表（源码 argparse + `--help` 实跑）、dev/test/prod 环境差异、三环境示例（示意输出 + 退出码 + 副作用）、`--dry-run` 输出、注意/坑；附录错误码对照（11246/131005/>20KB） | P2 |
 | F26 | 运维手册 | `docs/OPS.md`：配置（对齐 `config_models.py` dataclass + `.example` + 覆盖顺序 + db 分流）、凭据（`FEISHU_WEBHOOK`/`FEISHU_SECRET`/`MiniMax_Key`/`TC_SALON_TOKEN`；yaml gitignored；prod 与 dev/test 双 Base）、launchd 三个 plist（push 8:30/16:00、salon 周五 10:00、purge 每月 1 号 10:30 仅 dry-run）+ 重载步骤、飞书三坑、排障（症状→排查→处置）、环境分级纪律 | P2 |
 | F27 | 三件套一致性自检 | README/CLI/OPS 与代码行为一致（参数/默认值/退出码经 `--help` + 源码核对）、交叉引用有效、无真实凭据泄漏 | P3 |
 
@@ -388,7 +388,7 @@ feeds:
 
 ---
 
-## 21. v0.8 增量（2026-09-14）— 资讯→选题 LLM 提炼（F28–F32）
+## 21. v0.8 增量（2026-09-14）— 资讯→选题 LLM 提炼（F28–F37）
 
 把本地 sqlite 中**最近 7 天**（`extract.since_days` 可配）的 RSS 资讯，按提示词分批交给 LLM，**先整合去重、再提炼**候选话题，写入「AI 沙龙换题管理」的「沙龙话题清单」（`cfg.salon`）。落实提示词要求的「写前确认」：默认 **dry-run 打印完整待写清单**，`--apply` 才执行多维表格写操作。
 
@@ -396,9 +396,14 @@ feeds:
 |---|---|---|---|
 | F28 | 数据源与时间窗 | `extract_source.select_source`：`ppt_synced_at IS NULL`（排除 salon 占位行）、`COALESCE(published_at, first_seen) >= cutoff`（cutoff = UTC now − N 天，边界含当天）、时间升序 + `limit` | P1 |
 | F29 | LLM provider 抽象 + `extract:` 配置段 | `ExtractConf`（since_days/batch_size/provider/prompt_file/max_calls）+ `providers` 子段（base_url/model/api_key/tool_label）；`call_llm` 按 `extract.provider` 分派，**MiniMax / DeepSeek 双 provider 均已实现**（`--provider deepseek` 可用，见 F37）；缺 key/占位 key 明确报错且**不发起调用** | P1 |
-| F30 | 批量提炼（提示词 + schema + 整合去重） | `prompts/extract.md`（用户提示词原文 + 输出 JSON schema）；按 `batch_size` 分批，每批一次 LLM 调用；`parse_topics` 容忍 ```json 围栏、非法 JSON/缺字段返回 `[]`（调用方 WARNING 跳过）；同话题多来源 `资讯链接`/`出处来源` 合并去重 | P1 |
+| F30 | 批量提炼（提示词 + schema + 整合去重） | `prompts/extract.md`（用户提示词原文 + 输出 JSON schema）；按 `batch_size` 分批，每批一次 LLM 调用；非法 JSON/顶层非对象/`topics` 非列表 → `parse_topics` raise `ValueError`，编排层重试 1 次，两次都失败才计 `failed_batches` 并 WARNING 跳过，不抛到运行级；单个 topic 缺 5 键 → 丢弃该条并 `dropped` 计数；同话题多来源 `资讯链接`/`出处来源` 合并去重 | P1 |
 | F31 | 写入选题表（字段映射 + 去重跳过） | `extract_write`：按**「归一话题名 OR 归一资讯链接」双键**拉既有集合命中跳过（幂等）；字段 `话题名称`/`可使用工具`/`相关AI原理`=LLM、`资讯链接`/`出处来源`=换行拼接、`提炼日期`=运行日（上海）、`讨论状态=未讨论`、`提取工具`=provider 映射；`+record-batch-create` ≤200/批；dry-run **零写调用** | P1 |
 | F32 | CLI `tc-extract` + 文档/测试 | 默认 `--dry-run`、`--apply` 才写；`--since-days`/`--limit`/`--batch-size`/`--max-calls`/`--provider {deepseek,minimax}`（默认取 config `extract.provider`，默认 minimax）/`--env`/`--config`/`--db`；串行 + 单批失败重试 1 次后跳过并汇总 WARNING；`max_calls` 达限停止；rc 2 配置错 / 1 异常 / 0 正常；CLI.md/OPS.md 补条目 | P1 |
+| F33 | 提示词过滤版本/发布类公告 | `prompts/extract.md`：过滤仅版本/发布类公告，`可使用工具` 不得是模型名/版本号（#255/#256） | P2 |
+| F34 | 提示词过滤不可演示工具 | 增加「现场可演示」过滤（排除复杂/专有环境等不可演示工具，#257） | P2 |
+| F35 | 解析失败重试 + dry-run 标注 | `refine_batches` 解析失败重试 1 次；dry-run 清单 `[将写入]`/`[已存在跳过]` 标注（#258） | P2 |
+| F36 | 提示词禁用评测基准/榜单 | `可使用工具` 不得为评测基准/榜单/数据集（#259） | P2 |
+| F37 | `--provider` 单次切换 | `tc-extract --provider {minimax,deepseek}` 单次运行切换 provider（#261） | P2 |
 
 提示词（用户给定，原文，落 `prompts/extract.md`）：
 

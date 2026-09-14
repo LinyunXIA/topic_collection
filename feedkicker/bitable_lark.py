@@ -45,10 +45,20 @@ def _guard_offset(offset: int) -> None:
         )
 
 
+def guard_pages(pages: int) -> None:
+    """页数兜底（与 `--limit` 无关，_MAX_PAGES=1000）：offset 天花板不是唯一兜底（#290）。"""
+    if pages > _MAX_PAGES:
+        raise RuntimeError(
+            f"分页超过页数上限 {_MAX_PAGES}（与 --limit 无关），疑似未按 --offset 翻页，中止以避免死循环"
+        )
+
+
 def _page_fingerprint(page: Any) -> str:
-    """本页指纹：id 集合取 sorted sha1（无序化），无 id 时对行内容排序后 sha1。
+    """本页指纹：仅基于 record id 集合的 sorted sha1（无序化）。
 
     CLI 忽略 --offset 且每次打乱行序时，保序指纹永不命中；无序化后第 2 页即熔断（#243）。
+    无任何 id 时返回 ""（不熔断）——曾按 `data` 行内容哈希兜底，会让「同值满页」的表被
+    误判为未翻页而永久无法归档/清理（#303）；有界性交给 `guard_pages` 页数上限。
     """
     if not isinstance(page, dict):
         return ""
@@ -66,10 +76,6 @@ def _page_fingerprint(page: Any) -> str:
     ids = [str(i) for i in top_ids if i] if isinstance(top_ids, list) else []
     if ids:
         return hashlib.sha1("|".join(sorted(ids)).encode()).hexdigest()
-    rows = page.get("data")
-    if isinstance(rows, list) and rows:
-        canon = sorted(json.dumps(r, ensure_ascii=False, sort_keys=True) for r in rows)
-        return hashlib.sha1("\n".join(canon).encode()).hexdigest()
     return ""
 
 

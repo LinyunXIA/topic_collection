@@ -40,7 +40,8 @@ def parse_topics(raw: str) -> tuple[list[dict[str, Any]], int]:
     """解析 LLM 原始文本，返回 `(topics, dropped)`。
 
     JSON 非法 / 顶层非对象 / `topics` 非列表 → raise ValueError（调用方计失败批）；
-    单个 topic 非对象或缺 5 键 → 丢弃该条、dropped 计数并 WARNING，不整批弃（PRV-6）。
+    单个 topic 非对象 / 缺 5 键 / 名称 NFKC 归一后为空 → 丢弃该条、dropped 计数并 WARNING，
+    不整批弃（PRV-6）；空白名同样计 dropped，不得静默丢弃（#294）。
     """
     obj = _load_json_obj(raw)
     if obj is None:
@@ -54,9 +55,13 @@ def parse_topics(raw: str) -> tuple[list[dict[str, Any]], int]:
         if not isinstance(item, dict) or any(k not in item for k in _REQUIRED_KEYS):
             dropped += 1
             continue
+        name = str(item.get("话题名称") or "").strip()
+        if not topic_key(name):
+            dropped += 1
+            continue
         parsed.append(
             {
-                "话题名称": str(item.get("话题名称") or "").strip(),
+                "话题名称": name,
                 "可使用工具": str(item.get("可使用工具") or "").strip(),
                 "相关AI原理": str(item.get("相关AI原理") or "").strip(),
                 "资讯链接": _str_list(item.get("资讯链接")),
@@ -64,7 +69,7 @@ def parse_topics(raw: str) -> tuple[list[dict[str, Any]], int]:
             }
         )
     if dropped:
-        log.warning("丢弃 %d 条非法 topic（非对象或缺 5 键）", dropped)
+        log.warning("丢弃 %d 条非法 topic（非对象/缺 5 键/空白名）", dropped)
     return merge_topics(parsed), dropped
 
 
@@ -130,3 +135,37 @@ def _str_list(value: Any) -> list[str]:
             seen.add(v)
             out.append(v)
     return out
+
+
+def md_link_tokens(text: str) -> list[str]:
+    """把 markdown 链接目标与余文裸链拆成 token 列表（`_link_key` 归一前，供 `link_keys`）。
+
+    目标自 `](` 起按**括号平衡**扫描，支持任意嵌套深度（`…/a_(b_(c))`，#N4）；标签文本
+    `[..]` 不参与（`[标签](url)` 不得把标签当 URL，#270）；相邻/混排链接各取各、裸链不丢
+    （#270/#288）。
+    """
+    tokens: list[str] = []
+    rest: list[str] = []
+    i = 0
+    while True:
+        at = text.find("](", i)
+        if at < 0:
+            rest.append(text[i:])
+            break
+        start = text.rfind("[", i, at)
+        if start < 0:
+            rest.append(text[i : at + 2])
+            i = at + 2
+            continue
+        depth, j = 1, at + 2
+        while j < len(text) and depth:
+            depth += (text[j] == "(") - (text[j] == ")")
+            j += 1
+        if depth:
+            rest.append(text[i:])
+            break
+        tokens.extend(text[at + 2 : j - 1].split())
+        rest.append(text[i:start])
+        i = j
+    tokens.extend("".join(rest).split())
+    return tokens

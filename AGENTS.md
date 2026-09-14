@@ -9,7 +9,7 @@
 ## 命令
 
 ```bash
-.venv/bin/python -m pytest -q                 # 510 用例全离线，<1s；变慢=打真网了，必须修
+.venv/bin/python -m pytest -q                 # 566 用例全离线，<1s；变慢=打真网了，必须修
 .venv/bin/ruff check .                        # 0 errors（配置见 pyproject [tool.ruff]）
 .venv/bin/basedpyright                        # 0 errors（JSON 边界噪音规则已降级，DESIGN §21.3）
 .venv/bin/tc-push [--env dev|test|prod] [--dry-run]
@@ -17,7 +17,9 @@
 .venv/bin/tc-purge [--env dev|test|prod] [--apply] [--retention-days N]  # 默认 dry-run
 .venv/bin/tc-extract [--env dev|test|prod] [--dry-run|--apply] [--provider minimax|deepseek]   # 默认 dry-run
 .venv/bin/python -m feedkicker.wiki_home [--env prod] [--dry-run]   # 重建 Wiki 首页大纲索引（§22）
-.venv/bin/python -m feedkicker.bitable --env prod [--init|--reseed]   # 归档运维
+.venv/bin/python -m feedkicker.bitable --env prod [--init|--reseed|--backfill|--fix-archive-date]   # 归档运维（--backfill/--fix-archive-date 互斥于 --reseed）
+.venv/bin/python -m feedkicker.wiki [--env prod] [--dry-run]          # 单篇 Wiki docx 创建（联调，§19.5）
+.venv/bin/python -m feedkicker.topic [--env prod] [--limit N]         # 已选题分页拉取（只读）
 ```
 
 - Python ≥3.12，用仓库内 `.venv`；依赖改动后 `pip install -e .[dev]`。
@@ -38,7 +40,7 @@
 
 - `mark_pushed` 在**发送成功后**才执行：失败条目保留待推，下轮重发卡片。
 - 归档同步失败只 WARNING，卡片照发（表格是常驻档案，链接永远有效）。
-- 跨源去重键 = `canonicalize(url)`：去 fragment、host 小写、**保留 query**；推送侧和归档侧都靠它。
+- 跨源去重键 = `canonicalize(url)`：去 fragment、host 小写、**保留 query**；归档侧与推送侧都靠它。推送侧在渲染层（`feishu_card.build_card`）全局去重：**主归属取 `feed_order` 中最早出现的源，其余源标「亦见 X + Y」**；`mark_pushed` 仍以原始 pending 为准（全部标记，不留孤儿）。
 
 ## 飞书自定义机器人三坑（实测踩过）
 

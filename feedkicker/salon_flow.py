@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 
 from feedkicker import minimax, salon_md, salon_notify, store, wiki, wiki_home
 from feedkicker.config import load_config
+from feedkicker.log_setup import setup_logging
 from feedkicker.topic import fetch_selected_topics
 
 log = logging.getLogger(__name__)
@@ -20,8 +21,9 @@ def _token_missing(value: str) -> bool:
 
 def run(cfg, conn, dry_run: bool = False) -> int:
     if not cfg.salon.enabled:
-        log.warning("salon.enabled=false，跳过周五大纲流程")
-        return 0
+        log.warning("salon.enabled=false：%s", "dry-run 继续 stub 预览" if dry_run else "跳过周五大纲流程")
+        if not dry_run:
+            return 0
     app_token, table_id = cfg.salon.app_token, cfg.salon.table_id
     if (_token_missing(app_token) or _token_missing(table_id)) and dry_run:
         selected = [
@@ -65,10 +67,8 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             continue
 
         last_status = store.get_ppt_last_status(conn, rid)
-        ppt_synced_is_null = not store.is_ppt_synced(conn, rid)
-
-        if not ppt_synced_is_null and last_status == "已选题":
-            log.info("跳过已处理 %s (last_status=已选题)", rid)
+        if store.is_ppt_synced(conn, rid):
+            log.info("跳过已处理 %s (last_status=%s)", rid, last_status)
             skipped += 1
             continue
 
@@ -177,7 +177,7 @@ def main(argv=None) -> int:
     )
     args = parser.parse_args(argv)
 
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s %(message)s")
+    setup_logging(logging.INFO)
     try:
         cfg = load_config(args.config, args.db, app_env=args.env)
     except Exception as e:  # noqa: BLE001

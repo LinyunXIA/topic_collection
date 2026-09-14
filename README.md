@@ -31,6 +31,8 @@ cd /Users/linyunxia/PycharmProjects/topic_collection
 .venv/bin/pip install -e '.[dev]'
 ```
 
+> **仅支持 editable 安装**（`pip install -e`）：`prompts/`、`config-*.yaml` 位于包外（仓库根），非 editable 安装（普通 `pip install .`）不随包分发、运行时不可用。
+
 依赖改动后重跑该命令。自检三件套：
 
 ```bash

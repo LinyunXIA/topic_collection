@@ -2,9 +2,50 @@
 
 from __future__ import annotations
 
+import logging
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
+
+log = logging.getLogger(__name__)
+
+_KNOWN_TOP_KEYS = frozenset([
+    "feishu_webhook", "feishu_secret", "bootstrap_days", "http", "feeds",
+    "site", "bitable", "salon", "minimax", "wiki", "extract",
+])
+
+_KNOWN_SECTION_KEYS = {
+    "http": ("timeout_seconds", "user_agent"),
+    "site": ("top_n",),
+    "bitable": ("enabled", "app_token", "table_id", "url", "retention_days"),
+    "salon": (
+        "enabled", "app_token", "table_id", "wiki_space_id", "wiki_parent_token",
+        "trigger_weekday", "trigger_hour", "trigger_minute",
+    ),
+    "minimax": ("api_key", "model", "base_url"),
+    "wiki": ("space_id", "parent_token", "app_token"),
+    "extract": (
+        "enabled", "since_days", "batch_size", "provider", "prompt_file", "max_calls", "providers",
+    ),
+}
+
+
+def warn_unknown_keys(raw: dict[str, Any]) -> None:
+    """未知配置键与显式 enabled:false 仅 WARNING，不硬失败（本地残留键不得弄挂 prod 启动，#291）。"""
+    for key in raw:
+        if key not in _KNOWN_TOP_KEYS:
+            log.warning("配置未知键：%s（已忽略）", key)
+    for section, allowed in _KNOWN_SECTION_KEYS.items():
+        spec = raw.get(section)
+        if not isinstance(spec, dict):
+            continue
+        for key in spec:
+            if key not in allowed:
+                log.warning("配置未知键：%s.%s（已忽略）", section, key)
+        if spec.get("enabled") is False:
+            log.warning("配置段 %s.enabled=false，该功能已关闭", section)
+
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_DB_PATH = PROJECT_ROOT / "data" / "tc-prod.sqlite3"
