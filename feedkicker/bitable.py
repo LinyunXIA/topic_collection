@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from feedkicker.feishu_host import feishu_host
 from feedkicker.fetch import canonicalize, utc_now_iso
 
 
@@ -140,7 +141,7 @@ def _json_arg(payload: dict[str, Any]):
 
 
 def base_url(app_token: str) -> str:
-    return f"https://web91vfvm7.feishu.cn/base/{app_token}"
+    return f"https://{feishu_host()}/base/{app_token}"
 
 
 def find_base_by_title(title: str) -> dict[str, Any] | None:

@@ -9,10 +9,9 @@ from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from feedkicker import bitable, wiki_lark
+from feedkicker.feishu_host import feishu_host
 
 log = logging.getLogger(__name__)
-
-WIKI_HOST = "https://web91vfvm7.feishu.cn/wiki"
 
 
 def _shanghai_tz():
@@ -40,7 +39,7 @@ def build_filename(topic: str, date_str: str | None = None) -> str:
 
 
 def wiki_url(token: str) -> str:
-    return f"{WIKI_HOST}/{token}"
+    return f"https://{feishu_host()}/wiki/{token}"
 
 
 def _dry_run_token(title: str) -> str:
@@ -56,8 +55,7 @@ def build_doc_title(topic: str, date_str: str | None = None) -> str:
 
 
 def docx_url(token: str) -> str:
-    host = WIKI_HOST.rsplit("/wiki", 1)[0]
-    return f"{host}/docx/{token}"
+    return f"https://{feishu_host()}/docx/{token}"
 
 
 @contextlib.contextmanager
