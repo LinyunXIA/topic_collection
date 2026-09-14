@@ -72,7 +72,11 @@ topic_collection/
 │   ├── bitable_backfill.py   # 归档日期解析与存量回填 backfill_empty_archive_dates（§21.4）
 │   ├── bitable_purge.py      # 滚动保留的 bitable 侧删除（§20）
 │   ├── bitable_reseed.py     # --reseed 前置清空 purge_all_records（bitable_records re-export，§21.4）
-│   ├── minimax.py / minimax_schema.py  # MiniMax 调用 / prompt 与 schema（facade）
+│   ├── minimax.py            # MiniMax 大纲 facade：gen_outline + re-export patch 点（#346）
+│   ├── minimax_transport.py  # MiniMax chat 调用与错误码归一（_resolve_api_key/_extract_code/_norm_code/_RETRY_CODES/call_minimax_chat，#346）
+│   ├── minimax_parse.py      # MiniMax 大纲响应解析：tool_calls/content 回退 + think 剥离（#346）
+│   ├── minimax_schema.py     # prompt 与 function-calling schema
+│   ├── reasoning.py          # thinking 内联推理块剥离 strip_reasoning（#321/#323/#331）
 │   ├── wiki.py / wiki_lark.py          # Wiki 归档编排 / lark-cli 调用层
 │   ├── wiki_home.py          # Wiki「首页」自动索引：node-list → 月块表格 → overwrite（§22）
 │   ├── topic.py              # 已选题分页拉取（facade）
@@ -706,7 +710,7 @@ wiki:
 
 - `feedkicker/purge.py`（CLI 编排，`tc-purge = "feedkicker.purge:main"`）：argparse 同构范式（`--apply` / `--retention-days` / `--config` / `--db` / `--env`），返回码 2=配置错误、1=异常、0=正常；末尾打印 `PurgeStats` JSON。**默认 dry-run，`--apply` 才真删**。
 - `feedkicker/bitable_purge.py`（bitable 侧清理，~130 行，新逻辑不进 bitable.py，见 §21.4）。
-- `config.BitableConf.retention_days`（默认 365，`config-{env}.yaml` 的 `bitable.retention_days` 可配，下限 1，上限 36500，超限 `load_config` 报错 → rc 2）。
+- `config.BitableConf.retention_days`（默认 365，`config-{env}.yaml` 的 `bitable.retention_days` 可配，`<1` 静默钳为 1，`>36500` 报错 → rc 2）。
 
 ### 20.2 算法
 
@@ -981,6 +985,7 @@ select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(p
 | `extract_report.py` | dry-run 清单与运行统计输出（自 extract_flow 拆出，#252） | `print_dry_run(planned, skipped)`、`print_summary(stats)` |
 
 - provider 注册表（`extract_llm.PROVIDERS`）：`minimax`（base_url `https://api.minimaxi.com/v1`、model `MiniMax-M3`、key env `MiniMax_Key`/`MINIMAX_API_KEY`、tool_label `MMax`）、`deepseek`（base_url `https://api.deepseek.com/v1`、model `deepseek-chat`、key env `DEEPSEEK_API_KEY`、tool_label `DS`）；`tool_label` 必须是 salon 表 `提取工具` select 字段的**表内已有选项**（`MMax`/`DS`，`飞书` 留给人工路径）；yaml `providers.<name>` 非空字段覆盖注册表默认。
+- LLM 传输/解析下沉（#346）：`minimax_transport.py`（`call_minimax_chat`/`_extract_code`/`_norm_code`/`_RETRY_CODES`/`_resolve_api_key`）、`minimax_parse.py`（`parse_outline_from_response`，解析前复用 `reasoning.py` 的 `strip_reasoning` 并回退 `reasoning_content`）；`minimax.py` 仅保留 `gen_outline` facade 并 re-export `httpx`/`PROMPT_TEMPLATES`/`_TOOL_GENERATE_PPT_OUTLINE`/`call_minimax_chat` 等既有 patch 点；`extract_llm` 复用其错误码归一。
 - 调用形态统一 OpenAI 兼容 `POST {base_url}/chat/completions`，取 `choices[0].message.content` 原始文本返回；`_post_chat` **单次尝试**：超时/HTTP 429/529/业务可重试码（1002/1004/1039）抛可重试 `RuntimeError`，重试仅由 `refine_batches` 外层做 1 次（总 HTTP ≤2/批，单层重试，PRV-8）；缺 key/占位 key 抛 `RuntimeError` 且**不发起 HTTP**。
 
 ### 25.3 配置（`extract:` 段）
@@ -1013,6 +1018,7 @@ extract:
 ### 25.4 提示词与 JSON 契约
 
 - `prompts/extract.md` 原样收录用户 4 条提示词（五要素 / 过滤营销与无工具纯新闻 / 无法提炼即跳过 / 写前确认），并追加「输出必须为 JSON」的 schema 段与分批输入说明。
+- 解析前剥离推理块：`reasoning.strip_reasoning` 移除成对 `<think|thinking|reasoning>` 块（含嵌套与属性/空白，字符串字面量内标签保留，#331）；仅残留裸开标签时自该处截断，未闭合推理不可能含完整 JSON（#321/#323）。
 - 输出契约：`{"topics":[{"话题名称":"","可使用工具":"","相关AI原理":"","资讯链接":[""],"出处来源":[""]}]}`。
 - `parse_topics`：容忍 ```json 围栏；JSON 非法、顶层非对象、`topics` 非列表 → raise `ValueError`（调用方重试 1 次，两次都失败才计 failed 并 WARNING 跳过，不抛到运行级）；单个 topic 非对象或缺 5 键 → 丢弃该条、`dropped` 计数并 WARNING，不整批弃（PRV-6）；`资讯链接`/`出处来源` 接受 str（归一为单元素列表）或 list。
 - `merge_topics`：按「话题名称」NFKC 归一 + strip + casefold 的比较键合并（写入保留首个原值）；`可使用工具`/`相关AI原理` 首个非空保留；`资讯链接`/`出处来源` 顺序拼接去重（写入时以换行 join）。
@@ -1033,18 +1039,18 @@ tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-s
            [--config PATH] [--db PATH]
 ```
 
-- 默认 dry-run：打印合并后的待写清单（逐条 `[将写入]`/`[已存在跳过]` 前缀标注，数量与 summary `pending`/`skipped` 同源一致）与统计（批数/调用数/话题数/将写/将跳过/失败批/空批 `empty_batches`），**零写调用**。
-- `--since-days` 取值 1..3650（对齐 `extract_source.MAX_SINCE_DAYS`，#269）；越界 rc 2，不发 HTTP。
+- 默认 dry-run：打印合并后的待写清单（逐条 `[将写入]`/`[已存在跳过]` 前缀标注，数量与 summary `pending`/`skipped` 同源一致）与统计（批数/调用数/话题数/将写/将跳过/失败写 `failed_writes`/失败批/空批 `empty_batches`），**零写调用**。
+- `--since-days` 取值 1..3650（对齐 `extract_source.MAX_SINCE_DAYS`，#269）；`--batch-size` 取值 1..200（`config.MAX_BATCH_SIZE`，#335）；越界 rc 2，不发 HTTP。
 - `--provider`：单次运行覆盖 `extract.provider`（缺省取配置，默认 `minimax`）；choices 由 `extract_llm.PROVIDERS` 注册表键动态给出；`run` 用 `dataclasses.replace` 构造有效 `ex`，`resolve_provider`/`refine_batches`（内含 `call_llm`）与 `提取工具` 均取该 provider（minimax→`MMax`，deepseek→`DS`），运行日志打印实际 provider。
 - `--apply`：写入 `cfg.salon.app_token/table_id`（不调 `ensure_initialized`，不改表结构）。
-- 退出码：2 配置错（config 加载失败 / prompt 文件缺失 / `--provider` 未知 / provider 未注册 / 所选 provider 缺 key（配置与 env 均无，不发起 HTTP）/ salon token 占位或缺失）；1 未捕获异常；0 正常（含部分批失败跳过）。
+- 退出码：2 配置错（config 加载失败 / prompt 文件缺失 / `--provider` 未知 / provider 未注册 / 所选 provider 缺 key（配置与 env 均无，不发起 HTTP）/ salon token 占位或缺失 / `--batch-size` 越界）；1 未捕获异常，以及 `--apply` 全部写入失败（`failed_writes>0 且 written==0`，#358）；0 正常（含部分批/部分写入失败跳过）。
 
 ### 25.7 失败语义
 
 - 单批**第 1 次尝试失败（调用异常 或 JSON/契约解析失败）→ 编排层重试 1 次**（`_post_chat` 单次尝试 + `refine_batches` 外层单层重试；「调用 + 解析」共享同一重试预算，总 HTTP ≤2/批），仅两次都失败该批计 failed 跳过、计数并在结束汇总 WARNING，不阻断其余批、rc 仍 0。
 - 模型合法返回 `{"topics":[]}`（无话题）→ 计 `empty_batches`（summary 字段）而非 failed；两次尝试后 JSON/契约解析仍失败才计 failed（PRV-2）。
-- `max_calls > 0` 时每次调用前检查，达限停止剩余批并 WARNING（联调护栏）。
-- 写入分块失败：该块 WARNING、继续后续块，返回实际成功计数。
+- `max_calls > 0` 时每次调用前检查，达限停止剩余批并 WARNING（联调护栏）；已在重试中执行过至少一次调用却未能完成的当前批计入 failed（#334）。
+- 写入分块失败：该块 WARNING、继续后续块，返回实际成功计数（`failed_writes`）。
 
 ### 25.8 清单
 

@@ -44,10 +44,12 @@ def test_topic_extract_records_container_validation():
         {"records": {"x": 1}},
         {"records": [{"record_id": "r1"}, "bad"]},
         {"data": 1},
+        {"x": 1},
     ):
         with pytest.raises(RuntimeError):
             topic_mod._extract_records(bad)
-    assert topic_mod._extract_records({"x": 1}) == [], "无 records/data 才是真空页"
+    # #326 收紧：顶层 dict 无可识别容器键（如 {"x":1}）不再算「真空页」，必须 raise
+    assert topic_mod._extract_records({"records": []}) == []
 
 
 def test_topic_extract_records_valid_shapes_still_work():

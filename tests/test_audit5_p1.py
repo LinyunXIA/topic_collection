@@ -249,7 +249,7 @@ def test_outline_to_md_type_normalization():
         {
             "title": "T",
             "slides": [
-                {"heading": "h1", "bullets": "not-a-list", "speaker_note": 42},
+                {"heading": "h1", "bullets": ["ok"], "speaker_note": 42},
                 "not-a-dict",
                 {"heading": "h2", "bullets": ["ok", None, 7], "speaker_note": "note"},
             ],

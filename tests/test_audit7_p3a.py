@@ -179,7 +179,7 @@ def test_extract_apply_summary_reports_failed_writes(tmp_path, monkeypatch, caps
 
     out = capsys.readouterr().out
     stats = json.loads([ln for ln in out.splitlines() if ln.startswith("{")][-1])
-    assert rc == 0
+    assert rc == 1
     assert stats["written"] == 0 and stats["failed_writes"] == 1
 
 
@@ -294,27 +294,27 @@ def test_sos_send_text_success_clears_streak(monkeypatch) -> None:
 # ── #303 页指纹仅基于 record id ──
 
 
-def test_page_fingerprint_ignores_idless_data_rows() -> None:
+def test_page_fingerprint_hashes_idless_data_rows() -> None:
     page = {"fields": ["链接"], "data": [{"链接": "https://e.com/x"} for _ in range(3)]}
 
-    assert bitable_lark._page_fingerprint(page) == ""
-    assert bitable_lark._page_guard("", page) == ""
+    fp = bitable_lark._page_fingerprint(page)
+    assert fp
+    assert bitable_lark._page_guard("", page) == fp
 
 
-def test_existing_links_identical_idless_pages_do_not_false_trip(monkeypatch) -> None:
+def test_existing_links_idless_identical_pages_trip_on_second(monkeypatch) -> None:
     rows = [{"链接": "https://e.com/same"} for _ in range(200)]
     calls = {"n": 0}
 
     def fake_run(args, stdin_text=None, timeout=120):
         calls["n"] += 1
-        if calls["n"] <= 2:
-            return FakeProc(0, json.dumps({"data": {"fields": ["链接"], "data": rows}}))
-        return FakeProc(0, json.dumps({"data": {"fields": ["链接"], "data": []}}))
+        return FakeProc(0, json.dumps({"data": {"fields": ["链接"], "data": rows}}))
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert bitable_records.existing_links("app", "tbl") == {"https://e.com/same"}
-    assert calls["n"] == 3
+    with pytest.raises(RuntimeError, match="分页|offset"):
+        bitable_records.existing_links("app", "tbl")
+    assert calls["n"] == 2
 
 
 def test_existing_links_idless_records_pagination_bounded(monkeypatch) -> None:

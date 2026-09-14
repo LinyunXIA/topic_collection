@@ -33,6 +33,8 @@ MAX_BOOTSTRAP_DAYS = 3650
 
 MAX_RETENTION_DAYS = 36500
 
+MAX_BATCH_SIZE = 200
+
 
 def config_path_for(app_env: str) -> Path:
     """默认配置锚定仓库根，不随调用方 cwd 漂移（#163）。"""
@@ -145,10 +147,13 @@ def load_config(
     )
 
     extract_raw = raw.get("extract") or {}
+    batch_size = max(1, int(extract_raw.get("batch_size", cfg.extract.batch_size)))
+    if batch_size > MAX_BATCH_SIZE:
+        raise ValueError(f"extract.batch_size={batch_size} 超过上界 {MAX_BATCH_SIZE}")
     cfg.extract = ExtractConf(
         enabled=bool(extract_raw.get("enabled", cfg.extract.enabled)),
         since_days=max(1, int(extract_raw.get("since_days", cfg.extract.since_days))),
-        batch_size=max(1, int(extract_raw.get("batch_size", cfg.extract.batch_size))),
+        batch_size=batch_size,
         provider=str(extract_raw.get("provider") or cfg.extract.provider),
         prompt_file=str(extract_raw.get("prompt_file") or cfg.extract.prompt_file),
         max_calls=max(0, int(extract_raw.get("max_calls", cfg.extract.max_calls))),
