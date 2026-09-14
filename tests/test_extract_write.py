@@ -389,6 +389,24 @@ def test_existing_index_bad_container_raises(monkeypatch) -> None:
         existing_index("app", "tbl")
 
 
+def test_existing_index_unrecognized_body_raises(monkeypatch) -> None:
+    """#265：rc0 但 body 为 `{}`（无任何可识别容器键）必须 raise，不得静默当合法空表。"""
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **k: FakeProc(0, "{}"))
+
+    with pytest.raises(RuntimeError, match="无法识别"):
+        existing_index("app", "tbl")
+
+
+def test_existing_index_empty_records_is_valid_empty(monkeypatch) -> None:
+    """#265 对照：明确的 `records: []` 空表是合法空集，不报错。"""
+    monkeypatch.setattr(
+        bitable_lark, "_run",
+        lambda *a, **k: FakeProc(0, json.dumps({"data": {"records": []}})),
+    )
+
+    assert existing_index("app", "tbl") == (set(), set())
+
+
 def test_write_requires_tokens() -> None:
     with pytest.raises(RuntimeError, match="app_token"):
         write_topics("", "", [], "MMax", "2026-09-14")

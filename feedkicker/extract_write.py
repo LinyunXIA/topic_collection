@@ -59,8 +59,9 @@ def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
     """分页拉目标表已有索引 `(归一话题名集合, 归一链接集合)`；拉取失败/容器异常 raise（不静默空集）。
 
     双键之因：LLM 命名非确定性，仅按名去重会漏判重复落表（真跑已证），并列按 `资讯链接`
-    兜底。响应兼容 records/items 与 fields+data 行式；fields+data 缺「话题名称」列 → raise
-    （不得静默空集，PRV-4）；翻页走 offset + 页指纹守卫（#245）。
+    兜底。响应兼容 records/items 与 fields+data 行式；两者皆非（如 rc0 的 `{}`）→ raise
+    （不可识别响应不得静默空集，#265）；fields+data 缺「话题名称」列 → raise（PRV-4）；
+    翻页走 offset + 页指纹守卫（#245）。
     """
     names: set[str] = set()
     links: set[str] = set()
@@ -88,12 +89,11 @@ def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
             raise RuntimeError(f"选题表响应不是 JSON 对象: {str(data)[:200]}")
         prev_fp = bitable_lark._page_guard(prev_fp, data)
         fields_raw = data.get("fields")
-        if (
-            not (data.get("records") or data.get("items"))
-            and isinstance(fields_raw, list)
-            and fields_raw
-            and "话题名称" not in fields_raw
-        ):
+        fields_list = isinstance(fields_raw, list)
+        has_rec = isinstance(data.get("records"), list) or isinstance(data.get("items"), list)
+        if not (has_rec or (fields_list and isinstance(data.get("data"), list))):
+            raise RuntimeError(f"选题表响应无法识别（无 records/items 或 fields+data 容器），中止写入以避免重复行: {str(data)[:200]}")
+        if not (data.get("records") or data.get("items")) and fields_list and fields_raw and "话题名称" not in fields_raw:
             raise RuntimeError("选题表响应为 fields+data 形态但缺「话题名称」列，中止写入以避免重复行")
         records = _extract_records(data)
         for rec in records:

@@ -124,6 +124,10 @@ def main(argv: list[str] | None = None) -> int:
         _dry_run_plan(cfg, args)
         return 0
 
+    if args.init and ("<" in cfg.bitable.app_token or "<" in cfg.bitable.table_id):
+        log.error("拒绝 --init：app_token/table_id 仍为 `<...>` 占位（config 未填写），请先配置真实 Base token")
+        return 2
+
     try:
         have_lark = bool(bitable_lark.lark_bin())
     except FileNotFoundError:

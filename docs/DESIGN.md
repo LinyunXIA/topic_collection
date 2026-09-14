@@ -937,7 +937,7 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 
 ---
 
-## 25. v0.8 — 资讯→选题 LLM 提炼（F28–F32，#247）
+## 25. v0.8 — 资讯→选题 LLM 提炼（F28–F37，#247）
 
 > 编号说明：登记提交时 §24 已被「第四轮审计修复」占用，故 v0.8 设计落在 §25。
 
@@ -961,7 +961,7 @@ select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(p
 | `extract_source.py` | sqlite 选源 | `select_source(conn, since_days, limit=None, now=None)` |
 | `extract_llm.py` | provider 抽象 + 提示词/解析 + 批量提炼编排 | `call_llm(cfg, prompt) -> str`、`build_batch_prompt(template, items)`、`parse_topics(raw) -> (list[dict], dropped)`、`merge_topics(topics) -> list[dict]`、`refine_batches(ex, template, batches, max_calls) -> (topics, calls, failed, empty)`、`resolve_provider(cfg, name=None)` |
 | `extract_write.py` | 字段映射与写入 | `existing_index(app_token, table_id) -> tuple[set[str], set[str]]`、`build_record(topic, provider_label, run_date, status="未讨论") -> dict`、`write_topics(...) -> tuple[int, int]` |
-| `extract_flow.py` | 编排 + CLI | `run(cfg, conn, *, apply, since_days, limit, batch_size, max_calls) -> int`、`main(argv) -> int` |
+| `extract_flow.py` | 编排 + CLI | `run(cfg, conn, *, apply, since_days=None, limit=None, batch_size=None, max_calls=None, provider=None) -> int`、`main(argv) -> int` |
 
 - provider 注册表（`extract_llm.PROVIDERS`）：`minimax`（base_url `https://api.minimaxi.com/v1`、model `MiniMax-M3`、key env `MiniMax_Key`/`MINIMAX_API_KEY`、tool_label `MMax`）、`deepseek`（base_url `https://api.deepseek.com/v1`、model `deepseek-chat`、key env `DEEPSEEK_API_KEY`、tool_label `DS`）；`tool_label` 必须是 salon 表 `提取工具` select 字段的**表内已有选项**（`MMax`/`DS`，`飞书` 留给人工路径）；yaml `providers.<name>` 非空字段覆盖注册表默认。
 - 调用形态统一 OpenAI 兼容 `POST {base_url}/chat/completions`，取 `choices[0].message.content` 原始文本返回；`_post_chat` **单次尝试**：超时/HTTP 429/529/业务可重试码（1002/1004/1039）抛可重试 `RuntimeError`，重试仅由 `refine_batches` 外层做 1 次（总 HTTP ≤2/批，单层重试，PRV-8）；缺 key/占位 key 抛 `RuntimeError` 且**不发起 HTTP**。
@@ -1035,3 +1035,8 @@ tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-s
 - [x] F30 `prompts/extract.md` + `build_batch_prompt`/`parse_topics`/`merge_topics`
 - [x] F31 `extract_write.py`：字段映射 + 「话题名称」去重 + ≤200/批；dry-run 零写
 - [x] F32 `tc-extract` CLI + CLI.md/OPS.md 文档 + 测试（全 mock 离线）
+- [x] F33 `prompts/extract.md`：过滤仅版本/发布类公告，`可使用工具` 不得是模型名/版本号（#255/#256）
+- [x] F34 `prompts/extract.md`：增加「现场可演示」过滤（排除复杂/专有环境等不可演示工具，#257）
+- [x] F35 `refine_batches` 解析失败重试 1 次 + dry-run 清单 `[将写入]`/`[已存在跳过]` 标注（#258）
+- [x] F36 `prompts/extract.md`：`可使用工具` 不得为评测基准/榜单/数据集（#259）
+- [x] F37 `tc-extract --provider {minimax,deepseek}` 单次运行切换 provider（#261）

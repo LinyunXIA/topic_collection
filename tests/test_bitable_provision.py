@@ -62,6 +62,43 @@ def test_find_base_by_title_ok_false_returns_none(monkeypatch: pytest.MonkeyPatc
     assert bitable.find_base_by_title("资讯归档") is None
 
 
+def test_find_base_by_title_exact_match_beats_dev_test_prefix(monkeypatch: pytest.MonkeyPatch):
+    """#264：prod 标题是 dev-test 标题前缀，子串匹配会误认；须精确命中 prod。"""
+    prod = bitable.BASE_TITLES["prod"]
+    dev = bitable.BASE_TITLES["dev"]
+    monkeypatch.setattr(
+        bitable_lark, "_run",
+        lambda *a, **kw: _ok({"bases": [
+            {"base_token": "appDev", "name": dev},
+            {"base_token": "appProd", "name": prod},
+        ]}),
+    )
+    assert bitable.find_base_by_title(prod) == {"app_token": "appProd", "url": bitable.base_url("appProd")}
+
+
+def test_find_base_by_title_requires_exact_match(monkeypatch: pytest.MonkeyPatch):
+    """#264：仅前缀/超串候选（name 或 title 字段）不得命中。"""
+    prod = bitable.BASE_TITLES["prod"]
+
+    monkeypatch.setattr(
+        bitable_lark, "_run",
+        lambda *a, **kw: _ok({"bases": [{"base_token": "appDev", "name": bitable.BASE_TITLES["dev"]}]}),
+    )
+    assert bitable.find_base_by_title(prod) is None
+
+    monkeypatch.setattr(
+        bitable_lark, "_run",
+        lambda *a, **kw: _ok({"bases": [{"base_token": "appT", "title": prod}]}),
+    )
+    assert bitable.find_base_by_title(prod) == {"app_token": "appT", "url": bitable.base_url("appT")}
+
+    monkeypatch.setattr(
+        bitable_lark, "_run",
+        lambda *a, **kw: _ok({"bases": [{"base_token": "appS", "title": f"{prod} · dev-test"}]}),
+    )
+    assert bitable.find_base_by_title(prod) is None
+
+
 def test_find_base_by_title_token_fallback(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: _ok({"token": "appTok"}))
     found = bitable.find_base_by_title("资讯归档")
@@ -239,6 +276,30 @@ def test_ensure_initialized_writes_resolved_tokens_back(monkeypatch: pytest.Monk
     assert bt.app_token == "appAuto"
     assert bt.table_id == "tblAuto"
     assert bt.url == info["url"]
+
+
+def test_ensure_initialized_treats_placeholder_as_unconfigured(monkeypatch: pytest.MonkeyPatch):
+    """#262：`<...>` 占位 token 不得当已配置——按空 token 解析并回写真实 token。"""
+    steps: list[tuple] = []
+    monkeypatch.setattr(
+        bitable_schema, "find_base_by_title", lambda title: steps.append(("find", title)) or {
+            "app_token": "appFound", "url": "https://found"
+        }
+    )
+    monkeypatch.setattr(
+        bitable_schema, "create_base",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("占位 token 不应被当作已配置而跳过解析")),
+    )
+    monkeypatch.setattr(
+        bitable_schema, "get_table_id", lambda tok: steps.append(("get_table", tok)) or "tblFound"
+    )
+    bt = _bt("<app_token>", "<table_id>", "")
+    info = bitable.ensure_initialized(bt, app_env="prod")
+    assert info == {"app_token": "appFound", "table_id": "tblFound", "url": "https://found"}
+    assert steps == [("find", bitable.BASE_TITLES["prod"]), ("get_table", "appFound")]
+    assert bt.app_token == "appFound"
+    assert bt.table_id == "tblFound"
+    assert bt.url == "https://found"
 
 
 def test_parse_top_level_array_does_not_crash(monkeypatch: pytest.MonkeyPatch):

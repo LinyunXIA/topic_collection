@@ -276,3 +276,23 @@ def test_init_with_placeholder_warns_before_create(monkeypatch, tmp_path, caplog
         assert bitable.main(["--init", "--env", "test"]) == 0
     assert ensure_calls == ["test"]
     assert any("创建" in r.getMessage() for r in caplog.records)
+
+
+def test_init_with_placeholder_tokens_rejects_rc2_without_lark(monkeypatch, tmp_path, caplog):
+    """#262：`.example` 默认态占位 token 在 --init 下必须 rc2、零 lark 调用，不得静默走到建表/同步。"""
+    calls: list[list[str]] = []
+    cfg = make_cfg(tmp_path, enabled=True, app_token="<app_token>", table_id="<table_id>")
+    monkeypatch.setattr("feedkicker.config.load_config", lambda *a, **kw: cfg)
+    monkeypatch.setattr(bitable_lark, "lark_bin", lambda: "/fake/lark-cli")
+    monkeypatch.setattr(
+        bitable_lark, "_run", lambda *a, **kw: calls.append(list(a)) or FakeProc(0, "{}")
+    )
+    forbid(monkeypatch, "ensure_initialized", "sync_env")
+
+    with caplog.at_level(logging.INFO, logger="feedkicker.bitable"):
+        rc = bitable.main(["--init", "--env", "test"])
+
+    assert rc == 2
+    assert calls == []
+    assert not Path(cfg.db_path).exists()
+    assert not any("同步完成" in r.getMessage() for r in caplog.records)
