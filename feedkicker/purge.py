@@ -85,7 +85,7 @@ def run(
     retention_days: int | None = None,
     now: datetime | None = None,
 ) -> PurgeStats:
-    days = retention_days if retention_days is not None else cfg.bitable.retention_days
+    days = max(1, retention_days if retention_days is not None else cfg.bitable.retention_days)
     cutoff = cutoff_iso(days, now=now)
     cutoff_date = bitable_purge.cutoff_date_shanghai(days, now=now)
     stats = PurgeStats(

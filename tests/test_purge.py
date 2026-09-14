@@ -310,3 +310,35 @@ def test_purge_cli_retention_days_override(monkeypatch, tmp_path, capsys):
     out = capsys.readouterr().out
     stats = json.loads(out[out.index("{") :])
     assert stats["retention_days"] == 30
+
+
+def test_retention_days_clamped_to_min_one():
+    conn = make_conn()
+    add_article(conn, "arch", "2026-09-05T00:00:00Z", "2026-09-05T01:00:00Z")
+
+    stats_zero = purge.run(make_cfg(enabled=False), conn, dry_run=True, retention_days=0, now=NOW)
+    assert stats_zero.retention_days == 1
+    assert stats_zero.cutoff_iso == "2026-09-06T02:00:00Z"
+
+    stats_neg = purge.run(
+        make_cfg(enabled=False), make_conn(), dry_run=True, retention_days=-30, now=NOW
+    )
+    assert stats_neg.retention_days == 1
+    assert stats_neg.cutoff_iso == "2026-09-06T02:00:00Z"
+
+
+def test_purge_cli_retention_days_zero_and_negative_clamped(monkeypatch, tmp_path, capsys):
+    def fake_load(config_path, db_path, app_env=None):
+        cfg = make_cfg(enabled=False)
+        cfg.db_path = db_path
+        return cfg
+
+    monkeypatch.setattr(purge, "load_config", fake_load)
+    for raw in ("0", "-30"):
+        rc = purge.main(
+            ["--retention-days", raw, "--env", "test", "--db", str(tmp_path / f"t{abs(int(raw))}.db")]
+        )
+        assert rc == 0
+        out = capsys.readouterr().out
+        stats = json.loads(out[out.index("{") :])
+        assert stats["retention_days"] == 1
