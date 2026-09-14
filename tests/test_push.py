@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
@@ -916,22 +917,25 @@ def test_bitable_sync_env_rejects_empty_config(monkeypatch):
     conn.close()
 
 
-def test_run_augments_path_for_launchd(monkeypatch):
-    # #123：launchd 的最小 PATH 下 lark-cli(env node) 会 rc=127，_run 必须注入 homebrew 路径
+def test_run_augments_path_for_launchd(monkeypatch, tmp_path):
+    # #123/#167：launchd 的最小 PATH 下 lark-cli(env node) 会 rc=127，_run 必须注入 homebrew 路径
     from feedkicker import bitable
 
+    fake_bin = tmp_path / "node-env" / "lark-cli"
     captured = {}
 
     def fake_subprocess_run(cmd, **kw):
         captured["env"] = kw.get("env")
         return FakeProc(0, stdout="{}")
 
+    monkeypatch.setattr(bitable, "lark_bin", lambda: str(fake_bin))
     monkeypatch.setattr(bitable.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(bitable.os, "environ", {"PATH": "/usr/bin:/bin"})
     bitable._run(["base", "--help"])
-    path = captured["env"]["PATH"]
-    assert "/opt/homebrew/bin" in path
-    assert path.rstrip(":").endswith("/usr/bin:/bin") or "/usr/bin:/bin" in path
+    parts = captured["env"]["PATH"].split(os.pathsep)
+    assert parts[0] == str(fake_bin.parent)
+    assert parts[1:3] == ["/opt/homebrew/bin", "/usr/local/bin"]
+    assert parts[-2:] == ["/usr/bin", "/bin"]
 
 
 def test_fail_streak_cleared_on_success_even_without_pending(monkeypatch):
