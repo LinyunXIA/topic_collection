@@ -14,10 +14,32 @@ _REQUIRED_KEYS = ("话题名称", "可使用工具", "相关AI原理", "资讯�
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
+_THINK_RE = re.compile(r"(?is)<(think|thinking|reasoning)>.*?</\1>")
+
+_OPEN_THINK_RE = re.compile(r"(?is)<(?:think|thinking|reasoning)\b")
+
 
 def topic_key(name: Any) -> str:
     """去重/合并比较键：NFKC 归一 + strip + casefold（写入仍用原值，PRV-3）。"""
     return unicodedata.normalize("NFKC", str(name or "")).strip().casefold()
+
+
+def strip_reasoning(text: str) -> str:
+    """剥离 thinking 模型内联的推理块，返回余文（#321）。
+
+    deepseek-flash 等 thinking 模型把 `<think>…</think>` 推理内联在 content 中；若推理含
+    花括号，`_load_json_obj` 的「首个 `{` 到末个 `}`」兜底会从错误的 `{` 起步，切片错位
+    使 `json.loads` 失败、整批话题丢失。成对块重复剥离直到不再匹配（防嵌套/连续多段）；
+    仍残留未闭合开标签时自该标签处截断到末尾（响应已截断，JSON 不可能完整）。
+    """
+    prev = text
+    while True:
+        stripped = _THINK_RE.sub("", prev)
+        if stripped == prev:
+            break
+        prev = stripped
+    open_at = _OPEN_THINK_RE.search(prev)
+    return prev[: open_at.start()] if open_at else prev
 
 
 def build_batch_prompt(template: str, items: list[dict[str, Any]]) -> str:
@@ -103,7 +125,7 @@ def merge_topics(topics: list[dict[str, Any]]) -> list[dict[str, Any]]:
 
 def _load_json_obj(raw: str) -> dict[str, Any] | None:
     """容忍 ```json 围栏与前后说明文字：先整体解析，失败再取最外层 {...} 重试。"""
-    text = (raw or "").strip()
+    text = strip_reasoning((raw or "").strip())
     m = _FENCE_RE.search(text)
     if m:
         text = m.group(1).strip()
