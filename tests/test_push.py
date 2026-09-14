@@ -496,6 +496,15 @@ def test_run_one_source_fails_others_push(monkeypatch):
     conn.close()
 
 
+def test_push_dry_run_help_documents_writes(capsys):
+    with pytest.raises(SystemExit) as exc:
+        push.main(["--help"])
+    assert exc.value.code == 0
+    out = capsys.readouterr().out
+    line = next(ln for ln in out.splitlines() if ln.strip().startswith("--dry-run"))
+    assert "抓取" in line and "首跑" in line
+
+
 def test_main_missing_config_returns_error():
     rc = push.main(["--config", "/nonexistent/config.yaml"])
     assert rc == 2

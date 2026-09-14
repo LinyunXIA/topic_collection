@@ -138,7 +138,11 @@ def main(argv=None) -> int:
         prog="tc-push",
         description="抓取 RSS 订阅源，写入在线表格归档并把摘要卡推送到飞书",
     )
-    parser.add_argument("--dry-run", action="store_true", help="只打印卡片 payload 不发送")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="抓取/写库照常（download/首跑标记），仅打印 payload 不发送、不归档",
+    )
     parser.add_argument("--config", default=None, help="指定 config-{env}.yaml 路径")
     parser.add_argument("--db", default=None, help="sqlite 路径（覆盖 TC_DB 与 --env 推导）")
     parser.add_argument(

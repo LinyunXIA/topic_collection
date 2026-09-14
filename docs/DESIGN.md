@@ -295,6 +295,7 @@ v0.2 起 macOS 用 **launchd** 取代 cron：`StartCalendarInterval` 在机器�
 - 加载：`launchctl bootstrap gui/$UID ~/Library/LaunchAgents/com.feedkicker.push.plist`
 - 进程由 launchd 拉起，跑完退出，无后台残留、无 Web 端口监听。
 - 手动/联调：`python -m feedkicker.push --dry-run`（打 payload 不发不发布）；`--config <路径>`；`--db <路径>`。
+- `--dry-run` 并非纯只读：RSS 抓取与 sqlite 写库（`download`/`clear_fail`/`promise_skip_old` 等首跑标记）照常，仅跳过发送与 bitable 归档（#183）。
 
 ## 10. 日志与可观测
 
