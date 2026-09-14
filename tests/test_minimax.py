@@ -322,6 +322,62 @@ def test_code_fence_invalid_json_raises(monkeypatch):
         mm.gen_outline("topic", kind="tool", api_key="sk")
 
 
+def test_extract_code_non_dict_returns_none():
+    assert mm._extract_code(["unexpected", "list"]) is None
+    assert mm._extract_code("unexpected string") is None
+
+
+def test_extract_code_base_resp_none_returns_none():
+    assert mm._extract_code({"base_resp": None}) is None
+
+
+def test_call_minimax_chat_base_resp_none_no_crash(monkeypatch):
+    payload = {"base_resp": None, "choices": [{"message": {"content": "{}", "tool_calls": []}}]}
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        return FakeResp(200, payload)
+
+    monkeypatch.setattr(mm.httpx, "post", fake_post)
+    data = mm.call_minimax_chat([{"role": "user", "content": "hi"}], api_key="sk")
+    assert data["base_resp"] is None
+
+
+def test_call_minimax_chat_base_resp_missing_no_crash(monkeypatch):
+    payload = {"choices": [{"message": {"content": "{}", "tool_calls": []}}]}
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        return FakeResp(200, payload)
+
+    monkeypatch.setattr(mm.httpx, "post", fake_post)
+    data = mm.call_minimax_chat([{"role": "user", "content": "hi"}], api_key="sk")
+    assert "base_resp" not in data
+
+
+@pytest.mark.parametrize("payload", [["unexpected", "list"], "raw-string"])
+def test_call_minimax_chat_non_dict_payload_no_crash(monkeypatch, payload):
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        return FakeResp(200, payload)
+
+    monkeypatch.setattr(mm.httpx, "post", fake_post)
+    assert mm.call_minimax_chat([{"role": "user", "content": "hi"}], api_key="sk") == payload
+
+
+def test_gen_outline_base_resp_zero_parses(monkeypatch):
+    outline = {"title": "零码大纲", "slides": [{"heading": "h", "bullets": ["a"]}]}
+    payload = {
+        "base_resp": {"status_code": 0},
+        "choices": [
+            {"message": {"tool_calls": [{"function": {"name": "generate_ppt_outline", "arguments": _json.dumps(outline, ensure_ascii=False)}}]}}
+        ],
+    }
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        return FakeResp(200, payload)
+
+    monkeypatch.setattr(mm.httpx, "post", fake_post)
+    assert mm.gen_outline("topic", kind="tool", api_key="sk") == outline
+
+
 def test_minimax_outline_mock(monkeypatch):
     outline = {
         "title": "Mock大纲",
