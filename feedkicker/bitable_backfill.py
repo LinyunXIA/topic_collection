@@ -104,6 +104,7 @@ def backfill_empty_archive_dates(
     total_scanned = 0
     while True:
         bitable_lark._guard_offset(offset)
+        bitable_lark.guard_pages(offset // bitable_lark._CHUNK + 1)
         proc = bitable_lark._run(
             [
                 "base", "+record-list",

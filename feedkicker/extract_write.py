@@ -43,14 +43,14 @@ def link_keys(raw: Any) -> set[str]:
 
     真跑表内值常是 markdown 包裹 + 换行拼接 + tracking 参数的单字符串（旧 `canonicalize(str)`
     永不命中，skipped=0 已证）：**只取 markdown 目标 URL**（`[标签](url)` 不得把标签当 URL，
-    相邻多链接各取各，#270）→ 按空白拆多个 URL → `_link_key` 去 tracking（`utm_*` 与常见
-    广告参数）并保留有意义 query；非 markdown 原值按空白直接拆；详见 DESIGN §25.5。
+    相邻多链接各取各，#270）→ 对「移除 markdown 片段后的余文」按空白拆，两者取并集
+    （混合 markdown + 裸链时裸链不丢，#288）→ `_link_key` 去 tracking（`utm_*` 与常见
+    广告参数）并保留有意义 query；详见 DESIGN §25.5。
     """
     keys: set[str] = set()
     for item in _str_list(raw):
-        targets = [m.group("target") for m in _MD_LINK.finditer(item)]
-        text = "\n".join(targets) if targets else item
-        for url in text.split():
+        urls = _MD_LINK.sub(lambda m: f" {m.group('target')} ", item).split()
+        for url in urls:
             if key := _link_key(url):
                 keys.add(key)
     return keys
@@ -70,6 +70,7 @@ def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
     prev_fp = ""
     while True:
         bitable_lark._guard_offset(offset)
+        bitable_lark.guard_pages(offset // bitable_lark._CHUNK + 1)
         proc = bitable_lark._run(
             [
                 "base", "+record-list",

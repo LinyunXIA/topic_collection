@@ -45,6 +45,14 @@ def _guard_offset(offset: int) -> None:
         )
 
 
+def guard_pages(pages: int) -> None:
+    """页数兜底（与 `--limit` 无关，_MAX_PAGES=1000）：offset 天花板不是唯一兜底（#290）。"""
+    if pages > _MAX_PAGES:
+        raise RuntimeError(
+            f"分页超过页数上限 {_MAX_PAGES}（与 --limit 无关），疑似未按 --offset 翻页，中止以避免死循环"
+        )
+
+
 def _page_fingerprint(page: Any) -> str:
     """本页指纹：id 集合取 sorted sha1（无序化），无 id 时对行内容排序后 sha1。
 

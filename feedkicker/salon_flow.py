@@ -66,10 +66,8 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             continue
 
         last_status = store.get_ppt_last_status(conn, rid)
-        ppt_synced_is_null = not store.is_ppt_synced(conn, rid)
-
-        if not ppt_synced_is_null and last_status == "已选题":
-            log.info("跳过已处理 %s (last_status=已选题)", rid)
+        if store.is_ppt_synced(conn, rid):
+            log.info("跳过已处理 %s (last_status=%s)", rid, last_status)
             skipped += 1
             continue
 

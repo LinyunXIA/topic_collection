@@ -134,18 +134,40 @@ def test_fetch_selected_empty_token_raises():
 
 
 def test_fetch_selected_empty_pages_with_has_more_terminates(monkeypatch):
-    # A5/R5V-5：has_more 恒真 + 空页无页指纹可判，由 20 万 offset 绝对兜底中止
+    # #290：has_more 恒真 + 连续空页无页指纹可判，由空页熔断（第 2 页）中止，不再靠 20 万 offset 兜底
     calls = {"n": 0}
 
     def fake_run(args, stdin_text=None, timeout=120):
         calls["n"] += 1
-        assert calls["n"] < 1100, "分页未在安全上限内终止（死循环）"
+        assert calls["n"] <= 3, "分页未在空页熔断内终止（死循环）"
         return FakeProc(0, stdout=json.dumps({"data": {"records": [], "has_more": True}}))
 
     monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
-    with pytest.raises(RuntimeError, match="分页|兜底"):
+    with pytest.raises(RuntimeError, match="分页|空页"):
         fetch_selected_topics("app", "tbl")
-    assert calls["n"] < 1100
+    assert calls["n"] == 2
+
+
+def test_fetch_selected_single_empty_page_then_recovers(monkeypatch):
+    """#290 对照：单空页容忍，下一轮恢复出数据须正常返回记录，不得过度熔断。"""
+    offsets: list[str] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        off = args[args.index("--offset") + 1]
+        offsets.append(off)
+        if off == "0":
+            payload = {"records": [], "has_more": True}
+        else:
+            payload = {
+                "records": [{"record_id": "recR", "fields": {"讨论状态": ["已选题"]}}],
+                "has_more": False,
+            }
+        return FakeProc(0, stdout=json.dumps({"data": payload}, ensure_ascii=False))
+
+    monkeypatch.setattr(topic_mod.bitable_lark, "_run", fake_run)
+    records = fetch_selected_topics("app", "tbl", limit=200)
+    assert [r["record_id"] for r in records] == ["recR"]
+    assert offsets == ["0", "200"]
 
 
 def test_fetch_selected_limit_zero_clamped(monkeypatch):

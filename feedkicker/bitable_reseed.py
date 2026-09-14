@@ -90,7 +90,10 @@ def purge_all_records(
         return _delete_batches(app_token, table_id, ids)
 
     deleted = 0
+    pages = 0
     while True:
+        pages += 1
+        bitable_lark.guard_pages(pages)
         proc = bitable_lark._run(
             ["base", "+record-list", "--base-token", app_token,
              "--table-id", table_id, "--limit", "200",

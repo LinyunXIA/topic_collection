@@ -54,6 +54,7 @@ topic_collection/
 ├── feedkicker/
 │   ├── config.py             # 读 config-{env}.yaml + env 覆盖 + facade re-export（§21.2）
 │   ├── config_models.py      # 路径常量与全部配置 dataclass（叶子模块，§21.2）
+│   ├── log_setup.py          # 共享日志初始化：basicConfig + 静音 httpx/httpcore（#287）
 │   ├── fetch.py              # feedparser 抓取 + 归一化
 │   ├── store.py              # sqlite 主表 + facade re-export（§21.2）
 │   ├── store_conn.py         # sqlite 连接/schema 迁移：WAL + busy_timeout（§21.2/#239）
@@ -436,6 +437,8 @@ v0.2 起 macOS 用 **launchd** 取代 cron：`StartCalendarInterval` 在机器�
 
 - **全局去重**：`canonicalize(url)` 相同的条目合并为一条，主归属 = feed_order 中最靠前的源，
   其余源标注「亦见 X + Y」（修复 HN 热榜 ∩ HN AI 高赞跨源重复推送问题）
+  （site.py 已废弃；同一规则现由推送侧 `feishu_card.build_card` 在渲染层执行，#289：
+  去重先于 top_n 截断与计数，`mark_pushed` 仍按原始 pending 全量标记避免孤儿）
 - 按 feed 分组（保 config 顺序）；description `html.escape` 后原样展示；纯 stdlib 字符串模板零依赖
 - `render_index`：按日期倒序归档目录（取最近 60 天有数据的日期）
 
@@ -927,7 +930,7 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 
 ### 24.2 第五轮审计修复语义补充（#231–#239，2026-09-14）
 
-- **分页防死循环改为页指纹**（#232/#243/#245）：`bitable_lark._page_guard` 以本页 id 集合的 sorted 指纹、无 id 时按行内容排序哈希比对上一页，相同即判 `--offset` 被忽略并中止（行序抖动不再漏检）；绝对兜底 = `_CHUNK × _MAX_PAGES` = 20 万 offset（1000 页，仅防指纹失效），`topic.fetch_selected_topics` 与 bitable 各路径统一使用，合法大表（≥20200 行）不再误杀。`bitable --backfill` 异常捕获后 log.error + rc 2（不再冒 traceback）；缺 lark-cli 时 `bitable.main` 非 dry-run 路径提前 rc 2、`backfill_empty_archive_dates` 直接 raise（不再静默 rc0，dry-run 预览降级 WARNING）。
+- **分页防死循环改为页指纹**（#232/#243/#245）：`bitable_lark._page_guard` 以本页 id 集合的 sorted 指纹、无 id 时按行内容排序哈希比对上一页，相同即判 `--offset` 被忽略并中止（行序抖动不再漏检）；兜底为**页数上限与 offset 双保险**——`bitable_lark.guard_pages` 以 `_MAX_PAGES`=1000 做页数上限（与 `--limit` 无关，各分页路径统一调用）叠加 `_guard_offset` 的 `_CHUNK × _MAX_PAGES` = 20 万 offset 天花板，`topic.fetch_selected_topics` 与 bitable 各路径统一使用，合法大表不再误杀；`topic` 另对「空页 + `has_more` 恒真」第 2 页即熔断（#290）。`bitable --backfill` 异常捕获后 log.error + rc 2（不再冒 traceback）；缺 lark-cli 时 `bitable.main` 非 dry-run 路径提前 rc 2、`backfill_empty_archive_dates` 直接 raise（不再静默 rc0，dry-run 预览降级 WARNING）。
 - **salon 逐题隔离**（#234）：`build_combined_md` 纳入逐题 try，`outline_to_md` 对 `slides`/`bullets`/`speaker_note` 类型归一（slides 非列表显式 raise 由逐题 try 跳过），单条坏 LLM 响应只 WARNING，不拖垮整批、不丢通知。
 - **reseed/markdown/existing_links 健壮性**（#235/#242）：dev/test reseed 对「环境」为空/不匹配行保守保留并 WARNING（§20）；prod markdown 路径仅当存在数据行却解析零 record id 时判 `ok=False` 中止（整页删净后重拉只剩表头属正常空表，`ok=True` 不再误阻断，#242）；fields+data 行式缺「链接」字段且有行时 raise（不静默空集）。
 - **脱敏 canary 哈希化**（#236）：真实 prod record id 不再以明文（含拼接）留在 tracked；测试改为 sha256 比对 + 长 token 无匹配断言，非 git 工作树显式失败（OPS §2.2 同口径记录）。

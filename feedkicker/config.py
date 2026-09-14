@@ -21,6 +21,7 @@ from feedkicker.config_models import (
     SiteConf as SiteConf,
     WikiConf as WikiConf,
     env_key_for as env_key_for,
+    warn_unknown_keys as warn_unknown_keys,
 )
 
 
@@ -66,6 +67,8 @@ def load_config(
         )
 
     raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if isinstance(raw, dict):
+        warn_unknown_keys(raw)
     cfg = Config(app_env=env)
     cfg.feishu_webhook = str(raw.get("feishu_webhook") or "")
     cfg.feishu_secret = str(raw.get("feishu_secret") or "")

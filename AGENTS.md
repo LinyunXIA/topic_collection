@@ -38,7 +38,7 @@
 
 - `mark_pushed` 在**发送成功后**才执行：失败条目保留待推，下轮重发卡片。
 - 归档同步失败只 WARNING，卡片照发（表格是常驻档案，链接永远有效）。
-- 跨源去重键 = `canonicalize(url)`：去 fragment、host 小写、**保留 query**；推送侧和归档侧都靠它。
+- 跨源去重键 = `canonicalize(url)`：去 fragment、host 小写、**保留 query**；归档侧与推送侧都靠它。推送侧在渲染层（`feishu_card.build_card`）全局去重：**主归属取 `feed_order` 中最早出现的源，其余源标「亦见 X + Y」**；`mark_pushed` 仍以原始 pending 为准（全部标记，不留孤儿）。
 
 ## 飞书自定义机器人三坑（实测踩过）
 

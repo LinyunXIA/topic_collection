@@ -50,6 +50,7 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
     prev_fp = ""
     while True:
         bitable_lark._guard_offset(offset)
+        bitable_lark.guard_pages(offset // bitable_lark._CHUNK + 1)
         proc = bitable_lark._run(
             [
                 "base", "+record-list",
