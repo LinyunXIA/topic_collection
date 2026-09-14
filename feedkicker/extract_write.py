@@ -39,15 +39,11 @@ def _link_key(url: str) -> str:
 
 
 def link_keys(raw: Any) -> set[str]:
-    """把表内/候选的 `资讯链接` 原值归一为去重键集合（`existing_index` 与 `write_topics` 共用）。
+    """把表内/候选的 `资讯链接` 原值归一为去重键集合（`existing_index`/`plan_writes` 共用）。
 
-    真实数据形态（live-verified）：表内 `资讯链接` 常是 **markdown 链接包裹 + 换行拼接** 的单
-    字符串且带 tracking 参数（`[<url1>\n<url2>](<url1>\n<url2>)`）；而 LLM 输出的是不含 utm
-    的裸 URL 列表。旧 `canonicalize(str)` 把整串（含 `[...](...)`、换行、utm）当一个 URL →
-    永不命中（真跑 skipped=0 已证）。故：markdown 包裹取 inner → 按空白（含换行）拆成多个
-    URL → `_link_key` 去 tracking；tracking 参数（`utm_*` 与 `spm`/`from`/`fbclid`/`gclid`/
-    `ref`/`ref_src`/`source`/`mc_cid`/`mc_eid`）不承载内容差异，保留会漏去重；有意义 query
-    （如 `?id=123`）按名排序保留，仍可区分。
+    真跑表内值常是 markdown 包裹 + 换行拼接 + tracking 参数的单字符串（旧 `canonicalize(str)`
+    永不命中，skipped=0 已证）：取 markdown inner → 按空白拆多个 URL → `_link_key` 去
+    tracking（`utm_*` 与常见广告参数）并保留有意义 query；详见 DESIGN §25.5。
     """
     keys: set[str] = set()
     for item in _str_list(raw):
@@ -62,13 +58,9 @@ def link_keys(raw: Any) -> set[str]:
 def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
     """分页拉目标表已有索引 `(归一话题名集合, 归一链接集合)`；拉取失败/容器异常 raise（不静默空集）。
 
-    双键去重之因：LLM 命名非确定性——同一新闻重跑会产出不同「话题名称」，仅按名去重会
-    漏判并重复落表（真跑已证）；故并列按 `资讯链接` 兜底。名称归一沿用 `topic_key`
-    （NFKC+strip+casefold），链接归一用 `link_keys`（去 markdown 包裹 + 拆行 + 去 tracking
-    参数，真跑表内值形态与理由见 `link_keys` docstring）。
-    响应兼容 records/items 包装与 fields+data 行式（topic_records._extract_records 归一）；
-    fields+data 形态缺「话题名称」列 → raise 中止（不得静默空集，PRV-4）。
-    翻页走 offset 兜底 + 页指纹守卫（#245）。
+    双键之因：LLM 命名非确定性，仅按名去重会漏判重复落表（真跑已证），并列按 `资讯链接`
+    兜底。响应兼容 records/items 与 fields+data 行式；fields+data 缺「话题名称」列 → raise
+    （不得静默空集，PRV-4）；翻页走 offset + 页指纹守卫（#245）。
     """
     names: set[str] = set()
     links: set[str] = set()
@@ -120,13 +112,9 @@ def build_record(
 ) -> dict[str, Any]:
     """字段映射：LLM 三字段原样、链接/来源换行拼接、提炼日期/讨论状态/提取工具固定值。
 
-    **select 字段一律写数组**（`讨论状态` / `提取工具` 均为单选 select，写单元素数组）：
-    lark-cli `base +record-batch-create --help` Tips 明确 select CellValue 恒为数组
-    （`multiple=false` 时也须单元素数组，形如 `"select": ["Todo"]`），写字符串会被
-    服务端拒（800030005 not_found）。取值必须是**表内已有选项**：`讨论状态`
-    为 `未讨论/已选题/不选择/待继续评估`，`提取工具` 为 `MMax`/`DS`（`飞书` 留给人工
-    路径，不在 provider 注册表引入）；写表外新值会被拒 `800030005 Provide an existing
-    option value`。不复用 `+field-list` 元数据判形态（真跑已证伪）。
+    **select 字段一律写单元素数组**（lark-cli Tips：CellValue 恒为数组，写字符串被拒
+    800030005）；取值须为表内已有选项（`讨论状态` 4 项、`提取工具` `MMax`/`DS`），写表外
+    新值被拒 Provide an existing option value；不复用 `+field-list` 元数据判形态（真跑已证伪）。
     """
     return {
         "话题名称": str(topic.get("话题名称") or "").strip(),
@@ -140,28 +128,21 @@ def build_record(
     }
 
 
-def write_topics(
-    app_token: str,
-    table_id: str,
+def plan_writes(
     topics: list[dict[str, Any]],
     provider_label: str,
     run_date: str,
-    dry_run: bool = False,
-) -> tuple[int, int]:
-    """按「资讯链接 OR 话题名称」双键查重跳过（幂等）；dry_run 仅返回 (待写数, 跳过数)，零写调用。
+    existing_names: set[str],
+    existing_links: set[str],
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """去重规划：返回 (将写入记录, 将跳过记录)，`write_topics` 与 dry-run 打印共用（标注/计数/写入同源）。
 
-    双键是 LLM 命名非确定性下的真幂等兜底：话题名归一命中，或该 topic 任一 `资讯链接`
-    经 `link_keys` 归一后命中表内/本批已见链接 → 跳过；两者皆无才写。本批内同样按
-    name 或 link 任一已见即跳过，避免同链接在批内重复落表。
-    真写走 +record-batch-create ≤200/批；块失败 WARNING 后继续，返回实际成功数。
+    双键：话题名归一或任一 `资讯链接` 归一命中表内/本批已见即跳过；两者皆无才写（本批内同链接亦跳过）。
     """
-    if not app_token or not table_id:
-        raise RuntimeError("写入选题表需要 app_token 与 table_id（salon 配置段）")
-    existing_names, existing_links = existing_index(app_token, table_id)
     picked: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
     seen_names: set[str] = set()
     seen_links: set[str] = set()
-    skipped = 0
     for topic in topics:
         key = topic_key(topic.get("话题名称"))
         links = link_keys(topic.get("资讯链接"))
@@ -172,17 +153,36 @@ def write_topics(
             or bool(links & existing_links)
             or bool(links & seen_links)
         ):
-            skipped += 1
+            skipped.append(build_record(topic, provider_label, run_date))
             continue
         seen_names.add(key)
         seen_links |= links
-        picked.append(topic)
+        picked.append(build_record(topic, provider_label, run_date))
+    return picked, skipped
+
+
+def write_topics(
+    app_token: str,
+    table_id: str,
+    topics: list[dict[str, Any]],
+    provider_label: str,
+    run_date: str,
+    dry_run: bool = False,
+) -> tuple[int, int]:
+    """按双键查重跳过（幂等）；dry_run 仅返回 (待写数, 跳过数) 零写调用；规划复用 `plan_writes`。
+
+    真写走 +record-batch-create ≤200/批；块失败 WARNING 后继续，返回实际成功数。
+    """
+    if not app_token or not table_id:
+        raise RuntimeError("写入选题表需要 app_token 与 table_id（salon 配置段）")
+    existing_names, existing_links = existing_index(app_token, table_id)
+    picked, skipped = plan_writes(topics, provider_label, run_date, existing_names, existing_links)
     if dry_run:
-        return len(picked), skipped
+        return len(picked), len(skipped)
     written = 0
     for i in range(0, len(picked), bitable_lark._CHUNK):
         chunk = picked[i : i + bitable_lark._CHUNK]
-        payload = {"create_records": [build_record(t, provider_label, run_date) for t in chunk]}
+        payload = {"create_records": chunk}
         with bitable_lark._json_arg(payload) as (jflag, jval):
             proc = bitable_lark._run(
                 [
@@ -197,4 +197,4 @@ def write_topics(
             log.warning("选题批量写入失败（第 %d 批 %d 条）", i // bitable_lark._CHUNK + 1, len(chunk))
             continue
         written += len(chunk)
-    return written, skipped
+    return written, len(skipped)

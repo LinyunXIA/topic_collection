@@ -997,7 +997,7 @@ extract:
 
 - `prompts/extract.md` 原样收录用户 4 条提示词（五要素 / 过滤营销与无工具纯新闻 / 无法提炼即跳过 / 写前确认），并追加「输出必须为 JSON」的 schema 段与分批输入说明。
 - 输出契约：`{"topics":[{"话题名称":"","可使用工具":"","相关AI原理":"","资讯链接":[""],"出处来源":[""]}]}`。
-- `parse_topics`：容忍 ```json 围栏；JSON 非法、顶层非对象、`topics` 非列表 → raise `ValueError`（该批计 failed 由调用方 WARNING 跳过，不抛到运行级）；单个 topic 非对象或缺 5 键 → 丢弃该条、`dropped` 计数并 WARNING，不整批弃（PRV-6）；`资讯链接`/`出处来源` 接受 str（归一为单元素列表）或 list。
+- `parse_topics`：容忍 ```json 围栏；JSON 非法、顶层非对象、`topics` 非列表 → raise `ValueError`（调用方重试 1 次，两次都失败才计 failed 并 WARNING 跳过，不抛到运行级）；单个 topic 非对象或缺 5 键 → 丢弃该条、`dropped` 计数并 WARNING，不整批弃（PRV-6）；`资讯链接`/`出处来源` 接受 str（归一为单元素列表）或 list。
 - `merge_topics`：按「话题名称」NFKC 归一 + strip + casefold 的比较键合并（写入保留首个原值）；`可使用工具`/`相关AI原理` 首个非空保留；`资讯链接`/`出处来源` 顺序拼接去重（写入时以换行 join）。
 
 ### 25.5 去重
@@ -1005,23 +1005,26 @@ extract:
 - 写入前 `existing_index` 分页拉目标表 **`话题名称` + `资讯链接`** 两列（同页一次拉取），返回 `(归一话题名集合, 归一链接集合)`；名称按 `topic_key`（NFKC+strip+casefold）、链接按 `link_keys` 归一（`_page_guard` 防死循环；响应兼容 records 与 fields+data 两形态，容器异常 raise 中止写入而非静默空集）。
 - **链接归一 = 去 markdown 包裹 + 拆行 + 去 tracking 参数**（`link_keys`，`existing_index` 与 `write_topics` 共用）：表内 `资讯链接` 真实值常是 **markdown 链接包裹 + 换行拼接** 的单字符串且带 tracking 参数（如 `[<url1?utm_source=rss>\n<url2>](<url1?utm_source=rss>\n<url2>)`），而 LLM 输出的是不含 utm 的裸 URL 列表——旧 `canonicalize(整串)` 把 `[...](...)`+换行+utm 当一个 URL → 永不命中（真跑 `skipped=0` 已证）。故先取 markdown 链接 inner、按空白（含换行）拆成多个 URL，再对每个 URL `canonicalize` 后剥 tracking 参数（键名小写以 `utm_` 开头或属 `{spm,from,fbclid,gclid,ref,ref_src,source,mc_cid,mc_eid}`），其余 query 按名排序重建；无法解析则原样 canonicalize。
 - **按 资讯链接 OR 话题名称 双键去重**：命中任一既有键（或本批已出现）→ 跳过；两者皆无才写，重复运行不新增重复行（幂等）。动机：LLM 命名非确定性——同一新闻重跑会产出不同「话题名称」，仅按名去重会漏判并重复落表（真跑已证）；链接键是跨命名的稳定兜底，且 `link_keys` 保证 `#frag`/host 大小写/tracking 参数等形态差异不逃逸。`--update` 刷新既有行本期不做。
+- **去重规划抽为 `plan_writes(topics, provider_label, run_date, existing_names, existing_links)` → `(将写入记录, 将跳过记录)`**：`write_topics` 真写与 dry-run 打印**共用同一规划**，保证清单标注、summary `pending`/`skipped` 与实际写入三者同源一致（F35）。
 - `讨论状态` / `提取工具` 均为单选 select，按 lark-cli select CellValue 协议**一律写单元素数组**：`["未讨论"]` / `[provider_label]`（`base +record-batch-create --help` Tips 明确 select CellValue 恒为数组，`multiple=false` 时也须数组；写字符串会被服务端拒）。取值须为表内已有选项（`讨论状态`：`未讨论`/`已选题`/`不选择`/`待继续评估`；`提取工具`：`MMax`/`DS`），写表外新值被拒 `800030005 Provide an existing option value`（真跑已证）。不再读 `+field-list` 字段元数据判形态（真跑已证伪，PRV-1）。
 
 ### 25.6 CLI（`tc-extract`）
 
 ```
 tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-size N]
-           [--max-calls N] [--env dev|test|prod] [--config PATH] [--db PATH]
+           [--max-calls N] [--provider {minimax,deepseek}] [--env dev|test|prod]
+           [--config PATH] [--db PATH]
 ```
 
-- 默认 dry-run：打印合并后的完整待写清单与统计（批数/调用数/话题数/将写/将跳过/失败批/空批 `empty_batches`），**零写调用**。
+- 默认 dry-run：打印合并后的待写清单（逐条 `[将写入]`/`[已存在跳过]` 前缀标注，数量与 summary `pending`/`skipped` 同源一致）与统计（批数/调用数/话题数/将写/将跳过/失败批/空批 `empty_batches`），**零写调用**。
+- `--provider`：单次运行覆盖 `extract.provider`（缺省取配置，默认 `minimax`）；choices 由 `extract_llm.PROVIDERS` 注册表键动态给出；`run` 用 `dataclasses.replace` 构造有效 `ex`，`resolve_provider`/`refine_batches`（内含 `call_llm`）与 `提取工具` 均取该 provider（minimax→`MMax`，deepseek→`DS`），运行日志打印实际 provider。
 - `--apply`：写入 `cfg.salon.app_token/table_id`（不调 `ensure_initialized`，不改表结构）。
-- 退出码：2 配置错（config 加载失败 / prompt 文件缺失 / provider 未注册或缺 key / salon token 占位或缺失）；1 未捕获异常；0 正常（含部分批失败跳过）。
+- 退出码：2 配置错（config 加载失败 / prompt 文件缺失 / `--provider` 未知 / provider 未注册 / 所选 provider 缺 key（配置与 env 均无，不发起 HTTP）/ salon token 占位或缺失）；1 未捕获异常；0 正常（含部分批失败跳过）。
 
 ### 25.7 失败语义
 
-- 单批 LLM 调用失败（超时/429/529/业务可重试码）→ 编排层重试 1 次（`_post_chat` 单次尝试 + `refine_batches` 外层单层重试，总 HTTP ≤2/批），仍失败该批计 failed 跳过、计数并在结束汇总 WARNING，不阻断其余批、rc 仍 0。
-- 模型合法返回 `{"topics":[]}`（无话题）→ 计 `empty_batches`（summary 字段）而非 failed；raw 非空但 JSON/契约解析失败才计 failed（PRV-2）。
+- 单批**第 1 次尝试失败（调用异常 或 JSON/契约解析失败）→ 编排层重试 1 次**（`_post_chat` 单次尝试 + `refine_batches` 外层单层重试；「调用 + 解析」共享同一重试预算，总 HTTP ≤2/批），仅两次都失败该批计 failed 跳过、计数并在结束汇总 WARNING，不阻断其余批、rc 仍 0。
+- 模型合法返回 `{"topics":[]}`（无话题）→ 计 `empty_batches`（summary 字段）而非 failed；两次尝试后 JSON/契约解析仍失败才计 failed（PRV-2）。
 - `max_calls > 0` 时每次调用前检查，达限停止剩余批并 WARNING（联调护栏）。
 - 写入分块失败：该块 WARNING、继续后续块，返回实际成功计数。
 

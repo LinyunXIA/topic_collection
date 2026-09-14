@@ -64,8 +64,9 @@ def refine_batches(
 ) -> tuple[list[dict[str, Any]], int, int, int]:
     """逐批 LLM 提炼，返回 (topics, calls, failed, empty)。
 
-    调用失败（超时/限流/可重试码）由本层重试 1 次后计 failed；raw 合法但 JSON/契约解析
-    失败计 failed；模型合法返回空列表计 empty（PRV-2）；单条非法 topic 丢弃并计数（PRV-6）。
+    单批「调用 + 解析」共享同一重试预算：第 1 次尝试失败（调用异常或 JSON/契约解析失败）
+    重试 1 次，两次都失败才计 failed（总 HTTP ≤2/批）；模型合法返回空列表计 empty（PRV-2）；
+    单条非法 topic 丢弃并计数（PRV-6）。
     """
     collected: list[dict[str, Any]] = []
     calls = 0
@@ -73,7 +74,8 @@ def refine_batches(
     empty = 0
     for no, batch in enumerate(batches, 1):
         prompt = build_batch_prompt(template, batch)
-        raw = ""
+        parsed: list[dict[str, Any]] | None = None
+        dropped = 0
         limit_reached = False
         for attempt in (1, 2):
             if max_calls and calls >= max_calls:
@@ -83,24 +85,23 @@ def refine_batches(
             calls += 1
             try:
                 raw = call_llm(ex, prompt)
-                break
             except Exception as e:  # noqa: BLE001
-                log.warning("第 %d/%d 批 LLM 调用失败（attempt %d/2）: %s", no, len(batches), attempt, e)
+                log.warning("第 %d/%d 批第 %d/2 次尝试失败（调用异常）: %s", no, len(batches), attempt, e)
+                continue
+            try:
+                parsed, dropped = parse_topics(raw)
+                break
+            except ValueError as e:
+                log.warning("第 %d/%d 批第 %d/2 次尝试失败（JSON/契约解析失败）: %s", no, len(batches), attempt, e)
         if limit_reached:
             break
-        if not raw:
+        if parsed is None:
             failed += 1
-            log.warning("第 %d/%d 批调用重试后仍失败，跳过", no, len(batches))
-            continue
-        try:
-            topics, dropped = parse_topics(raw)
-        except ValueError as e:
-            failed += 1
-            log.warning("第 %d/%d 批 JSON/契约解析失败（%s），跳过", no, len(batches), e)
+            log.warning("第 %d/%d 批两次尝试后仍失败，跳过", no, len(batches))
             continue
         if dropped:
             log.warning("第 %d/%d 批丢弃 %d 条非法 topic", no, len(batches), dropped)
-        if not topics:
+        if not parsed:
             if dropped:
                 failed += 1
                 log.warning("第 %d/%d 批 %d 条 topic 全部非法，计失败批", no, len(batches), dropped)
@@ -108,8 +109,8 @@ def refine_batches(
                 empty += 1
                 log.info("第 %d/%d 批模型合法返回空话题列表", no, len(batches))
             continue
-        collected.extend(topics)
-        log.info("第 %d/%d 批提炼 %d 个话题", no, len(batches), len(topics))
+        collected.extend(parsed)
+        log.info("第 %d/%d 批提炼 %d 个话题", no, len(batches), len(parsed))
     return collected, calls, failed, empty
 
 
@@ -117,7 +118,7 @@ def _post_chat(conf: ProviderConf, prompt: str, timeout: float = 180.0) -> str:
     """POST {base_url}/chat/completions，单次尝试（PRV-8）。
 
     超时/429/529/业务可重试码一律抛 RuntimeError 可重试错误；重试仅由编排层
-    `extract_flow._refine_batches` 做 1 次，总 HTTP ≤2/批，避免双层重试放大到 4 次。
+    `refine_batches` 做 1 次，总 HTTP ≤2/批，避免双层重试放大到 4 次。
     """
     url = f"{conf.base_url.rstrip('/')}/chat/completions"
     headers = {"Authorization": f"Bearer {conf.api_key}", "Content-Type": "application/json"}

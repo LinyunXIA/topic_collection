@@ -64,7 +64,7 @@
 
 以 `feedkicker/config_models.py` 与 `feedkicker/config.py` 的 `load_config` 为准；未文档化别名（`salon.wiki_space`、`wiki.wiki_space_id` 等）已移除。
 
-`extract` 段补充：提示词文件默认 `prompts/extract.md`（仓库根相对路径，可配 `extract.prompt_file`）；provider 注册表默认值在 `feedkicker/extract_llm.py`（minimax：`https://api.minimaxi.com/v1` / `MiniMax-M3` / `MMX（MiniMax）`；deepseek：`https://api.deepseek.com/v1` / `deepseek-chat` / `DS（DeepSeek）`），yaml `providers.<name>` 非空字段覆盖默认；`providers.<name>.base_url` **须含 `/v1`**（endpoint 按 `{base_url}/chat/completions` 拼接，缺 `/v1` 会 404）。
+`extract` 段补充：提示词文件默认 `prompts/extract.md`（仓库根相对路径，可配 `extract.prompt_file`）；provider 注册表默认值在 `feedkicker/extract_llm.py`（minimax：`https://api.minimaxi.com/v1` / `MiniMax-M3` / `MMax`；deepseek：`https://api.deepseek.com/v1` / `deepseek-chat` / `DS`），yaml `providers.<name>` 非空字段覆盖默认；`providers.<name>.base_url` **须含 `/v1`**（endpoint 按 `{base_url}/chat/completions` 拼接，缺 `/v1` 会 404）。`tc-extract --provider {minimax,deepseek}` 可单次切换 provider（缺省取 `extract.provider`，默认 minimax），`提取工具` 随之为 `MMax`/`DS`；DeepSeek 的 key 走 `DEEPSEEK_API_KEY`（或 `extract.providers.deepseek.api_key`），所选 provider 缺 key/占位 → rc 2 且不发请求。
 
 ### 1.4 db 分流
 
