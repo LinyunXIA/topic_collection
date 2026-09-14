@@ -129,6 +129,9 @@ def run(
             "empty_batches": empty,
         }
     )
+    if apply and failed_writes and not written:
+        log.error("写入全部失败：failed_writes=%d（rc=1）", failed_writes)
+        return 1
     return 0
 
 

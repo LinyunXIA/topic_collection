@@ -600,7 +600,7 @@ def test_salon_flow_wiki_docx_create_path(monkeypatch):
         if args[:2] == ["docs", "+create"]:
             assert args[args.index("--parent-token") + 1] == "parent"
             assert args[args.index("--doc-format") + 1] == "markdown"
-            assert args[args.index("--title") + 1] == "话题_Wiki_检验_2026-09-04_大纲"
+            assert "--title=话题_Wiki_检验_2026-09-04_大纲" in args
             content_arg = args[args.index("--content") + 1]
             assert content_arg.startswith("@./") and content_arg.endswith(".md")
             return FakeProc(0, stdout=json.dumps({"ok": True, "data": {"document": {"document_id": "docx_new_001", "url": "https://web91vfvm7.feishu.cn/docx/docx_new_001"}}}, ensure_ascii=False))

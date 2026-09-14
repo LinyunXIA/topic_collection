@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import json
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Any
+
+from feedkicker import bitable_lark
 
 
 def topic_title(rec: dict[str, Any]) -> str:
@@ -84,7 +86,7 @@ def outline_to_md(outline: dict[str, Any], label: str) -> str:
 def build_combined_md(
     title: str, tool_outline: dict[str, Any], principle_outline: dict[str, Any]
 ) -> str:
-    date_str = datetime.now(UTC).strftime("%Y-%m-%d")
+    date_str = datetime.now(bitable_lark.SHANGHAI).strftime("%Y-%m-%d")
     header = f"# {title} · 大纲归档 {date_str}\n"
     tool_md = outline_to_md(tool_outline, "工具类大纲")
     princ_md = outline_to_md(principle_outline, "原理类大纲")

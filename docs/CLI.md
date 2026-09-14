@@ -228,7 +228,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 | flag | 类型 | 默认 | 覆盖关系 | 说明 |
 |---|---|---|---|---|
 | `--apply` | store_true | 关（即默认 dry-run） | — | 真删；缺省仅 dry-run 巡检 |
-| `--retention-days` | int | `None`（取 `config.bitable.retention_days=365`） | 覆盖配置值（下限 1，上限 36500，超限 rc 2） | 保留天数 |
+| `--retention-days` | int | `None`（取 `config.bitable.retention_days=365`） | 覆盖配置值（`<1` 静默钳为 1；仅 `>36500` 报 rc 2） | 保留天数 |
 | `--config` | str | `None` | 覆盖 `--env` 推导 | 指定 `config-{env}.yaml` 路径 |
 | `--db` | str | `None` | 覆盖 `TC_DB` 与 `--env` 推导 | sqlite 路径 |
 | `--env` | choice `{dev,test,prod}` | `None`（回落 prod） | 覆盖 `TC_APP_ENV` | 决定默认配置与 db 路径 |
@@ -379,7 +379,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 
 如需本次走 DeepSeek：`.venv/bin/tc-extract --env test --apply --provider deepseek`（`提取工具=DS`）。
 
-示意输出：`提炼完成：… 写入=N 待写=0 跳过=M 失败批=0` 与统计 JSON（`"mode": "apply"`）。退出码 `0`（部分批失败仅汇总 WARNING，rc 不变；配置错 `2`，异常 `1`）。副作用：写 salon 选题表（≤200/批，`讨论状态=未讨论`、`提取工具`=所选 provider 的 tool_label）。
+示意输出：`提炼完成：… 写入=N 待写=0 跳过=M 失败批=0` 与统计 JSON（`"mode": "apply"`）。退出码 `0`（部分批失败/部分写入失败仅汇总 WARNING，rc 不变）；`--apply` **全部写入失败**（`failed_writes>0 且 written==0`）→ `1`；配置错 `2`，其它异常 `1`。副作用：写 salon 选题表（≤200/批，`讨论状态=未讨论`、`提取工具`=所选 provider 的 tool_label）。
 
 **prod（仅 dry-run）**：
 
