@@ -144,7 +144,7 @@ def load_config(
         enabled=bool(salon_raw.get("enabled", cfg.salon.enabled)),
         app_token=str(salon_raw.get("app_token") or ""),
         table_id=str(salon_raw.get("table_id") or ""),
-        wiki_space_id=str(salon_raw.get("wiki_space_id") or salon_raw.get("wiki_space") or ""),
+        wiki_space_id=str(salon_raw.get("wiki_space_id") or ""),
         wiki_parent_token=str(salon_raw.get("wiki_parent_token") or ""),
         trigger_weekday=int(salon_raw.get("trigger_weekday", cfg.salon.trigger_weekday)),
         trigger_hour=int(salon_raw.get("trigger_hour", cfg.salon.trigger_hour)),
@@ -152,24 +152,18 @@ def load_config(
     )
 
     minimax_raw = raw.get("minimax") or {}
-    if not minimax_raw and salon_raw.get("minimax_api_key"):
-        minimax_raw = {"api_key": salon_raw.get("minimax_api_key")}
     cfg.minimax = MinimaxConf(
-        api_key=str(minimax_raw.get("api_key") or minimax_raw.get("minimax_api_key") or ""),
+        api_key=str(minimax_raw.get("api_key") or ""),
         model=str(minimax_raw.get("model") or cfg.minimax.model),
         base_url=str(minimax_raw.get("base_url") or cfg.minimax.base_url),
     )
 
     wiki_raw = raw.get("wiki") or {}
     cfg.wiki = WikiConf(
-        space_id=str(wiki_raw.get("space_id") or wiki_raw.get("wiki_space_id") or salon_raw.get("wiki_space_id") or ""),
-        parent_token=str(wiki_raw.get("parent_token") or wiki_raw.get("wiki_parent_token") or salon_raw.get("wiki_parent_token") or ""),
+        space_id=str(wiki_raw.get("space_id") or salon_raw.get("wiki_space_id") or ""),
+        parent_token=str(wiki_raw.get("parent_token") or salon_raw.get("wiki_parent_token") or ""),
         app_token=str(wiki_raw.get("app_token") or ""),
     )
-    if not cfg.wiki.space_id and cfg.salon.wiki_space_id:
-        cfg.wiki.space_id = cfg.salon.wiki_space_id
-    if not cfg.wiki.parent_token and cfg.salon.wiki_parent_token:
-        cfg.wiki.parent_token = cfg.salon.wiki_parent_token
 
     env_minimax = os.environ.get("MiniMax_Key") or os.environ.get("MINIMAX_API_KEY")
     if env_minimax:
