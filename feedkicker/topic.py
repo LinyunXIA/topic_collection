@@ -10,6 +10,7 @@ from feedkicker import bitable
 log = logging.getLogger(__name__)
 
 FILTER_JSON = json.dumps({"logic": "and", "conditions": [["讨论状态", "intersects", ["已选题"]]]}, ensure_ascii=False)
+MAX_OFFSET = 20000
 
 
 def _extract_records(data: dict[str, Any]) -> list[dict[str, Any]]:
@@ -46,13 +47,18 @@ def fetch_selected_topics(
     """拉取讨论状态 intersects 已选题 的记录，自动分页。
 
     响应兼容 records/items 包装与 data.fields+data.data 行式两种形态；
-    空页且 has_more 非真即终止，has_more 缺失时以不足一页判定结束。
+    空页且 has_more 非真即终止，has_more 缺失时以不足一页判定结束；
+    所有翻页分支共用 offset 上限守卫（A5），has_more 恒真时不会空转死循环。
     """
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")
     all_records: list[dict[str, Any]] = []
     offset = 0
     while True:
+        if offset > MAX_OFFSET:
+            raise RuntimeError(
+                f"fetch_selected_topics 分页 offset 超过上限 {MAX_OFFSET}，疑似 has_more 恒真，中止以避免死循环"
+            )
         args = [
             "base", "+record-list",
             "--base-token", app_token,
@@ -75,14 +81,13 @@ def fetch_selected_topics(
             log.warning("lark-cli 业务失败: %s", msg)
             raise RuntimeError(f"lark-cli 业务失败: {msg}")
         chunk = _extract_records(data)
+        has_more = data.get("has_more") if "has_more" in data else data.get("hasMore")
         if not chunk:
-            has_more = data.get("has_more") if "has_more" in data else data.get("hasMore")
             if has_more is True:
                 offset += limit
                 continue
             break
         all_records.extend(chunk)
-        has_more = data.get("has_more") if "has_more" in data else data.get("hasMore")
         if has_more is not None:
             if not has_more:
                 break
@@ -91,9 +96,6 @@ def fetch_selected_topics(
         if len(chunk) < limit:
             break
         offset += limit
-        if offset > 20000:
-            log.warning("fetch_selected_topics 分页超出上限，截断")
-            break
     return all_records
 
 
