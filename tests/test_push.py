@@ -716,7 +716,7 @@ def test_bitable_cell_fields(monkeypatch):
         "description": "", "published_at": "2026-08-25T01:30:00Z",
         "pushed_at": "2026-08-25T09:59:53Z",
     }, env_name="dev")
-    assert cell["归档日期"] == "2026-08-25" or len(cell["归档日期"]) == 10
+    assert cell["归档日期"] == "2026-08-25"
     assert cell["环境"] == "dev"
     assert len(cell["推送时间"]) == 16
 
@@ -815,7 +815,9 @@ def test_bitable_views_creation(monkeypatch):
 
     assert bitable.setup_view("app", "tbl") is True
     group_calls = [c for c in calls if "+view-set-group" in c]
-    assert any('"来源"' in json.dumps(c, ensure_ascii=False) for c in [group_calls[-2:]]) or True
+    assert len(group_calls) == 1
+    group_json = group_calls[0][group_calls[0].index("--json") + 1]
+    assert json.loads(group_json)["group_config"] == [{"field": "来源", "desc": False}]
 
     calls.clear()
     assert bitable.create_date_view("app", "tbl") is True
