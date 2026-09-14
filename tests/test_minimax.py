@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json as _json
 
+import httpx
 import pytest
 
 import feedkicker.minimax as mm
@@ -265,6 +266,60 @@ def test_arguments_string_dict_handling(monkeypatch):
     monkeypatch.setattr(mm.httpx, "post", fake_post)
     result = mm.gen_outline("topic", kind="tool", api_key="sk")
     assert result["title"] == "dict args"
+
+
+def test_timeout_retry_exhausted_raises(monkeypatch):
+    calls = []
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        calls.append(1)
+        raise httpx.TimeoutException("read timeout")
+
+    monkeypatch.setattr(mm.httpx, "post", fake_post)
+    with pytest.raises(RuntimeError, match="读超时"):
+        mm.call_minimax_chat([{"role": "user", "content": "hi"}], api_key="sk", timeout=7)
+    assert len(calls) == 2
+
+
+def test_timeout_first_attempt_then_success(monkeypatch):
+    calls = []
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx.TimeoutException("read timeout")
+        outline = {"title": "超时恢复", "slides": [{"heading": "h", "bullets": ["a"]}]}
+        return FakeResp(
+            200,
+            {"choices": [{"message": {"tool_calls": [{"function": {"name": "generate_ppt_outline", "arguments": _json.dumps(outline)}}]}}]},
+        )
+
+    monkeypatch.setattr(mm.httpx, "post", fake_post)
+    result = mm.gen_outline("topic", kind="tool", api_key="sk")
+    assert result["title"] == "超时恢复"
+    assert len(calls) == 2
+
+
+def test_code_fence_json_fallback(monkeypatch):
+    outline = {"title": "围栏大纲", "slides": [{"heading": "h", "bullets": ["a"]}]}
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        content = "```json\n" + _json.dumps(outline, ensure_ascii=False) + "\n```"
+        return FakeResp(200, {"choices": [{"message": {"content": content, "tool_calls": []}}]})
+
+    monkeypatch.setattr(mm.httpx, "post", fake_post)
+    assert mm.gen_outline("topic", kind="tool", api_key="sk") == outline
+
+
+def test_code_fence_invalid_json_raises(monkeypatch):
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        return FakeResp(
+            200, {"choices": [{"message": {"content": "```json\nnot json\n```", "tool_calls": []}}]}
+        )
+
+    monkeypatch.setattr(mm.httpx, "post", fake_post)
+    with pytest.raises(RuntimeError, match="无法解析大纲JSON"):
+        mm.gen_outline("topic", kind="tool", api_key="sk")
 
 
 def test_minimax_outline_mock(monkeypatch):

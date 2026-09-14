@@ -148,7 +148,6 @@ if __name__ == "__main__":
             from feedkicker.config import load_config
 
             cfg = load_config(app_env=args.env)
-            app_token = app_token or cfg.salon.app_token or cfg.salon.table_id and "" or ""
             if not app_token:
                 app_token = cfg.salon.app_token
             if not table_id:

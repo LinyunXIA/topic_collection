@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
 
+from feedkicker.feishu_host import feishu_host
 from feedkicker.fetch import canonicalize, utc_now_iso
 
 
@@ -89,7 +90,7 @@ def _run(
     except (subprocess.TimeoutExpired, OSError) as e:
         log.warning("lark-cli 执行异常: %s", e)
         return None
-    if proc is not None and proc.returncode != 0:
+    if proc.returncode != 0:
         log.warning("lark-cli 失败(%d): %s", proc.returncode, proc.stderr.strip()[:300])
     return proc
 
@@ -140,7 +141,7 @@ def _json_arg(payload: dict[str, Any]):
 
 
 def base_url(app_token: str) -> str:
-    return f"https://web91vfvm7.feishu.cn/base/{app_token}"
+    return f"https://{feishu_host()}/base/{app_token}"
 
 
 def find_base_by_title(title: str) -> dict[str, Any] | None:
@@ -329,8 +330,12 @@ def _markdown_record_ids(stdout: str) -> list[str]:
     return ids
 
 
-def purge_all_records(app_token: str, table_id: str) -> int:
-    """清空数据表全部记录（用于结构变更后的干净重灌）。返回删除数。"""
+def purge_all_records(app_token: str, table_id: str, dry_run: bool = False) -> int:
+    """清空数据表全部记录（用于结构变更后的干净重灌）。返回删除数。
+
+    dry_run 只数首屏待清空记录（markdown list 无 offset，不删就翻不动页），
+    绝不发 +record-delete。
+    """
     deleted = 0
     while True:
         proc = _run(
@@ -344,6 +349,9 @@ def purge_all_records(app_token: str, table_id: str) -> int:
         ids = _markdown_record_ids(proc.stdout if proc is not None else "")
         if not ids:
             break
+        if dry_run:
+            log.info("reseed dry-run：首屏 %d 条待清空（未删除）", len(ids))
+            return len(ids)
         d = _run(["base", "+record-delete", "--base-token", app_token,
                   "--table-id", table_id,
                   "--json", json.dumps({"record_id_list": ids}, ensure_ascii=False),
@@ -697,7 +705,36 @@ def sync_env(bt, app_env: str, conn, now_iso=None) -> int:
     return len(unsynced)
 
 
-if __name__ == "__main__":
+def _tokens_ready(bt: Any) -> bool:
+    """app_token/table_id 已配置且非占位，可做只读预览。"""
+    return bool(bt.app_token and bt.table_id and "<" not in bt.app_token and "<" not in bt.table_id)
+
+
+def _dry_run_plan(cfg: Any, args: Any) -> None:
+    """dry-run 只读预览：不建 Base、不 patch、不清空、不写记录。"""
+    bt = cfg.bitable
+    log.info("dry-run：不建 Base、不写表；以下仅预览将执行的动作")
+    if args.init:
+        log.info("dry-run：将补归档日期字段/「按来源」「按日期」视图/组织内只读分享（未执行）")
+    if args.reseed:
+        if _tokens_ready(bt):
+            n = purge_all_records(bt.app_token, bt.table_id, dry_run=True)
+            log.info("dry-run：将清空 %d 条记录后全量重灌（未删除）", n)
+        else:
+            log.info("dry-run：Base 未配置或为占位 token，跳过 reseed 预览")
+    if args.backfill or args.fix_archive_date:
+        if _tokens_ready(bt):
+            env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
+            n = backfill_empty_archive_dates(
+                bt.app_token, bt.table_id, env_name=env_name, dry_run=True
+            )
+            log.info("dry-run：归档日期将回填 %d 条（未写入）", n)
+        else:
+            log.info("dry-run：Base 未配置或为占位 token，跳过 backfill 预览")
+    log.info("dry-run：跳过 sync_env（不写记录）")
+
+
+def main(argv: list[str] | None = None) -> int:
     import argparse
 
     from feedkicker import store
@@ -709,14 +746,17 @@ if __name__ == "__main__":
     parser.add_argument("--reseed", action="store_true", help="清空表内记录后全量重灌")
     parser.add_argument("--backfill", action="store_true", help="回填存量空归档日期")
     parser.add_argument("--fix-archive-date", action="store_true", help="回填存量空归档日期（--backfill 别名）")
-    parser.add_argument("--dry-run", action="store_true", help="仅统计待修复数，不写回")
-    args = parser.parse_args()
+    parser.add_argument("--dry-run", action="store_true", help="只读预览：不建 Base、不写表、不清空")
+    args = parser.parse_args(argv)
 
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     cfg = load_config(app_env=args.env)
     if not cfg.bitable.enabled:
         log.info("bitable 未启用（%s）", cfg.app_env)
-        raise SystemExit(0)
+        return 0
+    if args.dry_run:
+        _dry_run_plan(cfg, args)
+        return 0
 
     info = ensure_initialized(cfg.bitable, cfg.app_env)
     log.info("Base: %s", info["url"])
@@ -744,3 +784,8 @@ if __name__ == "__main__":
         log.info("同步完成：%d 条", synced)
     finally:
         conn.close()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

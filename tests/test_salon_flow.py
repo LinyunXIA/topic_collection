@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import re
 
 import pytest
 
@@ -264,25 +265,30 @@ def test_salon_flow_cli_dry_run(monkeypatch, capsys):
     rc = sf.main(["--dry-run", "--env", "test"])
     assert rc == 0
     out = capsys.readouterr().out
-    assert "wik" in out.lower() or "dry" in out.lower() or True
+    preview = re.search(r'\{\s*"wiki_urls":\s*\[.*?\]\s*\}', out, re.DOTALL)
+    assert preview is not None, f"dry-run 未输出 wiki_urls 预览:\n{out}"
+    assert json.loads(preview.group(0)) == {
+        "wiki_urls": ["https://web91vfvm7.feishu.cn/wiki/wik_stub"]
+    }
 
 
-def test_salon_flow_not_mixed_with_push():
-    import pathlib
-    p = pathlib.Path("feedkicker/salon_flow.py")
-    txt = p.read_text(encoding="utf-8")
-    assert "def run" in txt
-    assert "fetch_selected_topics" in txt
-    assert "gen_outline" in txt
-    assert "create_wiki_doc_from_md" in txt
-    assert "salon_notify" in txt
-    assert "mark_topic_archived" in txt
-    notify_txt = pathlib.Path("feedkicker/salon_notify.py").read_text(encoding="utf-8")
-    assert "send_text" in notify_txt
-    assert "SALON_FAIL_STREAK_KEY" in notify_txt
-    push_txt = pathlib.Path("feedkicker/push.py").read_text(encoding="utf-8")
-    assert "salon_flow" not in push_txt
-    assert "minimax" not in push_txt.lower() or "salon" not in push_txt
+def test_push_import_does_not_load_salon_modules():
+    import subprocess
+    import sys
+
+    from feedkicker.config import PROJECT_ROOT
+
+    code = (
+        "import sys\n"
+        "import feedkicker.push\n"
+        "bad = sorted(m for m in sys.modules if m.startswith('feedkicker.salon') or m == 'feedkicker.minimax')\n"
+        "print('\\n'.join(bad))\n"
+        "raise SystemExit(1 if bad else 0)\n"
+    )
+    proc = subprocess.run(
+        [sys.executable, "-c", code], cwd=PROJECT_ROOT, capture_output=True, text=True, check=False
+    )
+    assert proc.returncode == 0, f"push 引入了 salon/minimax 模块: {proc.stdout.strip()}"
 
 
 # ── 新增：低层全链路与增量/重生成/480 覆盖 ──

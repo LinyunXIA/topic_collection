@@ -180,7 +180,7 @@ def build_card(
             continue
         if not selected:
             break
-        selected.pop()
+        selected.pop(0)
         dropped += 1
 
     return _assemble(

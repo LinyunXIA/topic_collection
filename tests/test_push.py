@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import base64
 import json
+import os
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
@@ -323,6 +324,14 @@ def test_build_card_trims_to_20kb():
     texts = [el.get("text", {}).get("content", "") for el in card["card"]["elements"]]
     assert any("已截断" in t for t in texts)
 
+    joined = "\n".join(texts)
+    kept = [i for i in range(40) if f"标题 {i} " in joined]
+    assert kept, "超限裁剪后应至少保留部分条目"
+    assert kept[-1] == 39, "最新条目必须保留：应从最旧条目起丢弃"
+    assert kept == list(range(kept[0], 40)), "保留条目必须是最新的连续尾部"
+    footer = next(t for t in texts if "已截断" in t)
+    assert f"已截断 {kept[0]} 条旧条目" in footer
+
     small = big_items[:2]
     card_small = feishu.build_card(small, 0, ["F"])
     small_texts = [
@@ -466,6 +475,29 @@ def test_run_one_source_fails_others_push(monkeypatch):
 def test_main_missing_config_returns_error():
     rc = push.main(["--config", "/nonexistent/config.yaml"])
     assert rc == 2
+
+
+def test_main_valid_config_runs_run_and_returns_zero(tmp_path):
+    cfg_path = tmp_path / "empty-feeds.yaml"
+    cfg_path.write_text("feeds: []\n", encoding="utf-8")
+    db = tmp_path / "m.sqlite3"
+    rc = push.main(["--config", str(cfg_path), "--db", str(db), "--env", "test"])
+    assert rc == 0
+    assert db.exists()
+
+
+def test_main_run_exception_returns_one(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "empty-feeds.yaml"
+    cfg_path.write_text("feeds: []\n", encoding="utf-8")
+
+    def boom(cfg, conn, dry_run=False):
+        raise RuntimeError("编排爆炸")
+
+    monkeypatch.setattr(push, "run", boom)
+    rc = push.main(
+        ["--config", str(cfg_path), "--db", str(tmp_path / "m2.sqlite3"), "--env", "test"]
+    )
+    assert rc == 1
 
 
 def test_entry_key_of_takes_guid():
@@ -708,7 +740,7 @@ def test_bitable_cell_fields(monkeypatch):
         "description": "", "published_at": "2026-08-25T01:30:00Z",
         "pushed_at": "2026-08-25T09:59:53Z",
     }, env_name="dev")
-    assert cell["归档日期"] == "2026-08-25" or len(cell["归档日期"]) == 10
+    assert cell["归档日期"] == "2026-08-25"
     assert cell["环境"] == "dev"
     assert len(cell["推送时间"]) == 16
 
@@ -807,7 +839,9 @@ def test_bitable_views_creation(monkeypatch):
 
     assert bitable.setup_view("app", "tbl") is True
     group_calls = [c for c in calls if "+view-set-group" in c]
-    assert any('"来源"' in json.dumps(c, ensure_ascii=False) for c in [group_calls[-2:]]) or True
+    assert len(group_calls) == 1
+    group_json = group_calls[0][group_calls[0].index("--json") + 1]
+    assert json.loads(group_json)["group_config"] == [{"field": "来源", "desc": False}]
 
     calls.clear()
     assert bitable.create_date_view("app", "tbl") is True
@@ -906,22 +940,25 @@ def test_bitable_sync_env_rejects_empty_config(monkeypatch):
     conn.close()
 
 
-def test_run_augments_path_for_launchd(monkeypatch):
-    # #123：launchd 的最小 PATH 下 lark-cli(env node) 会 rc=127，_run 必须注入 homebrew 路径
+def test_run_augments_path_for_launchd(monkeypatch, tmp_path):
+    # #123/#167：launchd 的最小 PATH 下 lark-cli(env node) 会 rc=127，_run 必须注入 homebrew 路径
     from feedkicker import bitable
 
+    fake_bin = tmp_path / "node-env" / "lark-cli"
     captured = {}
 
     def fake_subprocess_run(cmd, **kw):
         captured["env"] = kw.get("env")
         return FakeProc(0, stdout="{}")
 
+    monkeypatch.setattr(bitable, "lark_bin", lambda: str(fake_bin))
     monkeypatch.setattr(bitable.subprocess, "run", fake_subprocess_run)
     monkeypatch.setattr(bitable.os, "environ", {"PATH": "/usr/bin:/bin"})
     bitable._run(["base", "--help"])
-    path = captured["env"]["PATH"]
-    assert "/opt/homebrew/bin" in path
-    assert path.rstrip(":").endswith("/usr/bin:/bin") or "/usr/bin:/bin" in path
+    parts = captured["env"]["PATH"].split(os.pathsep)
+    assert parts[0] == str(fake_bin.parent)
+    assert parts[1:3] == ["/opt/homebrew/bin", "/usr/local/bin"]
+    assert parts[-2:] == ["/usr/bin", "/bin"]
 
 
 def test_fail_streak_cleared_on_success_even_without_pending(monkeypatch):
