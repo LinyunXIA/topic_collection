@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from feedkicker.config_models import PROJECT_ROOT
 from feedkicker.extract_llm import build_batch_prompt, merge_topics, parse_topics
 
@@ -58,7 +60,7 @@ def test_build_batch_prompt_truncates_long_summary() -> None:
 def test_parse_topics_normal() -> None:
     raw = json.dumps({"topics": [_topic()]}, ensure_ascii=False)
 
-    got = parse_topics(raw)
+    got, dropped = parse_topics(raw)
 
     assert got == [
         {
@@ -69,45 +71,57 @@ def test_parse_topics_normal() -> None:
             "出处来源": ["量子位"],
         }
     ]
+    assert dropped == 0
 
 
 def test_parse_topics_empty_list() -> None:
-    assert parse_topics('{"topics": []}') == []
+    assert parse_topics('{"topics": []}') == ([], 0)
 
 
-def test_parse_topics_bad_json_returns_empty() -> None:
-    assert parse_topics("抱歉，我无法提炼") == []
-    assert parse_topics('{"topics": [坏数据}') == []
+def test_parse_topics_bad_json_raises() -> None:
+    with pytest.raises(ValueError):
+        parse_topics("抱歉，我无法提炼")
+    with pytest.raises(ValueError):
+        parse_topics('{"topics": [坏数据}')
 
 
 def test_parse_topics_fenced_json() -> None:
     inner = json.dumps({"topics": [_topic()]}, ensure_ascii=False)
 
-    got = parse_topics(f"```json\n{inner}\n```")
+    got, dropped = parse_topics(f"```json\n{inner}\n```")
 
-    assert len(got) == 1 and got[0]["话题名称"] == "话题A"
+    assert len(got) == 1 and got[0]["话题名称"] == "话题A" and dropped == 0
 
 
 def test_parse_topics_with_surrounding_text() -> None:
     inner = json.dumps({"topics": [_topic()]}, ensure_ascii=False)
 
-    got = parse_topics(f"好的，结果如下：\n{inner}\n请确认。")
+    got, _dropped = parse_topics(f"好的，结果如下：\n{inner}\n请确认。")
 
     assert len(got) == 1
 
 
-def test_parse_topics_missing_field_returns_empty() -> None:
-    bad = {"topics": [{"话题名称": "A", "可使用工具": "T", "相关AI原理": "P", "资讯链接": []}]}
+def test_parse_topics_drops_bad_items_keeps_rest() -> None:
+    bad = {"话题名称": "A", "可使用工具": "T", "相关AI原理": "P", "资讯链接": []}
+    raw = json.dumps({"topics": [bad, "字符串", _topic("好话题")]}, ensure_ascii=False)
 
-    assert parse_topics(json.dumps(bad, ensure_ascii=False)) == []
+    got, dropped = parse_topics(raw)
+
+    assert [t["话题名称"] for t in got] == ["好话题"]
+    assert dropped == 2
 
 
-def test_parse_topics_non_dict_item_returns_empty() -> None:
-    assert parse_topics(json.dumps({"topics": ["字符串"]}, ensure_ascii=False)) == []
+def test_parse_topics_all_bad_items_returns_empty_dropped() -> None:
+    bad = {"话题名称": "A", "可使用工具": "T", "相关AI原理": "P", "资讯链接": []}
+
+    got, dropped = parse_topics(json.dumps({"topics": [bad, "字符串"]}, ensure_ascii=False))
+
+    assert got == [] and dropped == 2
 
 
-def test_parse_topics_topics_not_list_returns_empty() -> None:
-    assert parse_topics('{"topics": {"a": 1}}') == []
+def test_parse_topics_topics_not_list_raises() -> None:
+    with pytest.raises(ValueError):
+        parse_topics('{"topics": {"a": 1}}')
 
 
 def test_parse_topics_str_links_normalized_and_deduped() -> None:
@@ -115,7 +129,7 @@ def test_parse_topics_str_links_normalized_and_deduped() -> None:
         {"topics": [_topic(links="https://a/1", sources="量子位")]}, ensure_ascii=False
     )
 
-    got = parse_topics(raw)
+    got, _dropped = parse_topics(raw)
 
     assert got[0]["资讯链接"] == ["https://a/1"]
     assert got[0]["出处来源"] == ["量子位"]
@@ -136,6 +150,20 @@ def test_merge_topics_multi_source_dedup() -> None:
     assert merged[0]["出处来源"] == ["量子位", "InfoQ"]
 
 
+def test_merge_topics_nfkc_casefold_name_keys() -> None:
+    merged = merge_topics(
+        [
+            _topic(name=" GPT-5 ", links=["https://a/1"]),
+            _topic(name="gpt-5", links=["https://b/2"]),
+            _topic(name="ＧＰＴ－５", links=["https://c/3"]),
+        ]
+    )
+
+    assert len(merged) == 1
+    assert merged[0]["话题名称"] == "GPT-5"
+    assert merged[0]["资讯链接"] == ["https://a/1", "https://b/2", "https://c/3"]
+
+
 def test_parse_topics_merges_same_name_across_items() -> None:
     raw = json.dumps(
         {
@@ -147,7 +175,7 @@ def test_parse_topics_merges_same_name_across_items() -> None:
         ensure_ascii=False,
     )
 
-    got = parse_topics(raw)
+    got, _dropped = parse_topics(raw)
 
     assert len(got) == 1
     assert got[0]["资讯链接"] == ["https://a/1", "https://b/2"]

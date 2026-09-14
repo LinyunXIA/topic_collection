@@ -8,7 +8,7 @@ from typing import Any
 
 import pytest
 
-from feedkicker import bitable_lark, extract_flow, store
+from feedkicker import bitable_lark, extract_flow, extract_llm, store
 from feedkicker.config import load_config
 
 _TOPICS_JSON = json.dumps(
@@ -193,6 +193,95 @@ def test_batch_failure_retried_then_skipped(tmp_path, monkeypatch, capsys) -> No
     assert rc == 0
     assert state["n"] == 3
     assert stats["failed_batches"] == 1 and stats["llm_calls"] == 3 and stats["topics"] == 1
+    assert stats["empty_batches"] == 0
+
+
+def test_empty_topics_batch_counted_separately(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, calls)
+    monkeypatch.setattr(extract_flow.extract_source, "select_source", lambda conn, since_days, limit=None: _items(4))
+    monkeypatch.setattr(extract_flow.extract_llm, "call_llm", lambda ex, prompt: '{"topics": []}')
+
+    rc = extract_flow.main(["--dry-run", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
+
+    out = capsys.readouterr().out
+    stats = _last_summary(out)
+    assert rc == 0
+    assert stats["empty_batches"] == 2 and stats["failed_batches"] == 0
+    assert stats["llm_calls"] == 2 and stats["topics"] == 0
+
+
+def test_bad_json_batch_counts_failed_not_empty(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, calls)
+    monkeypatch.setattr(extract_flow.extract_source, "select_source", lambda conn, since_days, limit=None: _items(4))
+    monkeypatch.setattr(extract_flow.extract_llm, "call_llm", lambda ex, prompt: "抱歉，无法提炼")
+
+    rc = extract_flow.main(["--dry-run", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
+
+    out = capsys.readouterr().out
+    stats = _last_summary(out)
+    assert rc == 0
+    assert stats["failed_batches"] == 2 and stats["empty_batches"] == 0
+    assert stats["llm_calls"] == 2
+
+
+def test_bad_topic_item_dropped_keeps_batch(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, calls)
+    monkeypatch.setattr(extract_flow.extract_source, "select_source", lambda conn, since_days, limit=None: _items(2))
+    mixed = json.dumps(
+        {
+            "topics": [
+                {"话题名称": "坏话题"},
+                {
+                    "话题名称": "好话题",
+                    "可使用工具": "工具X",
+                    "相关AI原理": "原理Y",
+                    "资讯链接": ["https://a/1"],
+                    "出处来源": ["量子位"],
+                },
+            ]
+        },
+        ensure_ascii=False,
+    )
+    monkeypatch.setattr(extract_flow.extract_llm, "call_llm", lambda ex, prompt: mixed)
+
+    rc = extract_flow.main(["--dry-run", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
+
+    out = capsys.readouterr().out
+    stats = _last_summary(out)
+    assert rc == 0 and stats["topics"] == 1
+    assert stats["failed_batches"] == 0 and stats["empty_batches"] == 0
+
+
+def test_refine_batches_http_budget_two_per_batch(tmp_path, monkeypatch) -> None:
+    cfg_path = _write_cfg(tmp_path)
+    cfg = load_config(cfg_path, app_env="test")
+    posts: list[str] = []
+
+    class Resp429:
+        status_code = 429
+        text = '{"error": "rate"}'
+
+        def json(self):
+            return {"error": "rate"}
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        posts.append(url)
+        return Resp429()
+
+    monkeypatch.setattr(extract_flow.extract_llm.httpx, "post", fake_post)
+
+    collected, calls, failed, empty = extract_llm.refine_batches(
+        cfg.extract, "模板", [[{"title": "标题", "url": "https://a/1"}]], 0
+    )
+
+    assert collected == [] and failed == 1 and empty == 0
+    assert calls == 2 and len(posts) == 2
 
 
 def test_max_calls_stops_remaining_batches(tmp_path, monkeypatch, capsys) -> None:

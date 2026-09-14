@@ -3,12 +3,21 @@
 from __future__ import annotations
 
 import json
+import logging
 import re
+import unicodedata
 from typing import Any
+
+log = logging.getLogger(__name__)
 
 _REQUIRED_KEYS = ("话题名称", "可使用工具", "相关AI原理", "资讯链接", "出处来源")
 
 _FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+
+
+def topic_key(name: Any) -> str:
+    """去重/合并比较键：NFKC 归一 + strip + casefold（写入仍用原值，PRV-3）。"""
+    return unicodedata.normalize("NFKC", str(name or "")).strip().casefold()
 
 
 def build_batch_prompt(template: str, items: list[dict[str, Any]]) -> str:
@@ -27,18 +36,24 @@ def build_batch_prompt(template: str, items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-def parse_topics(raw: str) -> list[dict[str, Any]]:
-    """解析 LLM 原始文本；非法 JSON/顶层非对象/topics 非列表/缺 5 键 → []（调用方 WARNING 跳过）。"""
+def parse_topics(raw: str) -> tuple[list[dict[str, Any]], int]:
+    """解析 LLM 原始文本，返回 `(topics, dropped)`。
+
+    JSON 非法 / 顶层非对象 / `topics` 非列表 → raise ValueError（调用方计失败批）；
+    单个 topic 非对象或缺 5 键 → 丢弃该条、dropped 计数并 WARNING，不整批弃（PRV-6）。
+    """
     obj = _load_json_obj(raw)
     if obj is None:
-        return []
+        raise ValueError("LLM 输出不是合法 JSON 对象")
     items = obj.get("topics")
     if not isinstance(items, list):
-        return []
+        raise ValueError("topics 字段缺失或非列表")
     parsed: list[dict[str, Any]] = []
+    dropped = 0
     for item in items:
         if not isinstance(item, dict) or any(k not in item for k in _REQUIRED_KEYS):
-            return []
+            dropped += 1
+            continue
         parsed.append(
             {
                 "话题名称": str(item.get("话题名称") or "").strip(),
@@ -48,19 +63,22 @@ def parse_topics(raw: str) -> list[dict[str, Any]]:
                 "出处来源": _str_list(item.get("出处来源")),
             }
         )
-    return merge_topics(parsed)
+    if dropped:
+        log.warning("丢弃 %d 条非法 topic（非对象或缺 5 键）", dropped)
+    return merge_topics(parsed), dropped
 
 
 def merge_topics(topics: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """按「话题名称」合并同话题多来源：链接/来源顺序去重，工具/原理首个非空保留。"""
+    """按「话题名称」NFKC 归一比较键合并同话题多来源：链接/来源顺序去重，工具/原理首个非空保留。"""
     merged: dict[str, dict[str, Any]] = {}
     for t in topics:
         name = str(t.get("话题名称") or "").strip()
-        if not name:
+        key = topic_key(name)
+        if not key:
             continue
-        cur = merged.get(name)
+        cur = merged.get(key)
         if cur is None:
-            merged[name] = {
+            merged[key] = {
                 "话题名称": name,
                 "可使用工具": str(t.get("可使用工具") or "").strip(),
                 "相关AI原理": str(t.get("相关AI原理") or "").strip(),

@@ -156,21 +156,21 @@ def test_call_llm_payload_and_headers(monkeypatch) -> None:
     assert captured["headers"]["Authorization"] == "Bearer sk-x"
 
 
-def test_call_llm_retries_429_once(monkeypatch) -> None:
-    responses = [FakeResp(429, {"error": "rate"}), _ok_resp("ok-2nd")]
+def test_call_llm_429_single_attempt_raises(monkeypatch) -> None:
     calls: list[str] = []
 
     def fake_post(url, json=None, headers=None, timeout=None, **kw):
         calls.append(url)
-        return responses.pop(0)
+        return FakeResp(429, {"error": "rate"})
 
     monkeypatch.setattr(extract_llm.httpx, "post", fake_post)
 
-    assert extract_llm.call_llm(ExtractConf(providers={"minimax": ProviderConf(api_key="k")}), "p") == "ok-2nd"
-    assert len(calls) == 2
+    with pytest.raises(RuntimeError, match="429"):
+        extract_llm.call_llm(ExtractConf(providers={"minimax": ProviderConf(api_key="k")}), "p")
+    assert len(calls) == 1
 
 
-def test_call_llm_retryable_business_code_exhausts(monkeypatch) -> None:
+def test_call_llm_retryable_business_code_single_attempt(monkeypatch) -> None:
     calls: list[str] = []
 
     def fake_post(url, json=None, headers=None, timeout=None, **kw):
@@ -181,7 +181,21 @@ def test_call_llm_retryable_business_code_exhausts(monkeypatch) -> None:
 
     with pytest.raises(RuntimeError, match="可重试错误"):
         extract_llm.call_llm(ExtractConf(providers={"minimax": ProviderConf(api_key="k")}), "p")
-    assert len(calls) == 2
+    assert len(calls) == 1
+
+
+def test_call_llm_timeout_single_attempt(monkeypatch) -> None:
+    calls: list[str] = []
+
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        calls.append(url)
+        raise extract_llm.httpx.TimeoutException("slow")
+
+    monkeypatch.setattr(extract_llm.httpx, "post", fake_post)
+
+    with pytest.raises(RuntimeError, match="读超时"):
+        extract_llm.call_llm(ExtractConf(providers={"minimax": ProviderConf(api_key="k")}), "p")
+    assert len(calls) == 1
 
 
 def test_call_llm_empty_content_raises(monkeypatch) -> None:

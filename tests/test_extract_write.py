@@ -298,6 +298,63 @@ def test_existing_topics_multi_select_value_is_flattened(monkeypatch) -> None:
     assert existing_topics("app", "tbl") == {"话题A", "话题B"}
 
 
+def test_existing_topics_keeps_raw_names(monkeypatch) -> None:
+    def fake_run(args, stdin_text=None, timeout=120):
+        body = {"data": {"records": [{"record_id": "rec1", "fields": {"话题名称": " GPT-5 "}}]}}
+        return FakeProc(0, json.dumps(body, ensure_ascii=False))
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    assert existing_topics("app", "tbl") == {"GPT-5"}
+
+
+def test_existing_topics_fields_without_topic_name_raises(monkeypatch) -> None:
+    def fake_run(args, stdin_text=None, timeout=120):
+        body = {"data": {"fields": ["其他"], "data": [["x"]]}}
+        return FakeProc(0, json.dumps(body, ensure_ascii=False))
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    with pytest.raises(RuntimeError, match="话题名称"):
+        existing_topics("app", "tbl")
+
+
+def test_write_skips_existing_after_nfkc_normalization(monkeypatch) -> None:
+    calls: list[list[str]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        calls.append(list(args))
+        if "+record-list" in args:
+            return _records_resp([" GPT-5 "])
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    assert write_topics("app", "tbl", [_topic("gpt-5")], "MMX（MiniMax）", "2026-09-14") == (0, 1)
+    assert [c for c in calls if "+record-batch-create" in c] == []
+
+
+def test_write_in_batch_dedup_after_nfkc_keeps_original_value(monkeypatch) -> None:
+    created: list[list[dict]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+field-list" in args:
+            return _fields_resp()
+        if "+record-list" in args:
+            return _records_resp([])
+        created.append(_json_from_args(args)["create_records"])
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    got = write_topics(
+        "app", "tbl", [_topic("ＧＰＴ－５"), _topic("gpt-5")], "MMX（MiniMax）", "2026-09-14"
+    )
+
+    assert got == (1, 1)
+    assert [r["话题名称"] for r in created[0]] == ["ＧＰＴ－５"]
+
+
 def test_existing_topics_paginates(monkeypatch) -> None:
     offsets: list[str] = []
 

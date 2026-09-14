@@ -28,7 +28,10 @@ def select_source(
     时间窗用 `COALESCE(published_at, first_seen) >= cutoff`：published_at 优先、
     为空回退 first_seen，边界含当天（>=）。占位行必有 ppt_synced_at（#196），
     故 `ppt_synced_at IS NULL` 即「仅 RSS 行」。limit 为 None/<=0 时不限制。
+    since_days < 1 直接 raise（CLI 已有校验，此处纵深兜底，PRV-5）。
     """
+    if since_days < 1:
+        raise ValueError(f"since_days 必须 >= 1: {since_days}")
     sql = (
         "SELECT feed_id, entry_key, title, url, description, published_at, first_seen"
         " FROM articles WHERE ppt_synced_at IS NULL"

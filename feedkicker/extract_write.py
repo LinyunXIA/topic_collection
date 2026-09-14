@@ -6,16 +6,17 @@ import logging
 from typing import Any
 
 from feedkicker import bitable_lark
-from feedkicker.extract_parse import _str_list
+from feedkicker.extract_parse import _str_list, topic_key
 from feedkicker.topic_records import _extract_records
 
 log = logging.getLogger(__name__)
 
 
 def existing_topics(app_token: str, table_id: str) -> set[str]:
-    """分页拉目标表「话题名称」集合；拉取失败/容器异常 raise（不静默空集，避免重复写入）。
+    """分页拉目标表「话题名称」原始值集合；拉取失败/容器异常 raise（不静默空集）。
 
     响应兼容 records/items 包装与 fields+data 行式（topic_records._extract_records 归一）；
+    fields+data 形态缺「话题名称」列 → raise 中止（不得静默空集，PRV-4）。
     翻页走 offset 兜底 + 页指纹守卫（#245）。
     """
     names: set[str] = set()
@@ -41,6 +42,14 @@ def existing_topics(app_token: str, table_id: str) -> set[str]:
         if not isinstance(data, dict):
             raise RuntimeError(f"选题表响应不是 JSON 对象: {str(data)[:200]}")
         prev_fp = bitable_lark._page_guard(prev_fp, data)
+        fields_raw = data.get("fields")
+        if (
+            not (data.get("records") or data.get("items"))
+            and isinstance(fields_raw, list)
+            and fields_raw
+            and "话题名称" not in fields_raw
+        ):
+            raise RuntimeError("选题表响应为 fields+data 形态但缺「话题名称」列，中止写入以避免重复行")
         records = _extract_records(data)
         for rec in records:
             for name in _str_list((rec.get("fields") or {}).get("话题名称")):
@@ -114,22 +123,23 @@ def write_topics(
     run_date: str,
     dry_run: bool = False,
 ) -> tuple[int, int]:
-    """按「话题名称」查重跳过（幂等）；dry_run 仅返回 (待写数, 跳过数)，零写调用。
+    """按「话题名称」NFKC 归一比较键查重跳过（幂等）；dry_run 仅返回 (待写数, 跳过数)，零写调用。
 
     真写走 +record-batch-create ≤200/批；块失败 WARNING 后继续，返回实际成功数。
     """
     if not app_token or not table_id:
         raise RuntimeError("写入选题表需要 app_token 与 table_id（salon 配置段）")
     existing = existing_topics(app_token, table_id)
+    existing_keys = {topic_key(n) for n in existing}
     picked: list[dict[str, Any]] = []
     seen: set[str] = set()
     skipped = 0
     for topic in topics:
-        name = str(topic.get("话题名称") or "").strip()
-        if not name or name in existing or name in seen:
+        key = topic_key(topic.get("话题名称"))
+        if not key or key in existing_keys or key in seen:
             skipped += 1
             continue
-        seen.add(name)
+        seen.add(key)
         picked.append(topic)
     if dry_run:
         return len(picked), skipped

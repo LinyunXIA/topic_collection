@@ -959,12 +959,12 @@ select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(p
 | 模块 | 职责 | 关键接口 |
 |---|---|---|
 | `extract_source.py` | sqlite 选源 | `select_source(conn, since_days, limit=None, now=None)` |
-| `extract_llm.py` | provider 抽象 + 提示词/解析 | `call_llm(cfg, prompt) -> str`、`build_batch_prompt(template, items)`、`parse_topics(raw) -> list[dict]`、`merge_topics(topics) -> list[dict]`、`resolve_provider(cfg, name=None)` |
-| `extract_write.py` | 字段映射与写入 | `existing_topics(app_token, table_id) -> set[str]`、`build_record(topic, provider_label, run_date) -> dict`、`write_topics(...) -> tuple[int, int]` |
+| `extract_llm.py` | provider 抽象 + 提示词/解析 + 批量提炼编排 | `call_llm(cfg, prompt) -> str`、`build_batch_prompt(template, items)`、`parse_topics(raw) -> (list[dict], dropped)`、`merge_topics(topics) -> list[dict]`、`refine_batches(ex, template, batches, max_calls) -> (topics, calls, failed, empty)`、`resolve_provider(cfg, name=None)` |
+| `extract_write.py` | 字段映射与写入 | `existing_topics(app_token, table_id) -> set[str]`、`resolve_status_value(app_token, table_id, field="讨论状态", option="未讨论") -> str \| list[str]`、`build_record(topic, provider_label, run_date, status_value) -> dict`、`write_topics(...) -> tuple[int, int]` |
 | `extract_flow.py` | 编排 + CLI | `run(cfg, conn, *, apply, since_days, limit, batch_size, max_calls) -> int`、`main(argv) -> int` |
 
 - provider 注册表（`extract_llm.PROVIDERS`）：`minimax`（base_url `https://api.minimaxi.com/v1`、model `MiniMax-M3`、key env `MiniMax_Key`/`MINIMAX_API_KEY`、tool_label `MMX（MiniMax）`）、`deepseek`（base_url `https://api.deepseek.com/v1`、model `deepseek-chat`、key env `DEEPSEEK_API_KEY`、tool_label `DS（DeepSeek）`）；yaml `providers.<name>` 非空字段覆盖注册表默认。
-- 调用形态统一 OpenAI 兼容 `POST {base_url}/chat/completions`，取 `choices[0].message.content` 原始文本返回；超时/HTTP 429/529 重试 1 次、业务可重试码（1002/1004/1039）沿用 `minimax` 惯例；缺 key/占位 key 抛 `RuntimeError` 且**不发起 HTTP**。
+- 调用形态统一 OpenAI 兼容 `POST {base_url}/chat/completions`，取 `choices[0].message.content` 原始文本返回；`_post_chat` **单次尝试**：超时/HTTP 429/529/业务可重试码（1002/1004/1039）抛可重试 `RuntimeError`，重试仅由 `refine_batches` 外层做 1 次（总 HTTP ≤2/批，单层重试，PRV-8）；缺 key/占位 key 抛 `RuntimeError` 且**不发起 HTTP**。
 
 ### 25.3 配置（`extract:` 段）
 
@@ -997,8 +997,8 @@ extract:
 
 - `prompts/extract.md` 原样收录用户 4 条提示词（五要素 / 过滤营销与无工具纯新闻 / 无法提炼即跳过 / 写前确认），并追加「输出必须为 JSON」的 schema 段与分批输入说明。
 - 输出契约：`{"topics":[{"话题名称":"","可使用工具":"","相关AI原理":"","资讯链接":[""],"出处来源":[""]}]}`。
-- `parse_topics`：容忍 ```json 围栏；JSON 非法、顶层非对象、`topics` 非列表、任一 topic 非对象或缺 5 键 → 返回 `[]`（该批由调用方 WARNING 跳过，不抛到运行级）；`资讯链接`/`出处来源` 接受 str（归一为单元素列表）或 list。
-- `merge_topics`：按「话题名称」合并；`可使用工具`/`相关AI原理` 首个非空保留；`资讯链接`/`出处来源` 顺序拼接去重（写入时以换行 join）。
+- `parse_topics`：容忍 ```json 围栏；JSON 非法、顶层非对象、`topics` 非列表 → raise `ValueError`（该批计 failed 由调用方 WARNING 跳过，不抛到运行级）；单个 topic 非对象或缺 5 键 → 丢弃该条、`dropped` 计数并 WARNING，不整批弃（PRV-6）；`资讯链接`/`出处来源` 接受 str（归一为单元素列表）或 list。
+- `merge_topics`：按「话题名称」NFKC 归一 + strip + casefold 的比较键合并（写入保留首个原值）；`可使用工具`/`相关AI原理` 首个非空保留；`资讯链接`/`出处来源` 顺序拼接去重（写入时以换行 join）。
 
 ### 25.5 去重
 
@@ -1013,13 +1013,14 @@ tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-s
            [--max-calls N] [--env dev|test|prod] [--config PATH] [--db PATH]
 ```
 
-- 默认 dry-run：打印合并后的完整待写清单与统计（批数/调用数/话题数/将写/将跳过），**零写调用**。
+- 默认 dry-run：打印合并后的完整待写清单与统计（批数/调用数/话题数/将写/将跳过/失败批/空批 `empty_batches`），**零写调用**。
 - `--apply`：写入 `cfg.salon.app_token/table_id`（不调 `ensure_initialized`，不改表结构）。
 - 退出码：2 配置错（config 加载失败 / prompt 文件缺失 / provider 未注册或缺 key / salon token 占位或缺失）；1 未捕获异常；0 正常（含部分批失败跳过）。
 
 ### 25.7 失败语义
 
-- 单批 LLM 调用/解析失败 → 重试 1 次，仍失败该批跳过、计数并在结束汇总 WARNING，不阻断其余批、rc 仍 0。
+- 单批 LLM 调用失败（超时/429/529/业务可重试码）→ 编排层重试 1 次（`_post_chat` 单次尝试 + `refine_batches` 外层单层重试，总 HTTP ≤2/批），仍失败该批计 failed 跳过、计数并在结束汇总 WARNING，不阻断其余批、rc 仍 0。
+- 模型合法返回 `{"topics":[]}`（无话题）→ 计 `empty_batches`（summary 字段）而非 failed；raw 非空但 JSON/契约解析失败才计 failed（PRV-2）。
 - `max_calls > 0` 时每次调用前检查，达限停止剩余批并 WARNING（联调护栏）。
 - 写入分块失败：该块 WARNING、继续后续块，返回实际成功计数。
 

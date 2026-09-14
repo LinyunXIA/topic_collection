@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from datetime import UTC, datetime, timedelta
 
+import pytest
+
 from feedkicker import store
 from feedkicker.extract_source import _cutoff_iso, select_source
 
@@ -101,3 +103,12 @@ def test_limit_applies_to_sorted_result() -> None:
 
 def test_cutoff_uses_utc_iso_seconds() -> None:
     assert _cutoff_iso(7, now=_NOW) == "2026-09-07T12:00:00Z"
+
+
+def test_select_source_rejects_non_positive_days() -> None:
+    conn = store.connect(":memory:")
+
+    with pytest.raises(ValueError, match="since_days"):
+        select_source(conn, 0)
+    with pytest.raises(ValueError, match="since_days"):
+        select_source(conn, -3)

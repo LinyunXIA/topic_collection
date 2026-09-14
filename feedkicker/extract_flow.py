@@ -7,7 +7,6 @@ import logging
 import sys
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from feedkicker import bitable_lark, extract_llm, extract_source, extract_write, store
 from feedkicker.config import PROJECT_ROOT, load_config
@@ -22,57 +21,22 @@ def _token_missing(value: str) -> bool:
     return not value or "<" in value
 
 
-def _positive_int(value: str) -> int:
+def _int_arg(value: str, minimum: int, label: str) -> int:
     try:
         n = int(value)
     except ValueError:
-        raise argparse.ArgumentTypeError(f"必须是正整数: {value}") from None
-    if n < 1:
-        raise argparse.ArgumentTypeError(f"必须是正整数: {value}")
+        raise argparse.ArgumentTypeError(f"必须是{label}整数: {value}") from None
+    if n < minimum:
+        raise argparse.ArgumentTypeError(f"必须是{label}整数: {value}")
     return n
+
+
+def _positive_int(value: str) -> int:
+    return _int_arg(value, 1, "正")
 
 
 def _non_negative_int(value: str) -> int:
-    try:
-        n = int(value)
-    except ValueError:
-        raise argparse.ArgumentTypeError(f"必须是非负整数: {value}") from None
-    if n < 0:
-        raise argparse.ArgumentTypeError(f"必须是非负整数: {value}")
-    return n
-
-
-def _refine_batches(
-    ex, template: str, batches: list[list[dict[str, Any]]], max_calls: int
-) -> tuple[list[dict[str, Any]], int, int]:
-    collected: list[dict[str, Any]] = []
-    calls = 0
-    failed = 0
-    for no, batch in enumerate(batches, 1):
-        prompt = extract_llm.build_batch_prompt(template, batch)
-        raw = ""
-        limit_reached = False
-        for attempt in (1, 2):
-            if max_calls and calls >= max_calls:
-                log.warning("达到 max_calls=%d 上限，停止剩余批", max_calls)
-                limit_reached = True
-                break
-            calls += 1
-            try:
-                raw = extract_llm.call_llm(ex, prompt)
-                break
-            except Exception as e:  # noqa: BLE001
-                log.warning("第 %d/%d 批 LLM 调用失败（attempt %d/2）: %s", no, len(batches), attempt, e)
-        if limit_reached:
-            break
-        topics = extract_llm.parse_topics(raw) if raw else []
-        if not topics:
-            failed += 1
-            log.warning("第 %d/%d 批无有效话题（解析失败或模型未产出），跳过", no, len(batches))
-            continue
-        collected.extend(topics)
-        log.info("第 %d/%d 批提炼 %d 个话题", no, len(batches), len(topics))
-    return collected, calls, failed
+    return _int_arg(value, 0, "非负")
 
 
 def run(
@@ -117,7 +81,7 @@ def run(
         since_days, len(items), limit, batch_size, ex.provider,
     )
     batches = [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
-    collected, calls, failed = _refine_batches(ex, template, batches, max_calls)
+    collected, calls, failed, empty = extract_llm.refine_batches(ex, template, batches, max_calls)
     merged = extract_llm.merge_topics(collected)
     if apply:
         written, skipped = extract_write.write_topics(
@@ -139,6 +103,7 @@ def run(
             "pending": 0 if apply else written,
             "skipped": skipped,
             "failed_batches": failed,
+            "empty_batches": empty,
         }
     )
     return 0
