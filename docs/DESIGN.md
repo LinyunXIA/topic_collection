@@ -42,8 +42,9 @@
 ```
 topic_collection/
 ├── README.md                 # 项目总览与快速上手（入口，§23 F24）
-├── pyproject.toml            # 依赖 + [project.scripts] tc-push/tc-salon/tc-purge
+├── pyproject.toml            # 依赖 + [project.scripts] tc-push/tc-salon/tc-purge/tc-extract
 ├── config-{dev,test,prod}.yaml  # 三环境分文件，均 gitignored（见 §4）
+├── prompts/extract.md        # 资讯→选题提炼提示词（用户原文 + 输出 JSON schema，§25）
 ├── docs/
 │   ├── PRD.md / DESIGN.md    # 产品权威 / 工程实现权威
 │   ├── CLI.md                # 7 命令命令行详解（§23 F25）
@@ -76,6 +77,10 @@ topic_collection/
 │   ├── topic_records.py      # topic 响应记录归一（自 topic 抽出，§21.2）
 │   ├── salon_flow.py         # 沙龙编排主流程（§19）
 │   ├── salon_md.py / salon_notify.py  # 大纲 markdown/stub / 卡片与连败 SOS
+│   ├── extract_source.py     # 近 N 天 RSS 行选源（F28，§25）
+│   ├── extract_llm.py        # LLM provider 抽象 / 批量提示词 / JSON 解析与多源合并（F29–F30，§25）
+│   ├── extract_write.py      # 选题表字段映射 + 按「话题名称」去重写入（F31，§25）
+│   ├── extract_flow.py       # tc-extract 编排 + CLI（F32，§25）
 │   ├── push.py               # push 编排主流程
 │   └── purge.py              # tc-purge 编排：365 天滚动保留（§20）
 └── tests/                    # 全离线，subprocess/httpx 一律 mock（test_push/test_salon_*/test_purge 等）
@@ -763,6 +768,12 @@ wiki_lark（lark-cli docs/wiki 调用与响应解析）→ wiki（编排 + __mai
 salon_md（标题/大纲 markdown/stub/状态归一）、salon_notify（卡片 + 连败 SOS）→ salon_flow（编排）
 topic_records（响应记录归一）→ topic（分页拉取 + facade re-export）
 
+extract_source（叶子：sqlite 近 N 天 RSS 行选源）
+extract_llm（provider 注册表/默认值 + call_llm/build_batch_prompt/parse_topics/merge_topics；复用 minimax 错误码惯例）
+extract_write（existing_topics/build_record/write_topics；复用 bitable_lark 进程层 + topic_records 归一）
+  ↑
+extract_flow（选源→分批→LLM→解析→去重→dry-run/写入 编排 + tc-extract CLI）
+
 bitable_lark（叶子：lark-cli 进程层 _run/_parse/_json_arg/_has_batch_verb/SHANGHAI/页指纹）
   ↑
 bitable_schema（Base/表初始化：fields_for/create_base/ensure_initialized）
@@ -923,3 +934,98 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 - **边界**（#237/#244）：topic 响应容器异常（顶层非 dict / records 非空但非 list[dict] / data 非 list）抛 `RuntimeError` 中止，真正空页才返回 `[]`（#244 收紧 #237 的「空页 + WARNING」吞错）；salon 记录 skipped/attempted 计数；缺 lark-cli 时 `_run` 返回 None、`wiki.main` 统一 rc 2 不 traceback；`wiki_home` space/parent 复用「空或含 `<`」占位守卫 rc 2；minimax 成功码 `"0"` 归一为 0（`_parse_outline_from_response` 复用同款归一，#245）。
 - **配置/并发**（#239）：`feishu_webhook`/`feishu_secret` 的 `<...>` 占位在 `load_config` 统一清空（send 层判空即跳过）；`store_conn.connect` 设 `busy_timeout=5000` + `journal_mode=WAL`，ALTER 迁移容忍 duplicate column。
 - **接受项（记录不修）**：① 超大 `detail_url` 时 `build_card` 不保证 ≤20KB（`detail_url` 由 config 控制、现实值远小于预算；本轮只保证常规条目路径 ≤20KB，#239）；② `is_ppt_synced` 无 feed 过滤（理论碰撞，见 §24.1）。
+
+---
+
+## 25. v0.8 — 资讯→选题 LLM 提炼（F28–F32，#247）
+
+> 编号说明：登记提交时 §24 已被「第四轮审计修复」占用，故 v0.8 设计落在 §25。
+
+把最近 N 天（默认 7）的 RSS 资讯分批交给 LLM **先整合去重、再提炼**候选话题，写入 salon 选题表（`cfg.salon`）。默认 dry-run 打印完整待写清单，`--apply` 才写表——落实提示词的「写前确认」要求。
+
+### 25.1 数据流
+
+```
+select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(published_at,first_seen) >= cutoff
+  → 按 batch_size 切批                     # cutoff = UTC now − N 天（ISO 秒级，与库内同格式）
+  → call_llm(cfg.extract, prompt)          # provider 分派：minimax / deepseek（OpenAI 兼容）
+  → parse_topics(raw) → merge_topics       # 容错 JSON、缺字段整批弃、同话题链接/来源去重
+  → existing_topics(app_token, table_id)   # 按「话题名称」去重（幂等）
+  → dry-run 打印完整清单 / --apply: +record-batch-create ≤200/批
+```
+
+### 25.2 模块划分（依赖单向）
+
+| 模块 | 职责 | 关键接口 |
+|---|---|---|
+| `extract_source.py` | sqlite 选源 | `select_source(conn, since_days, limit=None, now=None)` |
+| `extract_llm.py` | provider 抽象 + 提示词/解析 | `call_llm(cfg, prompt) -> str`、`build_batch_prompt(template, items)`、`parse_topics(raw) -> list[dict]`、`merge_topics(topics) -> list[dict]`、`resolve_provider(cfg, name=None)` |
+| `extract_write.py` | 字段映射与写入 | `existing_topics(app_token, table_id) -> set[str]`、`build_record(topic, provider_label, run_date) -> dict`、`write_topics(...) -> tuple[int, int]` |
+| `extract_flow.py` | 编排 + CLI | `run(cfg, conn, *, apply, since_days, limit, batch_size, max_calls) -> int`、`main(argv) -> int` |
+
+- provider 注册表（`extract_llm.PROVIDERS`）：`minimax`（base_url `https://api.minimaxi.com/v1`、model `MiniMax-M3`、key env `MiniMax_Key`/`MINIMAX_API_KEY`、tool_label `MMX（MiniMax）`）、`deepseek`（base_url `https://api.deepseek.com/v1`、model `deepseek-chat`、key env `DEEPSEEK_API_KEY`、tool_label `DS（DeepSeek）`）；yaml `providers.<name>` 非空字段覆盖注册表默认。
+- 调用形态统一 OpenAI 兼容 `POST {base_url}/chat/completions`，取 `choices[0].message.content` 原始文本返回；超时/HTTP 429/529 重试 1 次、业务可重试码（1002/1004/1039）沿用 `minimax` 惯例；缺 key/占位 key 抛 `RuntimeError` 且**不发起 HTTP**。
+
+### 25.3 配置（`extract:` 段）
+
+```yaml
+extract:
+  enabled: true
+  since_days: 7
+  batch_size: 30
+  provider: minimax
+  prompt_file: prompts/extract.md
+  max_calls: 0          # 0 = 不限
+  providers:
+    minimax:
+      api_key: "<MiniMax_Key env>"
+      model: "MiniMax-M3"
+      base_url: "https://api.minimaxi.com/v1"
+      tool_label: "MMX（MiniMax）"
+    deepseek:
+      api_key: "<DEEPSEEK_API_KEY env>"
+      model: "deepseek-chat"
+      base_url: "https://api.deepseek.com/v1"
+      tool_label: "DS（DeepSeek）"
+```
+
+- dataclass：`ExtractConf{enabled, since_days, batch_size, provider, prompt_file, max_calls, providers: dict[str, ProviderConf]}`；`ProviderConf{base_url, model, api_key, tool_label}`（`config_models.py`）。
+- key 覆盖：`providers.<name>.api_key` 缺失时按 provider 取 env（`MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`）；`<...>` 占位清空（与 `minimax.api_key` 同口径）。
+- `prompt_file` 为仓库根相对路径（`config.PROJECT_ROOT / prompt_file`），默认 `prompts/extract.md`。
+
+### 25.4 提示词与 JSON 契约
+
+- `prompts/extract.md` 原样收录用户 4 条提示词（五要素 / 过滤营销与无工具纯新闻 / 无法提炼即跳过 / 写前确认），并追加「输出必须为 JSON」的 schema 段与分批输入说明。
+- 输出契约：`{"topics":[{"话题名称":"","可使用工具":"","相关AI原理":"","资讯链接":[""],"出处来源":[""]}]}`。
+- `parse_topics`：容忍 ```json 围栏；JSON 非法、顶层非对象、`topics` 非列表、任一 topic 非对象或缺 5 键 → 返回 `[]`（该批由调用方 WARNING 跳过，不抛到运行级）；`资讯链接`/`出处来源` 接受 str（归一为单元素列表）或 list。
+- `merge_topics`：按「话题名称」合并；`可使用工具`/`相关AI原理` 首个非空保留；`资讯链接`/`出处来源` 顺序拼接去重（写入时以换行 join）。
+
+### 25.5 去重
+
+- 写入前 `existing_topics` 分页拉目标表「话题名称」列（`_page_guard` 防死循环；响应兼容 records 与 fields+data 两形态，容器异常 raise 中止写入而非静默空集）。
+- 命中「话题名称」或本批已出现 → 跳过；重复运行不新增重复行（幂等）。`--update` 刷新既有行本期不做。
+
+### 25.6 CLI（`tc-extract`）
+
+```
+tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-size N]
+           [--max-calls N] [--env dev|test|prod] [--config PATH] [--db PATH]
+```
+
+- 默认 dry-run：打印合并后的完整待写清单与统计（批数/调用数/话题数/将写/将跳过），**零写调用**。
+- `--apply`：写入 `cfg.salon.app_token/table_id`（不调 `ensure_initialized`，不改表结构）。
+- 退出码：2 配置错（config 加载失败 / prompt 文件缺失 / provider 未注册或缺 key / salon token 占位或缺失）；1 未捕获异常；0 正常（含部分批失败跳过）。
+
+### 25.7 失败语义
+
+- 单批 LLM 调用/解析失败 → 重试 1 次，仍失败该批跳过、计数并在结束汇总 WARNING，不阻断其余批、rc 仍 0。
+- `max_calls > 0` 时每次调用前检查，达限停止剩余批并 WARNING（联调护栏）。
+- 写入分块失败：该块 WARNING、继续后续块，返回实际成功计数。
+
+### 25.8 清单
+
+- [ ] F28 `extract_source.py`：`ppt_synced_at IS NULL` + `COALESCE(published_at, first_seen) >= cutoff` + 升序/limit
+- [ ] F29 `extract:` 配置段 + `extract_llm.call_llm` provider 抽象（minimax/deepseek），缺 key 明确报错
+- [ ] F30 `prompts/extract.md` + `build_batch_prompt`/`parse_topics`/`merge_topics`
+- [ ] F31 `extract_write.py`：字段映射 + 「话题名称」去重 + ≤200/批；dry-run 零写
+- [ ] F32 `tc-extract` CLI + CLI.md/OPS.md 文档 + 测试（全 mock 离线）
