@@ -2,33 +2,28 @@
 
 from __future__ import annotations
 
-import logging
 from typing import Any
-
-log = logging.getLogger(__name__)
 
 
 def _extract_records(data: Any) -> list[dict[str, Any]]:
-    """记录提取：容器类型异常（顶层非 dict / records 非 list[dict]）按空页 + WARNING（#237）。
+    """记录提取：容器异常（顶层非 dict / records 非空但非 list[dict] / data 非 list）抛 RuntimeError。
 
-    响应兼容 records/items 包装与 data.fields+data.data 行式两种形态；
-    坏容器一律不抛异常，交调用方按空页终止，避免下游 rec.get 崩。
+    对齐 existing_links 的「必须中止」：上游 schema 漂移不得被静默当作「无已选题」（#244）。
+    真正空页（records 缺失/空 list、fields+data 空）才返回 []；响应兼容
+    records/items 包装与 data.fields+data.data 行式两种形态。
     """
     if not isinstance(data, dict):
-        log.warning("topic 响应顶层非对象（%s），按空页处理", type(data).__name__)
-        return []
+        raise RuntimeError(f"topic 响应顶层非对象: {type(data).__name__}")
     records = data.get("records") or data.get("items")
     if records:
         if not isinstance(records, list) or not all(isinstance(r, dict) for r in records):
-            log.warning("topic records 非 list[dict]（%s），按空页处理", type(records).__name__)
-            return []
+            raise RuntimeError(f"topic records 非 list[dict]: {type(records).__name__}")
         return list(records)
     fields_raw = data.get("fields")
     fields: list[Any] = fields_raw if isinstance(fields_raw, list) else []
     rows_raw = data.get("data")
     if rows_raw is not None and not isinstance(rows_raw, list):
-        log.warning("topic data 容器非 list（%s），按空页处理", type(rows_raw).__name__)
-        return []
+        raise RuntimeError(f"topic data 容器非 list: {type(rows_raw).__name__}")
     rows: list[Any] = rows_raw if isinstance(rows_raw, list) else []
     if not rows:
         return []
