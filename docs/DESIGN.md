@@ -963,7 +963,7 @@ select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(p
 | `extract_write.py` | 字段映射与写入 | `existing_topics(app_token, table_id) -> set[str]`、`build_record(topic, provider_label, run_date, status="未讨论") -> dict`、`write_topics(...) -> tuple[int, int]` |
 | `extract_flow.py` | 编排 + CLI | `run(cfg, conn, *, apply, since_days, limit, batch_size, max_calls) -> int`、`main(argv) -> int` |
 
-- provider 注册表（`extract_llm.PROVIDERS`）：`minimax`（base_url `https://api.minimaxi.com/v1`、model `MiniMax-M3`、key env `MiniMax_Key`/`MINIMAX_API_KEY`、tool_label `MMX（MiniMax）`）、`deepseek`（base_url `https://api.deepseek.com/v1`、model `deepseek-chat`、key env `DEEPSEEK_API_KEY`、tool_label `DS（DeepSeek）`）；yaml `providers.<name>` 非空字段覆盖注册表默认。
+- provider 注册表（`extract_llm.PROVIDERS`）：`minimax`（base_url `https://api.minimaxi.com/v1`、model `MiniMax-M3`、key env `MiniMax_Key`/`MINIMAX_API_KEY`、tool_label `MMax`）、`deepseek`（base_url `https://api.deepseek.com/v1`、model `deepseek-chat`、key env `DEEPSEEK_API_KEY`、tool_label `DS`）；`tool_label` 必须是 salon 表 `提取工具` select 字段的**表内已有选项**（`MMax`/`DS`，`飞书` 留给人工路径）；yaml `providers.<name>` 非空字段覆盖注册表默认。
 - 调用形态统一 OpenAI 兼容 `POST {base_url}/chat/completions`，取 `choices[0].message.content` 原始文本返回；`_post_chat` **单次尝试**：超时/HTTP 429/529/业务可重试码（1002/1004/1039）抛可重试 `RuntimeError`，重试仅由 `refine_batches` 外层做 1 次（总 HTTP ≤2/批，单层重试，PRV-8）；缺 key/占位 key 抛 `RuntimeError` 且**不发起 HTTP**。
 
 ### 25.3 配置（`extract:` 段）
@@ -981,12 +981,12 @@ extract:
       api_key: "<MiniMax_Key env>"
       model: "MiniMax-M3"
       base_url: "https://api.minimaxi.com/v1"
-      tool_label: "MMX（MiniMax）"
+      tool_label: "MMax"
     deepseek:
       api_key: "<DEEPSEEK_API_KEY env>"
       model: "deepseek-chat"
       base_url: "https://api.deepseek.com/v1"
-      tool_label: "DS（DeepSeek）"
+      tool_label: "DS"
 ```
 
 - dataclass：`ExtractConf{enabled, since_days, batch_size, provider, prompt_file, max_calls, providers: dict[str, ProviderConf]}`；`ProviderConf{base_url, model, api_key, tool_label}`（`config_models.py`）。
@@ -1004,7 +1004,7 @@ extract:
 
 - 写入前 `existing_topics` 分页拉目标表「话题名称」列（`_page_guard` 防死循环；响应兼容 records 与 fields+data 两形态，容器异常 raise 中止写入而非静默空集）。
 - 命中「话题名称」或本批已出现 → 跳过；重复运行不新增重复行（幂等）。`--update` 刷新既有行本期不做。
-- `讨论状态` 按 lark-cli select CellValue 协议写数组：单选=单元素 `["未讨论"]`（`base +record-batch-create --help` Tips 明确 select CellValue 恒为数组，`multiple=false` 时也须数组；写字符串会被服务端拒 800030005 not_found）。不再读 `+field-list` 字段元数据判形态（真跑已证伪，PRV-1）。
+- `讨论状态` / `提取工具` 均为单选 select，按 lark-cli select CellValue 协议**一律写单元素数组**：`["未讨论"]` / `[provider_label]`（`base +record-batch-create --help` Tips 明确 select CellValue 恒为数组，`multiple=false` 时也须数组；写字符串会被服务端拒）。取值须为表内已有选项（`讨论状态`：`未讨论`/`已选题`/`不选择`/`待继续评估`；`提取工具`：`MMax`/`DS`），写表外新值被拒 `800030005 Provide an existing option value`（真跑已证）。不再读 `+field-list` 字段元数据判形态（真跑已证伪，PRV-1）。
 
 ### 25.6 CLI（`tc-extract`）
 

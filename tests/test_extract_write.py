@@ -58,7 +58,7 @@ def test_dry_run_zero_write_calls(monkeypatch) -> None:
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert write_topics("app", "tbl", [_topic("A"), _topic("B")], "MMX（MiniMax）", "2026-09-14", dry_run=True) == (2, 0)
+    assert write_topics("app", "tbl", [_topic("A"), _topic("B")], "MMax", "2026-09-14", dry_run=True) == (2, 0)
     assert [c for c in calls if "+record-batch-create" in c] == []
     assert any("+record-list" in c for c in calls)
 
@@ -76,7 +76,7 @@ def test_apply_skips_existing_topic_names(monkeypatch) -> None:
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert write_topics("app", "tbl", [_topic("话题A"), _topic("话题B")], "MMX（MiniMax）", "2026-09-14") == (1, 1)
+    assert write_topics("app", "tbl", [_topic("话题A"), _topic("话题B")], "MMax", "2026-09-14") == (1, 1)
     assert [[r["话题名称"] for r in chunk] for chunk in created] == [["话题B"]]
 
 
@@ -91,7 +91,7 @@ def test_apply_in_batch_duplicate_skipped(monkeypatch) -> None:
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert write_topics("app", "tbl", [_topic("A"), _topic("A"), _topic("B")], "MMX（MiniMax）", "2026-09-14") == (2, 1)
+    assert write_topics("app", "tbl", [_topic("A"), _topic("A"), _topic("B")], "MMax", "2026-09-14") == (2, 1)
     assert [r["话题名称"] for r in created[0]] == ["A", "B"]
 
 
@@ -109,7 +109,7 @@ def test_apply_field_mapping(monkeypatch) -> None:
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     topic = _topic("话题A", links=["https://a/1", "https://b/2"], sources=["量子位", "InfoQ"])
-    write_topics("app", "tbl", [topic], "MMX（MiniMax）", "2026-09-14")
+    write_topics("app", "tbl", [topic], "MMax", "2026-09-14")
 
     assert created == [
         {
@@ -120,7 +120,7 @@ def test_apply_field_mapping(monkeypatch) -> None:
             "出处来源": "量子位\nInfoQ",
             "提炼日期": "2026-09-14",
             "讨论状态": ["未讨论"],
-            "提取工具": "MMX（MiniMax）",
+            "提取工具": ["MMax"],
         }
     ]
     assert [c for c in calls if "+field-list" in c] == []
@@ -129,12 +129,12 @@ def test_apply_field_mapping(monkeypatch) -> None:
 def test_build_record_newline_join_and_dedup() -> None:
     rec = build_record(
         _topic("A", links=["https://a/1", "https://a/1", "https://b/2"], sources=["量子位"]),
-        "DS（DeepSeek）",
+        "DS",
         "2026-09-14",
     )
 
     assert rec["资讯链接"] == "https://a/1\nhttps://b/2"
-    assert rec["提取工具"] == "DS（DeepSeek）"
+    assert rec["提取工具"] == ["DS"]
     assert rec["讨论状态"] == ["未讨论"]
 
 
@@ -151,7 +151,7 @@ def test_apply_writes_status_as_single_element_array(monkeypatch) -> None:
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert write_topics("app", "tbl", [_topic("A")], "MMX（MiniMax）", "2026-09-14") == (1, 0)
+    assert write_topics("app", "tbl", [_topic("A")], "MMax", "2026-09-14") == (1, 0)
     assert created[0][0]["讨论状态"] == ["未讨论"]
     assert [c for c in calls if "+field-list" in c] == []
 
@@ -168,7 +168,7 @@ def test_batch_create_chunks_at_200(monkeypatch) -> None:
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     topics = [_topic(f"话题{i}") for i in range(205)]
-    assert write_topics("app", "tbl", topics, "MMX（MiniMax）", "2026-09-14") == (205, 0)
+    assert write_topics("app", "tbl", topics, "MMax", "2026-09-14") == (205, 0)
     assert chunks == [200, 5]
 
 
@@ -186,7 +186,7 @@ def test_partial_chunk_failure_counts_success(monkeypatch) -> None:
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     topics = [_topic(f"话题{i}") for i in range(205)]
-    assert write_topics("app", "tbl", topics, "MMX（MiniMax）", "2026-09-14") == (200, 0)
+    assert write_topics("app", "tbl", topics, "MMax", "2026-09-14") == (200, 0)
     assert calls["n"] == 2
 
 
@@ -247,7 +247,7 @@ def test_write_skips_existing_after_nfkc_normalization(monkeypatch) -> None:
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert write_topics("app", "tbl", [_topic("gpt-5")], "MMX（MiniMax）", "2026-09-14") == (0, 1)
+    assert write_topics("app", "tbl", [_topic("gpt-5")], "MMax", "2026-09-14") == (0, 1)
     assert [c for c in calls if "+record-batch-create" in c] == []
 
 
@@ -263,7 +263,7 @@ def test_write_in_batch_dedup_after_nfkc_keeps_original_value(monkeypatch) -> No
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     got = write_topics(
-        "app", "tbl", [_topic("ＧＰＴ－５"), _topic("gpt-5")], "MMX（MiniMax）", "2026-09-14"
+        "app", "tbl", [_topic("ＧＰＴ－５"), _topic("gpt-5")], "MMax", "2026-09-14"
     )
 
     assert got == (1, 1)
@@ -305,12 +305,19 @@ def test_existing_topics_bad_container_raises(monkeypatch) -> None:
 
 def test_write_requires_tokens() -> None:
     with pytest.raises(RuntimeError, match="app_token"):
-        write_topics("", "", [], "MMX（MiniMax）", "2026-09-14")
+        write_topics("", "", [], "MMax", "2026-09-14")
 
 
 def test_provider_tool_labels_default_by_provider() -> None:
     mm = resolve_provider(ExtractConf(provider="minimax", providers={"minimax": ProviderConf(api_key="k")}))
     ds = resolve_provider(ExtractConf(provider="deepseek", providers={"deepseek": ProviderConf(api_key="k")}))
 
-    assert mm.tool_label == "MMX（MiniMax）"
-    assert ds.tool_label == "DS（DeepSeek）"
+    assert mm.tool_label == "MMax"
+    assert ds.tool_label == "DS"
+
+
+def test_provider_registry_tool_labels_are_table_options() -> None:
+    from feedkicker.extract_llm import PROVIDERS
+
+    assert PROVIDERS["minimax"].tool_label == "MMax"
+    assert PROVIDERS["deepseek"].tool_label == "DS"

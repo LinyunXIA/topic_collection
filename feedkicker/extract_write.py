@@ -65,10 +65,13 @@ def build_record(
 ) -> dict[str, Any]:
     """字段映射：LLM 三字段原样、链接/来源换行拼接、提炼日期/讨论状态/提取工具固定值。
 
-    `讨论状态` 按 lark-cli select CellValue 协议写数组 `[status]`：`base +record-batch-create
-    --help` Tips 明确 select CellValue 恒为数组（`multiple=false` 时也须单元素数组），
-    写字符串会被服务端拒（800030005 not_found）。单选=单元素 `["未讨论"]`，不复用
-    `+field-list` 元数据判形态（真跑已证伪）。
+    **select 字段一律写数组**（`讨论状态` / `提取工具` 均为单选 select，写单元素数组）：
+    lark-cli `base +record-batch-create --help` Tips 明确 select CellValue 恒为数组
+    （`multiple=false` 时也须单元素数组，形如 `"select": ["Todo"]`），写字符串会被
+    服务端拒（800030005 not_found）。取值必须是**表内已有选项**：`讨论状态`
+    为 `未讨论/已选题/不选择/待继续评估`，`提取工具` 为 `MMax`/`DS`（`飞书` 留给人工
+    路径，不在 provider 注册表引入）；写表外新值会被拒 `800030005 Provide an existing
+    option value`。不复用 `+field-list` 元数据判形态（真跑已证伪）。
     """
     return {
         "话题名称": str(topic.get("话题名称") or "").strip(),
@@ -78,7 +81,7 @@ def build_record(
         "出处来源": "\n".join(_str_list(topic.get("出处来源"))),
         "提炼日期": run_date,
         "讨论状态": [status],
-        "提取工具": provider_label,
+        "提取工具": [provider_label],
     }
 
 

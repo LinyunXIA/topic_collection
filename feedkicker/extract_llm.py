@@ -22,12 +22,12 @@ PROVIDERS: dict[str, ProviderConf] = {
     "minimax": ProviderConf(
         base_url="https://api.minimaxi.com/v1",
         model="MiniMax-M3",
-        tool_label="MMX（MiniMax）",
+        tool_label="MMax",
     ),
     "deepseek": ProviderConf(
         base_url="https://api.deepseek.com/v1",
         model="deepseek-chat",
-        tool_label="DS（DeepSeek）",
+        tool_label="DS",
     ),
 }
 

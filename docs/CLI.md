@@ -355,7 +355,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 2026-09-14 ... feedkicker.extract_flow 第 1/1 批提炼 2 个话题
 待写选题 2 个（dry-run，未写表；目标表已存在跳过 0 个）：
 1. 话题名A
-{"话题名称": "话题名A", "可使用工具": "…", "相关AI原理": "…", "资讯链接": "https://…", "出处来源": "量子位", "提炼日期": "2026-09-14", "讨论状态": ["未讨论"], "提取工具": "MMX（MiniMax）"}
+{"话题名称": "话题名A", "可使用工具": "…", "相关AI原理": "…", "资讯链接": "https://…", "出处来源": "量子位", "提炼日期": "2026-09-14", "讨论状态": ["未讨论"], "提取工具": ["MMax"]}
 {"mode": "dry-run", "since_days": 7, "batches": 1, "llm_calls": 1, "topics": 2, "written": 0, "pending": 2, "skipped": 0, "failed_batches": 0, "empty_batches": 0}
 ```
 
@@ -367,7 +367,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 .venv/bin/tc-extract --env test --apply
 ```
 
-示意输出：`提炼完成：… 写入=N 待写=0 跳过=M 失败批=0` 与统计 JSON（`"mode": "apply"`）。退出码 `0`（部分批失败仅汇总 WARNING，rc 不变；配置错 `2`，异常 `1`）。副作用：写 salon 选题表（≤200/批，`讨论状态=未讨论`）。
+示意输出：`提炼完成：… 写入=N 待写=0 跳过=M 失败批=0` 与统计 JSON（`"mode": "apply"`）。退出码 `0`（部分批失败仅汇总 WARNING，rc 不变；配置错 `2`，异常 `1`）。副作用：写 salon 选题表（≤200/批，`讨论状态=未讨论`、`提取工具=MMax`）。
 
 **prod（仅 dry-run）**：
 
@@ -392,7 +392,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 ### 注意 / 坑
 
 - **默认 dry-run**：真实写入必须显式 `--apply`；重复运行按「话题名称」精确匹配去重跳过（幂等）。
-- `讨论状态` 按 lark-cli select CellValue 协议写数组：单选=单元素 `["未讨论"]`（select CellValue 恒为数组，`multiple=false` 时也须数组；写字符串会被服务端拒）；不再读字段元数据判形态。
+- `讨论状态` / `提取工具` 均为单选 select，按 lark-cli select CellValue 协议**一律写单元素数组**：`["未讨论"]` / `["MMax"]`（select CellValue 恒为数组，`multiple=false` 时也须数组；写字符串会被服务端拒）；取值须为**表内已有选项**（`讨论状态`：`未讨论`/`已选题`/`不选择`/`待继续评估`；`提取工具`：`MMax`/`DS`），写表外新值被拒 `800030005 Provide an existing option value`；不再读字段元数据判形态。
 - 时间窗 `COALESCE(published_at, first_seen) >= now − N 天`，边界含当天；仅 RSS 行（salon 占位行 `ppt_synced_at` 非空被排除）。
 - 单批 LLM 调用失败（超时/429/529/业务可重试码）重试 1 次（总 HTTP ≤2/批，单层重试）后跳过并汇总 WARNING，不阻断其余批；模型合法返回空话题列表计 `empty_batches` 不计失败，单条非法 topic 丢弃该条不丢整批；`--max-calls` 供联调限次。
 - 行为由 `prompts/extract.md` 定义（用户提示词原文 + 输出 JSON schema），改提示词即改提炼口径。
