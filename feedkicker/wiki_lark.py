@@ -8,7 +8,7 @@ import subprocess
 import time
 from typing import Any
 
-from feedkicker import bitable
+from feedkicker import bitable_lark
 
 log = logging.getLogger(__name__)
 
@@ -26,7 +26,7 @@ def lark_doc_create(rel_path: str, parent_wiki_token: str, doc_title: str):
         "--content", f"@{rel_path}",
         "--json",
     ]
-    return bitable._run(args, timeout=120)
+    return bitable_lark._run(args, timeout=120)
 
 
 def parse_document_id(proc: subprocess.CompletedProcess[str] | None) -> str | None:
@@ -68,13 +68,13 @@ def lark_node_get(
     """
     proc = None
     for i in range(attempts):
-        proc = bitable._run(
+        proc = bitable_lark._run(
             ["wiki", "+node-get", "--node-token", doc_token, "--json"], timeout=60
         )
         node_token, _ = parse_node(proc)
         if node_token:
             return proc
-        ok, _ = bitable._parse(proc) if proc is not None else (False, None)
+        ok, _ = bitable_lark._parse(proc) if proc is not None else (False, None)
         if ok:
             return proc
         log.warning("wiki +node-get 第 %d/%d 次未解析到 node_token（新建节点传播延迟？）", i + 1, attempts)
@@ -124,7 +124,7 @@ def lark_node_list(
         "--page-all",
         "--json",
     ]
-    return bitable._run(args, timeout=120)
+    return bitable_lark._run(args, timeout=120)
 
 
 def parse_node_list(proc: subprocess.CompletedProcess[str] | None) -> list[dict[str, Any]]:
@@ -162,4 +162,4 @@ def lark_doc_overwrite_md(
         "--doc-format", "markdown",
         "--content", f"@{rel_content_path}",
     ]
-    return bitable._run(args, timeout=120)
+    return bitable_lark._run(args, timeout=120)

@@ -6,7 +6,7 @@ import logging
 import sys
 from datetime import UTC, datetime, timedelta
 
-from feedkicker import bitable, feishu, store
+from feedkicker import bitable_records, bitable_schema, feishu, store
 from feedkicker.config import load_config
 from feedkicker.fetch import fetch_feed
 
@@ -53,13 +53,13 @@ def run(cfg, conn, dry_run: bool = False) -> int:
 
     detail_url: str | None = None
     if cfg.bitable.enabled and (cfg.bitable.url or cfg.bitable.app_token):
-        detail_url = cfg.bitable.url or bitable.base_url(cfg.bitable.app_token)
+        detail_url = cfg.bitable.url or bitable_schema.base_url(cfg.bitable.app_token)
 
     if cfg.bitable.enabled and not dry_run:
         try:
-            synced_n = bitable.sync_env(cfg.bitable, cfg.app_env, conn, now)
+            synced_n = bitable_records.sync_env(cfg.bitable, cfg.app_env, conn, now)
             if synced_n:
-                detail_url = cfg.bitable.url or bitable.base_url(cfg.bitable.app_token)
+                detail_url = cfg.bitable.url or bitable_schema.base_url(cfg.bitable.app_token)
                 log.info("多维表格已写入 %d 条", synced_n)
         except Exception as e:  # noqa: BLE001
             log.warning("多维表格同步未完成（不影响推送，保留待重试）: %s", e)

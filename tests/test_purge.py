@@ -9,7 +9,7 @@ from __future__ import annotations
 import json
 from datetime import UTC, datetime
 
-from feedkicker import bitable, bitable_purge, purge, store
+from feedkicker import bitable_lark, bitable_purge, purge, store
 from feedkicker.config import (
     BitableConf,
     Config,
@@ -82,7 +82,7 @@ def install_fake_lark(monkeypatch, pages, delete_fail=False):
             return FakeProc(0, stdout="{}")
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     return calls, deletes
 
 
@@ -171,7 +171,7 @@ def test_bitable_purge_first_page_failure_safe(monkeypatch):
         calls.append(list(args))
         return FakeProc(1, stderr="boom")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     assert bitable_purge.purge_expired_records("app", "tbl", "2025-09-07", dry_run=False) == (0, 0, 0)
     assert not any("+record-delete" in c for c in calls)
 
@@ -260,7 +260,7 @@ def test_purge_run_apply_skipped_bitable_no_meta():
 
 def test_purge_run_apply_first_page_failure_no_meta(monkeypatch):
     monkeypatch.setattr(
-        bitable, "_run", lambda args, stdin_text=None, timeout=120: FakeProc(1, stderr="boom")
+        bitable_lark, "_run", lambda args, stdin_text=None, timeout=120: FakeProc(1, stderr="boom")
     )
     conn = make_conn()
     cfg = make_cfg(enabled=True, app_token="appReal", table_id="tblReal")
@@ -313,7 +313,7 @@ def test_purge_run_apply_partial_page_failure_no_meta(monkeypatch):
             return FakeProc(0, stdout="{}")
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     conn = make_conn()
     cfg = make_cfg(enabled=True, app_token="appReal", table_id="tblReal")
 

@@ -52,7 +52,12 @@ topic_collection/
 │   ├── store_meta.py         # meta 键值表（叶子模块）
 │   ├── store_salon.py        # salon 选题 sqlite 状态（ppt 同步/last_status/落库）
 │   ├── feishu.py / feishu_card.py    # webhook 发送 / 卡片构建（facade，§21.2）
-│   ├── bitable.py            # 多维表格归档（subprocess 调 lark-cli，§16/§18；791 行遗留见 §21.4）
+│   ├── bitable.py            # 多维表格 CLI + facade re-export（§21.2/§21.4）
+│   ├── bitable_lark.py       # lark-cli 进程层：_run/_parse/_json_arg/SHANGHAI（§21.4）
+│   ├── bitable_schema.py     # Base/数据表初始化：字段、建库、ensure_initialized（§21.4）
+│   ├── bitable_views.py      # 视图/字段/分享设置：setup_view/按日期视图/组织内只读（§21.4）
+│   ├── bitable_records.py    # 记录读写：去重建链、批量写、清空重灌、sync_env（§21.4）
+│   ├── bitable_backfill.py   # 归档日期解析与存量回填 backfill_empty_archive_dates（§21.4）
 │   ├── bitable_purge.py      # 滚动保留的 bitable 侧删除（§20）
 │   ├── minimax.py / minimax_schema.py  # MiniMax 调用 / prompt 与 schema（facade）
 │   ├── wiki.py / wiki_lark.py          # Wiki 归档编排 / lark-cli 调用层
@@ -738,21 +743,39 @@ feishu_card（卡片构建/转义/strip_actions）→ feishu（HTTP 发送 + fac
 minimax_schema（PROMPT_TEMPLATES / function-calling schema）→ minimax（调用 + facade）
 wiki_lark（lark-cli docs/wiki 调用与响应解析）→ wiki（编排 + __main__ CLI）
 salon_md（标题/大纲 markdown/stub）、salon_notify（卡片 + 连败 SOS）→ salon_flow（编排）
+
+bitable_lark（叶子：lark-cli 进程层 _run/_parse/_json_arg/_has_batch_verb/SHANGHAI）
+  ↑
+bitable_schema（Base/表初始化：fields_for/create_base/ensure_initialized）
+bitable_views（视图/字段/分享：setup_view/create_date_view/set_tenant_readonly）
+bitable_backfill（归档日期解析 _cell_str/_shanghai_date + 回填）
+  ↑
+bitable_records（记录读写：existing_links/sync_records/purge_all_records/sync_env，编排 schema）
+  ↑
+bitable（CLI + facade re-export，§21.2）
 ```
 
 - **facade 约定**：被搬走的公共函数在原模块以 `from x import y as y` 显式 re-export（抑制 ruff F401 且表明是刻意重导），全部既有调用点（`store.get_ppt_last_status`、`feishu.build_card`、`mm.PROMPT_TEMPLATES` 等 ~25 处）与测试 monkeypatch 目标零改动。
-- **monkeypatch 约定**：跨模块调用必须走模块属性访问（`feishu.send`、`bitable._run`、`wiki_lark.time.sleep`），不可 `from x import y` 解包后调用，否则 patch 不生效。唯一的 patch 点迁移：`wk.time.sleep` → `wiki_lark.time.sleep`（node-get 重试在 wiki_lark 内）。
-- 拆分后行数（`wc -l feedkicker/*.py`，2026-09-14 实测）：除 bitable.py（791，见 §21.4）外全部 ≤200；最大 feishu_card.py 195，config.py 194（#162 移除别名后回落、逼近 200 行门；如需拆分按 follow-up issue 跟踪）。
+- **monkeypatch 约定**：跨模块调用必须走模块属性访问（`feishu.send`、`bitable_lark._run`、`wiki_lark.time.sleep`），不可 `from x import y` 解包后调用，否则 patch 不生效。bitable 拆分（§21.4）后随之迁移的 patch 点：`bitable._run/_parse/_ok/_data/lark_bin/subprocess/os/SHANGHAI` → `bitable_lark.*`；`bitable.find_base_by_title/create_base/get_table_id/create_table/ensure_initialized` → `bitable_schema.*`；`bitable.setup_view/create_date_view/ensure_archive_date_field/set_tenant_readonly` → `bitable_views.*`；`bitable.existing_links/sync_records/purge_all_records/sync_env` → `bitable_records.*`；`bitable._cell_str/_shanghai_date/backfill_empty_archive_dates` → `bitable_backfill.*`。外部调用点（push/wiki/wiki_lark/wiki_home/topic/bitable_purge）同步改为引用 owner 模块。此前的 `wk.time.sleep` → `wiki_lark.time.sleep` 迁移遵循同一约定。
+- 拆分后行数（`wc -l feedkicker/*.py`，2026-09-14 实测）：全部 ≤200（bitable 拆分见 §21.4）；最大 feishu_card.py 195，config.py 194（#162 移除别名后回落、逼近 200 行门；如需拆分按 follow-up issue 跟踪）。
 
 ### 21.3 质量门配置
 
 - **ruff 0.16.4**（dev 依赖固定版本）：`target-version="py312"`、`line-length=100`、`lint.select=["E4","E7","E9","F","I","UP","BLE","DTZ","FURB","PLW1510"]`。broad except 统一 `except Exception:  # noqa: BLE001`（子进程/外部 API 边界刻意兜底）；`datetime.now(tz)` 强制时区（DTZ）；`subprocess.run(..., check=False)` 显式（PLW1510）；Py3.12 现代化（UP，含 `from datetime import UTC`、原生 `fromisoformat("...Z")`）。`store.py` facade 成组 re-export 在 per-file-ignores 关 I001。命令：`.venv/bin/ruff check .` → 0 errors。
-- **basedpyright 1.39.10**：`include=["feedkicker"]`、`pythonVersion="3.12"`。JSON/子进程边界无静态 schema，`reportAny`/`reportUnknown*`/`reportMissingParameterType`/`reportPrivateUsage`（跨模块调 `bitable._run/_parse` 的架构所需）/`reportExplicitAny`（边界 `dict[str, Any]` 刻意）/`reportUnusedCallResult`（`__main__` argparse 惯例）降级 none；`reportUnusedParameter` 保留 warning。代码侧修完全部 error：裸 `dict`/`list` 一律参数化为 `dict[str, Any]`/`list[dict[str, Any]]`，`CompletedProcess | None` 与 `data.get("node")` 等 None 分支显式收窄。命令：`.venv/bin/basedpyright` → **0 errors**。
-- **零整行注释门**：`feedkicker/*.py` 无整行 `#` 注释（`grep -rn '^[[:space:]]*#' feedkicker/*.py | grep -v noqa` 为空）；承载 lark-cli/launchd 踩坑理由的注释转为函数 docstring（如 `bitable._run` 的 launchd PATH 增补 #123、`_json_arg` 的 ARG_MAX、`wiki_lark.lark_node_get` 的 131005 传播延迟）；inline `# noqa: ...` 允许。
+- **basedpyright 1.39.10**：`include=["feedkicker"]`、`pythonVersion="3.12"`。JSON/子进程边界无静态 schema，`reportAny`/`reportUnknown*`/`reportMissingParameterType`/`reportPrivateUsage`（跨模块调 `bitable_lark._run/_parse` 的架构所需）/`reportExplicitAny`（边界 `dict[str, Any]` 刻意）/`reportUnusedCallResult`（`__main__` argparse 惯例）降级 none；`reportUnusedParameter` 保留 warning。代码侧修完全部 error：裸 `dict`/`list` 一律参数化为 `dict[str, Any]`/`list[dict[str, Any]]`，`CompletedProcess | None` 与 `data.get("node")` 等 None 分支显式收窄。命令：`.venv/bin/basedpyright` → **0 errors**。
+- **零整行注释门**：`feedkicker/*.py` 无整行 `#` 注释（`grep -rn '^[[:space:]]*#' feedkicker/*.py | grep -v noqa` 为空）；承载 lark-cli/launchd 踩坑理由的注释转为函数 docstring（如 `bitable_lark._run` 的 launchd PATH 增补 #123、`_json_arg` 的 ARG_MAX、`wiki_lark.lark_node_get` 的 131005 传播延迟）；inline `# noqa: ...` 允许。
 
-### 21.4 已知遗留
+### 21.4 拆分记录
 
-- **bitable.py 791 行未拆分**（2026-09-14 实测）：本次审核范围外、且是风险最高的 lark-cli 写路径（含 reseed/backfill/sync），强拆风险大于收益；新逻辑一律不进 bitable.py（如 #120 清理进 `bitable_purge.py`）。follow-up tech-debt issue **#135** 跟踪拆分（建议边界：lark-cli 进程层 / Base 与表结构初始化 / 记录读写与回填）。
+- **bitable.py 拆分完成**（#135，2026-09-14）：原 830 行单文件按边界拆为 6 个 ≤200 行模块，行为逐字节保留（240 用例全绿，<1s 全离线），`bitable.py` 收敛为 CLI + facade re-export。边界与函数归属：
+  - `bitable_lark.py`（进程层）：`SHANGHAI`/`_shanghai_tz`、`lark_bin`、`_run`、`_parse`、`_ok`、`_data`、`_json_arg`、`_has_batch_verb`、`_markdown_record_ids`、`_CHUNK`。
+  - `bitable_schema.py`（Base/表初始化）：`BASE_TITLES`/`TABLE_NAME`/`VIEW_NAME` 等常量、`fields_for`、`base_url`、`find_base_by_title`、`create_base`、`get_table_id`、`create_table`、`ensure_initialized`。
+  - `bitable_views.py`（视图/字段/分享）：`_view_id`、`setup_view`、`set_tenant_readonly`、`ensure_archive_date_field`、`create_date_view`。
+  - `bitable_records.py`（记录读写）：`_cell`、`existing_links`、`sync_records`、`purge_all_records`、`sync_env`。
+  - `bitable_backfill.py`（日期解析/回填）：`_cell_str`、`_shanghai_date`、`backfill_empty_archive_dates`。
+  - `bitable.py`：`_tokens_ready`、`_dry_run_plan`、`main` + 全量 facade re-export；`bitable.X` 访问与既有调用点保持不变。
+- 跨模块调用一律模块属性访问（`bitable_lark._run`、`bitable_schema.ensure_initialized`）；monkeypatch 目标按 §21.2 迁移到 owner 模块。
+- **后续新逻辑**：一律进对应子模块，不再堆进 `bitable.py`（如 #120 清理进 `bitable_purge.py`）。
 
 ### 21.5 清单
 
@@ -762,8 +785,8 @@ salon_md（标题/大纲 markdown/stub）、salon_notify（卡片 + 连败 SOS�
 - [x] 模块拆分：store_meta / store_salon / feishu_card / wiki_lark / minimax_schema / salon_md / salon_notify，facade re-export 保持调用点
 - [x] ruff 0.16.4 配置入 pyproject，`ruff check .` 0 errors
 - [x] basedpyright 1.39.10 配置入 pyproject，0 errors
-- [x] 除 bitable.py 外全部模块 ≤200 行；零整行注释
-- [x] bitable.py 拆分遗留开 follow-up issue（#135）
+- [x] 全部模块（含 bitable.py）≤200 行；零整行注释
+- [x] bitable.py 拆分为 lark/schema/views/records/backfill 子模块 + facade（#135）
 
 ## 22. v0.7+ — Wiki 首页自动索引（#137 / F23，2026-09-08）
 

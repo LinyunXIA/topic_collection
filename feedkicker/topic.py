@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any
 
-from feedkicker import bitable
+from feedkicker import bitable_lark
 
 log = logging.getLogger(__name__)
 
@@ -68,14 +68,14 @@ def fetch_selected_topics(
             "--offset", str(offset),
             "--json",
         ]
-        proc = bitable._run(args, timeout=120)
+        proc = bitable_lark._run(args, timeout=120)
         if proc is None:
             raise RuntimeError("lark-cli 执行失败(无返回)，疑似超时或未安装")
         if proc.returncode != 0:
             msg = (proc.stderr or proc.stdout or "").strip()[:500]
             log.warning("lark-cli 失败(%d): %s", proc.returncode, msg)
             raise RuntimeError(f"lark-cli 失败({proc.returncode}): {msg}")
-        ok, data = bitable._parse(proc)
+        ok, data = bitable_lark._parse(proc)
         if not ok:
             msg = (proc.stdout or proc.stderr or "").strip()[:500]
             log.warning("lark-cli 业务失败: %s", msg)
@@ -103,14 +103,14 @@ def fetch_topic_fields(app_token: str, table_id: str) -> list[dict[str, Any]]:
     """列出表字段并校验 讨论状态；select/singleSelect/multiSelect 均视为合法（intersects 已验证可用）。"""
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")
-    proc = bitable._run(["base", "+field-list", "--base-token", app_token, "--table-id", table_id], timeout=60)
+    proc = bitable_lark._run(["base", "+field-list", "--base-token", app_token, "--table-id", table_id], timeout=60)
     if proc is None:
         raise RuntimeError("lark-cli 执行失败(无返回)")
     if proc.returncode != 0:
         msg = (proc.stderr or proc.stdout or "").strip()[:500]
         log.warning("lark-cli 失败(%d): %s", proc.returncode, msg)
         raise RuntimeError(f"lark-cli 失败({proc.returncode}): {msg}")
-    ok, data = bitable._parse(proc)
+    ok, data = bitable_lark._parse(proc)
     if not ok:
         msg = (proc.stdout or proc.stderr or "").strip()[:500]
         log.warning("lark-cli 业务失败: %s", msg)

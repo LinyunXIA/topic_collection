@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from feedkicker import feishu, push, store
+from feedkicker import bitable_lark, bitable_records, bitable_schema, feishu, push, store
 from feedkicker.config import Config, Feed, HttpConf, SiteConf
 from feedkicker.fetch import canonicalize, entry_key_of, parse_content
 
@@ -594,7 +594,7 @@ def test_push_bitable_sync_before_send(monkeypatch):
 
     calls = []
     monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
-    monkeypatch.setattr(push.bitable, "sync_env",
+    monkeypatch.setattr(push.bitable_records, "sync_env",
                         lambda b, e, c, now_iso=None: calls.append(("sync",)) or 1)
     sent = []
     monkeypatch.setattr(feishu, "send",
@@ -621,7 +621,7 @@ def test_push_bitable_fail_still_sends(monkeypatch):
     def boom(b, e, c, now_iso=None):
         raise RuntimeError("写入失败")
 
-    monkeypatch.setattr(push.bitable, "sync_env", boom)
+    monkeypatch.setattr(push.bitable_records, "sync_env", boom)
 
     sent = []
     monkeypatch.setattr(feishu, "send",
@@ -646,11 +646,11 @@ def test_push_detail_url_after_auto_created_base(monkeypatch):
     entries = [_norm("a1 item", "https://e.com/a1")]
     monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
     monkeypatch.setattr(
-        push.bitable, "find_base_by_title",
+        push.bitable_schema, "find_base_by_title",
         lambda title: {"app_token": "appAutoA1", "url": ""},
     )
-    monkeypatch.setattr(push.bitable, "get_table_id", lambda tok: "tblAutoA1")
-    monkeypatch.setattr(push.bitable, "sync_records", lambda *a, **kw: True)
+    monkeypatch.setattr(push.bitable_schema, "get_table_id", lambda tok: "tblAutoA1")
+    monkeypatch.setattr(push.bitable_records, "sync_records", lambda *a, **kw: True)
     sent = []
     monkeypatch.setattr(feishu, "send", lambda p, *a, **kw: sent.append(p) or True)
 
@@ -731,7 +731,7 @@ def test_store_sync_roundtrip():
 def test_bitable_dedup_filters(monkeypatch):
     from feedkicker import bitable
 
-    monkeypatch.setattr(bitable, "existing_links",
+    monkeypatch.setattr(bitable_records, "existing_links",
                         lambda a, t: {"https://old.com/1"})
     calls = []
 
@@ -742,7 +742,7 @@ def test_bitable_dedup_filters(monkeypatch):
             return FakeProc(0, stdout="{}")
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     items = (
         [{"feed_id": f"F{i}", "entry_key": f"k{i}", "title": f"t{i}",
@@ -764,7 +764,7 @@ def test_bitable_large_payload_uses_file_not_argv(monkeypatch, tmp_path):
     from feedkicker import bitable
 
     monkeypatch.chdir(tmp_path)
-    monkeypatch.setattr(bitable, "existing_links", lambda a, t: set())
+    monkeypatch.setattr(bitable_records, "existing_links", lambda a, t: set())
     argv_sizes = []
     file_seen = {}
 
@@ -779,7 +779,7 @@ def test_bitable_large_payload_uses_file_not_argv(monkeypatch, tmp_path):
             return FakeProc(0, stdout="{}")
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     items = [
         {"feed_id": "F", "entry_key": f"k{i}", "title": "t" * 50,
@@ -856,7 +856,7 @@ def test_bitable_cell_archive_date_fallback(monkeypatch, scenario):
         assert cell["归档日期"] == expected
         assert len(cell["归档日期"]) == 10
     elif scenario == "dedup_batch":
-        monkeypatch.setattr(bitable, "existing_links", lambda a, t: {"https://old.com/1"})
+        monkeypatch.setattr(bitable_records, "existing_links", lambda a, t: {"https://old.com/1"})
         payloads = []
         def fake_run(args, stdin_text=None, timeout=120):
             if "+record-batch-create" in args:
@@ -864,7 +864,7 @@ def test_bitable_cell_archive_date_fallback(monkeypatch, scenario):
                 payloads.append(payload["create_records"])
                 return FakeProc(0, stdout="{}")
             return FakeProc(0, stdout="{}")
-        monkeypatch.setattr(bitable, "_run", fake_run)
+        monkeypatch.setattr(bitable_lark, "_run", fake_run)
         items = (
             [{"feed_id": f"F{i}", "entry_key": f"k{i}", "title": f"t{i}", "url": f"https://e.com/{i}", "description": "", "published_at": None, "pushed_at": None} for i in range(250)]
             + [{"feed_id": "F", "entry_key": "dup", "title": "dup", "url": "HTTPS://E.COM/1#x", "description": "", "published_at": None, "pushed_at": None}]
@@ -896,7 +896,7 @@ def test_bitable_views_creation(monkeypatch):
                 {"data": {"view": {"view_id": "vewDate"}}}, ensure_ascii=False))
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     assert bitable.setup_view("app", "tbl") is True
     group_calls = [c for c in calls if "+view-set-group" in c]
@@ -926,12 +926,12 @@ def test_bitable_ensure_archive_date_field_idempotent(monkeypatch):
             return FakeProc(0, stdout=fields_with)
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     assert bitable.ensure_archive_date_field("app", "tbl") is True
     assert not any("+field-create" in c for c in calls)
 
     calls.clear()
-    monkeypatch.setattr(bitable, "_run",
+    monkeypatch.setattr(bitable_lark, "_run",
                         lambda args, stdin_text=None, timeout=60:
                         FakeProc(0, stdout=fields_without)
                         if "+field-list" in args else
@@ -946,7 +946,7 @@ def test_bitable_purge_all_records(monkeypatch):
     page = ("| _record_id | 标题 |\n| --- | --- |\n"
             "| recAAA | a |\n| recBBB | b |")
     deleted = []
-    monkeypatch.setattr(bitable, "_run",
+    monkeypatch.setattr(bitable_lark, "_run",
                         lambda args, stdin_text=None, timeout=120:
                         deleted.append(json.loads(args[args.index("--json") + 1]))
                         or FakeProc(0, "{}")
@@ -962,10 +962,10 @@ def test_bitable_sync_env_roundtrip(monkeypatch):
     conn = make_conn()
     store.download(conn, "F", SAMPLE_ENTRIES, "2026-08-25T00:00:00Z")
 
-    monkeypatch.setattr(bitable, "ensure_initialized",
+    monkeypatch.setattr(bitable_schema, "ensure_initialized",
                         lambda bt, env: {"app_token": "app-x", "table_id": "tbl-x",
                                          "url": "https://x.test/base"})
-    monkeypatch.setattr(bitable, "existing_links", lambda a, t: {"https://old.com/x"})
+    monkeypatch.setattr(bitable_records, "existing_links", lambda a, t: {"https://old.com/x"})
 
     payloads = []
 
@@ -976,7 +976,7 @@ def test_bitable_sync_env_roundtrip(monkeypatch):
             return FakeProc(0, stdout="{}")
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     n = bitable.sync_env(type("BT", (), {"enabled": True, "app_token": "app-x",
                                          "table_id": "tbl-x", "url": ""})(),
@@ -994,7 +994,7 @@ def test_bitable_sync_env_rejects_empty_config(monkeypatch):
 
     conn = make_conn()
     empty_bt = type("BT", (), {"enabled": True, "app_token": "", "table_id": "", "url": ""})()
-    monkeypatch.setattr(bitable, "ensure_initialized",
+    monkeypatch.setattr(bitable_schema, "ensure_initialized",
                         lambda bt, e: {"app_token": "", "table_id": "", "url": ""})
     with pytest.raises(RuntimeError, match="初始化不完整"):
         bitable.sync_env(empty_bt, "prod", conn)
@@ -1012,9 +1012,9 @@ def test_run_augments_path_for_launchd(monkeypatch, tmp_path):
         captured["env"] = kw.get("env")
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "lark_bin", lambda: str(fake_bin))
-    monkeypatch.setattr(bitable.subprocess, "run", fake_subprocess_run)
-    monkeypatch.setattr(bitable.os, "environ", {"PATH": "/usr/bin:/bin"})
+    monkeypatch.setattr(bitable_lark, "lark_bin", lambda: str(fake_bin))
+    monkeypatch.setattr(bitable_lark.subprocess, "run", fake_subprocess_run)
+    monkeypatch.setattr(bitable_lark.os, "environ", {"PATH": "/usr/bin:/bin"})
     bitable._run(["base", "--help"])
     parts = captured["env"]["PATH"].split(os.pathsep)
     assert parts[0] == str(fake_bin.parent)
@@ -1053,7 +1053,7 @@ def test_bitable_sync_aborts_when_existing_links_fail(monkeypatch):
             created.append(_json_from_args(args))
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     items = [{"feed_id": "F", "entry_key": "k", "title": "t", "url": "https://e.com/1",
               "description": "", "published_at": None, "pushed_at": None}]
     with pytest.raises(RuntimeError, match="已有链接"):
@@ -1069,7 +1069,7 @@ def test_existing_links_records_shape(monkeypatch):
         {"record_id": "rec1", "fields": {"链接": {"link": "https://E.com/a#frag"}}},
         {"record_id": "rec2", "fields": {"链接": "https://e.com/b?q=1"}},
     ]}
-    monkeypatch.setattr(bitable, "_run", lambda *a, **kw: FakeProc(
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **kw: FakeProc(
         0, stdout=json.dumps({"data": payload}, ensure_ascii=False)))
     assert bitable.existing_links("app", "tbl") == {"https://e.com/a", "https://e.com/b?q=1"}
 
@@ -1079,7 +1079,7 @@ def test_existing_links_unknown_shape_raises(monkeypatch):
     from feedkicker import bitable
 
     for payload in ({"unexpected": []}, [1, 2]):
-        monkeypatch.setattr(bitable, "_run", lambda *a, _p=payload, **kw: FakeProc(
+        monkeypatch.setattr(bitable_lark, "_run", lambda *a, _p=payload, **kw: FakeProc(
             0, stdout=json.dumps({"data": _p}, ensure_ascii=False)))
         with pytest.raises(RuntimeError, match="无法识别|不是 JSON 对象"):
             bitable.existing_links("app", "tbl")
@@ -1091,7 +1091,7 @@ def test_bitable_sync_env_ok_false_not_marked(monkeypatch):
 
     conn = make_conn()
     store.download(conn, "F", SAMPLE_ENTRIES, "2026-08-25T00:00:00Z")
-    monkeypatch.setattr(bitable, "ensure_initialized",
+    monkeypatch.setattr(bitable_schema, "ensure_initialized",
                         lambda bt, env: {"app_token": "app-x", "table_id": "tbl-x",
                                          "url": "https://x.test/base"})
 
@@ -1101,7 +1101,7 @@ def test_bitable_sync_env_ok_false_not_marked(monkeypatch):
                 {"ok": False, "error": {"type": "api", "message": "denied"}}))
         return FakeProc(0, stdout=json.dumps({"data": {"fields": ["链接"], "data": []}}))
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     bt = type("BT", (), {"enabled": True, "app_token": "app-x",
                          "table_id": "tbl-x", "url": ""})()
     with pytest.raises(RuntimeError):
@@ -1136,8 +1136,8 @@ def test_bitable_views_grouping_not_empty(monkeypatch):
             return FakeProc(0, stdout=json.dumps({"data": {"views": [{"id": "vewX", "name": "表格"}]}}))
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
-    monkeypatch.setattr(bitable, "existing_links", lambda a, t: set())
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    monkeypatch.setattr(bitable_records, "existing_links", lambda a, t: set())
 
     assert bitable.create_date_view("app", "tbl") is True
     assert any(
@@ -1209,7 +1209,7 @@ def test_bitable_backfill_empty_archive_dates(monkeypatch):
             return FakeProc(0, stdout="{}")
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     n = bitable.backfill_empty_archive_dates("app", "tbl", env_name="dev", dry_run=False)
     assert n == 2
     assert len(captured) == 1
@@ -1244,7 +1244,7 @@ def test_bitable_backfill_empty_archive_dates(monkeypatch):
             return FakeProc(0, stdout="{}")
         return FakeProc(0, stdout="{}")
 
-    monkeypatch.setattr(bitable, "_run", fake_run_dry)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run_dry)
     n2 = bitable.backfill_empty_archive_dates("app", "tbl", dry_run=True)
     assert n2 == 2
     assert captured == []

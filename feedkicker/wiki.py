@@ -8,7 +8,7 @@ import tempfile
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
-from feedkicker import bitable, wiki_lark
+from feedkicker import bitable_lark, wiki_lark
 from feedkicker.feishu_host import feishu_host
 
 log = logging.getLogger(__name__)
@@ -101,7 +101,7 @@ def create_wiki_doc_from_md(
         assert rel_path.startswith("./"), "必须用相对路径 ./ 前缀"
 
         create_proc = wiki_lark.lark_doc_create(rel_path, parent_wiki_token, doc_title)
-        ok, _ = bitable._parse(create_proc)
+        ok, _ = bitable_lark._parse(create_proc)
         doc_id = wiki_lark.parse_document_id(create_proc)
         if not ok or not doc_id:
             raw = ""

@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from feedkicker import bitable
+from feedkicker import bitable_backfill, bitable_lark
 
 log = logging.getLogger(__name__)
 
@@ -25,14 +25,14 @@ _CHUNK = 200
 
 def cutoff_date_shanghai(days: int, now: datetime | None = None) -> str:
     """上海时区下 now-days 的 %Y-%m-%d 日期串（字典序即时间序）。"""
-    ref = now if now is not None else datetime.now(bitable.SHANGHAI)
-    return (ref - timedelta(days=days)).astimezone(bitable.SHANGHAI).strftime("%Y-%m-%d")
+    ref = now if now is not None else datetime.now(bitable_lark.SHANGHAI)
+    return (ref - timedelta(days=days)).astimezone(bitable_lark.SHANGHAI).strftime("%Y-%m-%d")
 
 
 def _pushed_date(fields: dict[str, Any]) -> str | None:
     """fields 中「推送时间」→ 上海 %Y-%m-%d；兼容 epoch 毫秒/ISO/纯日期。"""
-    raw = bitable._cell_str(fields.get("推送时间"))
-    return bitable._shanghai_date(raw) if raw else None
+    raw = bitable_backfill._cell_str(fields.get("推送时间"))
+    return bitable_backfill._shanghai_date(raw) if raw else None
 
 
 def _list_records(
@@ -48,7 +48,7 @@ def _list_records(
     offset = 0
     first = True
     while True:
-        proc = bitable._run(
+        proc = bitable_lark._run(
             [
                 "base", "+record-list",
                 "--base-token", app_token,
@@ -59,14 +59,14 @@ def _list_records(
             ],
             timeout=120,
         )
-        if not bitable._ok(proc):
+        if not bitable_lark._ok(proc):
             if first:
                 log.warning("purge：首屏 record-list 失败，跳过本次 bitable 清理")
                 return [], False, False
             log.warning("purge：第 %d 页拉取失败，仅处理已扫描记录", offset // _CHUNK + 1)
             return out, True, False
         first = False
-        data = bitable._data(proc)
+        data = bitable_lark._data(proc)
         records: list[dict[str, Any]] = data.get("records") or []
         if records:
             for rec in records:
@@ -136,7 +136,7 @@ def purge_expired_records_outcome(
     batch_ok = True
     for i in range(0, len(expired), _CHUNK):
         batch = expired[i : i + _CHUNK]
-        proc = bitable._run(
+        proc = bitable_lark._run(
             [
                 "base", "+record-delete",
                 "--base-token", app_token,
@@ -146,7 +146,7 @@ def purge_expired_records_outcome(
             ],
             timeout=300,
         )
-        if not bitable._ok(proc):
+        if not bitable_lark._ok(proc):
             log.warning("purge：第 %d 批删除失败（%d 条），终止", i // _CHUNK + 1, len(batch))
             batch_ok = False
             break
