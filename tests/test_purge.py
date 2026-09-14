@@ -230,11 +230,11 @@ def test_purge_run_skips_bitable_when_disabled_or_placeholder(monkeypatch):
 def test_purge_run_apply_writes_meta_and_calls_bitable(monkeypatch):
     captured = {}
 
-    def fake_purge(app_token, table_id, cutoff_date, dry_run=False):
+    def fake_outcome(app_token, table_id, cutoff_date, dry_run=False):
         captured["args"] = (app_token, table_id, cutoff_date, dry_run)
-        return 3, 5, 50
+        return bitable_purge.PurgeOutcome(3, 5, 50, listed_ok=True, applied_ok=True)
 
-    monkeypatch.setattr(bitable_purge, "purge_expired_records", fake_purge)
+    monkeypatch.setattr(bitable_purge, "purge_expired_records_outcome", fake_outcome)
 
     conn = make_conn()
     cfg = make_cfg(enabled=True, app_token="appReal", table_id="tblReal")
@@ -246,6 +246,48 @@ def test_purge_run_apply_writes_meta_and_calls_bitable(monkeypatch):
     conn2 = make_conn()
     purge.run(cfg, conn2, dry_run=True, now=NOW)
     assert store.get_meta(conn2, purge.PURGE_LAST_RUN_KEY) == ""
+
+
+def test_purge_run_apply_skipped_bitable_no_meta():
+    conn = make_conn()
+    add_article(conn, "old-arch", "2025-01-01T00:00:00Z", "2025-01-02T00:00:00Z")
+
+    stats = purge.run(make_cfg(enabled=False), conn, dry_run=False, now=NOW)
+    assert stats.sqlite_deleted == 1
+    assert stats.bitable_skipped_reason == "bitable未启用"
+    assert store.get_meta(conn, purge.PURGE_LAST_RUN_KEY) == ""
+
+
+def test_purge_run_apply_first_page_failure_no_meta(monkeypatch):
+    monkeypatch.setattr(
+        bitable, "_run", lambda args, stdin_text=None, timeout=120: FakeProc(1, stderr="boom")
+    )
+    conn = make_conn()
+    cfg = make_cfg(enabled=True, app_token="appReal", table_id="tblReal")
+
+    stats = purge.run(cfg, conn, dry_run=False, now=NOW)
+    assert (stats.bitable_deleted, stats.bitable_expired, stats.bitable_scanned) == (0, 0, 0)
+    assert store.get_meta(conn, purge.PURGE_LAST_RUN_KEY) == ""
+
+
+def test_purge_run_apply_batch_failure_no_meta(monkeypatch):
+    install_fake_lark(monkeypatch, [page([rec("recOld", OLD_ISO)])], delete_fail=True)
+    conn = make_conn()
+    cfg = make_cfg(enabled=True, app_token="appReal", table_id="tblReal")
+
+    stats = purge.run(cfg, conn, dry_run=False, now=NOW)
+    assert (stats.bitable_deleted, stats.bitable_expired, stats.bitable_scanned) == (0, 1, 1)
+    assert store.get_meta(conn, purge.PURGE_LAST_RUN_KEY) == ""
+
+
+def test_purge_run_apply_success_writes_meta(monkeypatch):
+    install_fake_lark(monkeypatch, [page([rec("recOld", OLD_ISO), rec("recNew", RECENT_ISO)])])
+    conn = make_conn()
+    cfg = make_cfg(enabled=True, app_token="appReal", table_id="tblReal")
+
+    stats = purge.run(cfg, conn, dry_run=False, now=NOW)
+    assert (stats.bitable_deleted, stats.bitable_expired, stats.bitable_scanned) == (1, 1, 2)
+    assert store.get_meta(conn, purge.PURGE_LAST_RUN_KEY)
 
 
 def test_retention_days_default_and_override():
@@ -294,7 +336,7 @@ def test_purge_cli_dry_run_default_and_apply(monkeypatch, tmp_path, capsys):
     stats = json.loads(out[out.index("{") :])
     assert stats["dry_run"] is False
     conn = store.connect(db)
-    assert store.get_meta(conn, purge.PURGE_LAST_RUN_KEY)
+    assert store.get_meta(conn, purge.PURGE_LAST_RUN_KEY) == ""
     conn.close()
 
 
