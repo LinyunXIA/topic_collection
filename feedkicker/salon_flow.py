@@ -21,8 +21,9 @@ def _token_missing(value: str) -> bool:
 
 def run(cfg, conn, dry_run: bool = False) -> int:
     if not cfg.salon.enabled:
-        log.warning("salon.enabled=false，跳过周五大纲流程")
-        return 0
+        log.warning("salon.enabled=false：%s", "dry-run 继续 stub 预览" if dry_run else "跳过周五大纲流程")
+        if not dry_run:
+            return 0
     app_token, table_id = cfg.salon.app_token, cfg.salon.table_id
     if (_token_missing(app_token) or _token_missing(table_id)) and dry_run:
         selected = [

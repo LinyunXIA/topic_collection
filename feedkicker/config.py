@@ -168,9 +168,9 @@ def load_config(
     if env_secret:
         cfg.feishu_secret = env_secret
 
-    if cfg.feishu_webhook.strip().startswith("<"):
+    if "<" in cfg.feishu_webhook:
         cfg.feishu_webhook = ""
-    if cfg.feishu_secret.strip().startswith("<"):
+    if "<" in cfg.feishu_secret:
         cfg.feishu_secret = ""
 
     env_db = os.environ.get("TC_DB")

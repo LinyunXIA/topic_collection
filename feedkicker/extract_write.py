@@ -14,7 +14,7 @@ from feedkicker.topic_records import _extract_records
 
 log = logging.getLogger(__name__)
 
-_MD_LINK = re.compile(r"\[(?P<inner>.*?)\]\((?P<target>.*?)\)", re.DOTALL)
+_MD_LINK = re.compile(r"\[(?P<inner>.*?)\]\((?P<target>(?:[^()]|\([^()]*\))*)\)", re.DOTALL)
 _TRACKING = {"spm", "from", "fbclid", "gclid", "ref", "ref_src", "source", "mc_cid", "mc_eid"}
 
 

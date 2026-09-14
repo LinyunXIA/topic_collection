@@ -180,7 +180,7 @@ def main(argv: list[str] | None = None) -> int:
             env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
             try:
                 n = bitable_backfill.backfill_empty_archive_dates(
-                    info["app_token"], info["table_id"], env_name=env_name, dry_run=args.dry_run
+                    info["app_token"], info["table_id"], env_name=env_name, dry_run=False
                 )
             except Exception as e:  # noqa: BLE001
                 log.error("backfill 失败: %s", e)

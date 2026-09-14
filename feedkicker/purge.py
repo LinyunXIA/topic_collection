@@ -29,6 +29,8 @@ log = logging.getLogger(__name__)
 
 PURGE_LAST_RUN_KEY = "purge_last_run_at"
 
+MAX_RETENTION_DAYS = 36500
+
 
 @dataclass
 class PurgeStats:
@@ -168,6 +170,9 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
 
     setup_logging(logging.INFO)
+    if args.retention_days is not None and args.retention_days > MAX_RETENTION_DAYS:
+        log.error("--retention-days 超过上界 %d：%s", MAX_RETENTION_DAYS, args.retention_days)
+        return 2
     try:
         cfg = load_config(args.config, args.db, app_env=args.env)
     except Exception as e:  # noqa: BLE001

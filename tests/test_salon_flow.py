@@ -123,6 +123,29 @@ def test_salon_flow_disabled_skips_without_fetch(monkeypatch, caplog):
     conn.close()
 
 
+def test_salon_flow_disabled_dry_run_still_previews(monkeypatch, capsys):
+    """#316：salon.enabled=false 时非 dry-run 跳过，dry-run 仍出 stub 预览。"""
+    from feedkicker import salon_flow as sf
+
+    cfg = _cfg(monkeypatch)
+    cfg.salon.enabled = False
+    conn = store.connect(":memory:")
+
+    monkeypatch.setattr(sf, "fetch_selected_topics", lambda *a, **k: [
+        {"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "话题A"}},
+    ])
+    monkeypatch.setattr(
+        sf.wiki, "create_wiki_doc_from_md", lambda *a, **kw: "https://x/wiki/stub"
+    )
+
+    rc = sf.run(cfg, conn, dry_run=True)
+
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "工具类大纲" in out and "原理类大纲" in out
+    conn.close()
+
+
 def test_salon_flow_dry_run_no_mark(monkeypatch, capsys):
     from feedkicker import salon_flow as sf
 

@@ -259,12 +259,15 @@ https://<host>/wiki/wiki_dry_示例已选题话题
   "cutoff_date_shanghai": "2025-09-14",
   "sqlite_deleted": 0,
   "sqlite_expired_unarchived": 0,
+  "sqlite_expired_archivable": 0,
   "bitable_scanned": 120,
   "bitable_expired": 0,
   "bitable_deleted": 0,
   "bitable_skipped_reason": ""
 }
 ```
+
+`sqlite_expired_archivable`：超期且已归档、本可删除的行数（dry-run 下仍计数，供巡检可见，#278）。
 
 退出码：`0`。副作用：无（只计数不删）。
 
@@ -321,7 +324,7 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 |---|---|---|---|---|
 | `--apply` | store_true | 关（即默认 dry-run） | 与 `--dry-run` 互斥 | 执行多维表格写入 |
 | `--dry-run` | store_true | 关（默认行为） | 与 `--apply` 互斥 | 仅打印待写清单，零写调用 |
-| `--since-days` | 正整数 | `None`（取 `extract.since_days=7`） | 覆盖配置 | 时间窗天数（边界含当天） |
+| `--since-days` | 正整数 | `None`（取 `extract.since_days=7`） | 覆盖配置 | 时间窗天数（边界含当天；取值 1..3650，#269） |
 | `--limit` | 正整数 | `None`（不限） | — | 最多处理的 RSS 行数 |
 | `--batch-size` | 正整数 | `None`（取 `extract.batch_size=30`） | 覆盖配置 | 每批条数（每批一次 LLM 调用） |
 | `--max-calls` | 非负整数 | `None`（取 `extract.max_calls=0`） | 覆盖配置 | LLM 调用上限，`0`=不限；达限停止剩余批 |
@@ -569,14 +572,14 @@ dry-run：跳过 sync_env（不写记录）
 
 ### 退出码
 
-`0` = 正常 / 未启用 / dry-run；`2` = `--reseed` 但 Base 未配置或为占位 token（拒绝执行，防「先建后清」），或**非 `--init`/`--reseed`（含无 flag 与仅 `--backfill`/`--fix-archive-date`）且 `app_token`/`table_id` 未就绪/占位**（log.error，不自动建 Base），或互斥 flag 同时给出（argparse usage 错误）；配置加载异常未捕获，进程以 Python 异常非 0 结束。
+`0` = 正常 / 未启用 / dry-run；`2` = `--reseed` 但 Base 未配置或为占位 token（拒绝执行，防「先建后清」），或 `--init` 时 `app_token`/`table_id` 仍为 `<...>` 占位（#262），或**非 `--init`/`--reseed`（含无 flag 与仅 `--backfill`/`--fix-archive-date`）且 `app_token`/`table_id` 未就绪/占位**（log.error，不自动建 Base），或互斥 flag 同时给出（argparse usage 错误）；配置加载异常未捕获，进程以 Python 异常非 0 结束。
 
 ### 注意 / 坑
 
 - `bitable.enabled=false` 时直接 `return 0`（日志 `bitable 未启用`）。
 - `--reseed` 要求既有且非占位 `app_token`/`table_id`，否则返回 2；执行顺序为**先 reset 本地同步标记 → 按环境清表 → sync_env**，清表任一批失败即 log.error + rc 2 中止（标记已清，下轮可自愈重灌）。
 - `--backfill` 与 `--fix-archive-date` 等价；`--reseed`/`--backfill`/`--fix-archive-date` 三者互斥，同时给会以 usage 错误退出 rc `2`。
-- 无 flag 或仅回填类 flag 且 token 空/占位时 log.error + rc `2`（**不自动建 Base**）；仅 `--init`/`--reseed` 允许创建/修复 Base。
+- 无 flag 或仅回填类 flag 且 token 空/占位时 log.error + rc `2`（**不自动建 Base**）；仅 `--init`/`--reseed` 允许创建/修复 Base；`--init` 遇 `<...>` 占位 token 亦 rc `2`（#262）。
 - 占位 token（含 `<`）在 dry-run 下只提示「跳过预览」。
 
 ---
