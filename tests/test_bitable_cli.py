@@ -87,7 +87,7 @@ def test_purge_all_records_dry_run_counts_without_delete(monkeypatch):
         return FakeProc(0, stdout=PAGE)
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
-    assert bitable.purge_all_records("app", "tbl", dry_run=True) == 2
+    assert bitable.purge_all_records("app", "tbl", dry_run=True) == (2, True)
     assert not any("+record-delete" in c for c in calls)
 
 
@@ -130,8 +130,20 @@ def test_dry_run_alone_creates_nothing(monkeypatch, tmp_path):
 
 
 def test_reseed_without_dry_run_keeps_purge_and_sync(monkeypatch, tmp_path):
+    """#218：test 环境 reseed 走「环境」过滤的 JSON 路径，批删后照常 sync。"""
     calls: list[list[str]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        calls.append(list(args))
+        if "+record-list" in args:
+            if "环境" in args:
+                records = [{"record_id": "recOld", "fields": {"环境": "test", "链接": "https://old.example/1"}}]
+                return FakeProc(0, stdout=json.dumps({"data": {"records": records}}, ensure_ascii=False))
+            return FakeProc(0, stdout=json.dumps({"data": {"records": []}}))
+        return FakeProc(0, stdout="{}")
+
     install_cfg_and_lark(monkeypatch, tmp_path, calls)
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
     monkeypatch.setattr(
         bitable_schema,
         "ensure_initialized",
@@ -159,8 +171,9 @@ def test_reseed_resets_synced_marks_and_reloads(monkeypatch, tmp_path):
 
     def fake_run(args, stdin_text=None, timeout=120):
         calls.append(list(args))
-        if "+record-list" in args and "--format" in args:
-            return FakeProc(0, stdout=PAGE)
+        if "+record-list" in args and "环境" in args:
+            records = [{"record_id": "recEnvOld", "fields": {"环境": "test", "链接": "https://old.example/1"}}]
+            return FakeProc(0, stdout=json.dumps({"data": {"records": records}}, ensure_ascii=False))
         if "+record-list" in args:
             return FakeProc(0, stdout=json.dumps({"data": {"records": []}}))
         if "+record-batch-create" in args:

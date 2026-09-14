@@ -1,11 +1,11 @@
 from __future__ import annotations
 
-import json
 import logging
 from datetime import datetime
 from typing import Any
 
 from feedkicker import bitable_lark, bitable_schema
+from feedkicker.bitable_reseed import purge_all_records as purge_all_records
 from feedkicker.fetch import canonicalize, utc_now_iso
 
 log = logging.getLogger(__name__)
@@ -139,41 +139,6 @@ def sync_records(
             total_ok = False
             log.warning("Bitable 批量写入失败（第 %d 批 %d 条）", i // bitable_lark._CHUNK + 1, len(chunk))
     return total_ok
-
-
-def purge_all_records(app_token: str, table_id: str, dry_run: bool = False) -> int:
-    """清空数据表全部记录（用于结构变更后的干净重灌）。返回删除数。
-
-    dry_run 只数首屏待清空记录（markdown list 无 offset，不删就翻不动页），
-    绝不发 +record-delete。
-    """
-    deleted = 0
-    while True:
-        proc = bitable_lark._run(
-            ["base", "+record-list", "--base-token", app_token,
-             "--table-id", table_id, "--limit", "200",
-             "--format", "markdown"],
-            timeout=120,
-        )
-        if not bitable_lark._ok(proc):
-            break
-        ids = bitable_lark._markdown_record_ids(proc.stdout if proc is not None else "")
-        if not ids:
-            break
-        if dry_run:
-            log.info("reseed dry-run：首屏 %d 条待清空（未删除）", len(ids))
-            return len(ids)
-        d = bitable_lark._run(["base", "+record-delete", "--base-token", app_token,
-                  "--table-id", table_id,
-                  "--json", json.dumps({"record_id_list": ids}, ensure_ascii=False),
-                  "--yes"], timeout=300)
-        if not bitable_lark._ok(d):
-            log.warning("批量删除失败，终止清空")
-            break
-        deleted += len(ids)
-        if len(ids) < 200:
-            break
-    return deleted
 
 
 def sync_env(bt, app_env: str, conn, now_iso=None) -> int:

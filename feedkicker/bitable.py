@@ -71,7 +71,10 @@ def _dry_run_plan(cfg: Any, args: Any) -> None:
         log.info("dry-run：将补归档日期字段/「按来源」「按日期」视图/组织内只读分享（未执行）")
     if args.reseed:
         if _tokens_ready(bt):
-            n = bitable_records.purge_all_records(bt.app_token, bt.table_id, dry_run=True)
+            env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
+            n, _ok = bitable_records.purge_all_records(
+                bt.app_token, bt.table_id, dry_run=True, env_name=env_name
+            )
             log.info("dry-run：将清空 %d 条记录后全量重灌（未删除）", n)
         else:
             log.info("dry-run：Base 未配置或为占位 token，跳过 reseed 预览")
@@ -137,10 +140,16 @@ def main(argv: list[str] | None = None) -> int:
     conn = store.connect(cfg.db_path)
     try:
         if args.reseed:
-            n = bitable_records.purge_all_records(info["app_token"], info["table_id"])
-            log.info("已清空 %d 条旧记录，准备重灌", n)
             reset = store.reset_bitable_synced(conn)
-            log.info("已重置 %d 条同步标记，开始全量重灌", reset)
+            log.info("已重置 %d 条同步标记（先清标记后清表，任一中断点均可自愈重灌）", reset)
+            env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
+            n, purge_ok = bitable_records.purge_all_records(
+                info["app_token"], info["table_id"], env_name=env_name
+            )
+            if not purge_ok:
+                log.error("清理未完成（已删 %d 条），中止 reseed；标记已清，下轮可自愈重灌", n)
+                return 2
+            log.info("已清空 %d 条旧记录，准备重灌", n)
         if args.backfill or args.fix_archive_date:
             env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
             n = bitable_backfill.backfill_empty_archive_dates(

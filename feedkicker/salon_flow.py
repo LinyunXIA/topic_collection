@@ -46,6 +46,9 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     wiki_space = cfg.wiki.space_id or cfg.salon.wiki_space_id
     wiki_parent = cfg.wiki.parent_token or cfg.salon.wiki_parent_token
     wiki_app = cfg.wiki.app_token or cfg.salon.app_token
+    if not dry_run and (_token_missing(wiki_space) or _token_missing(wiki_parent)):
+        log.warning("wiki space/parent 为空或占位，跳过建 Wiki 与标记（不产生孤儿文档）")
+        return 0
 
     now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     wiki_urls: list[str] = []

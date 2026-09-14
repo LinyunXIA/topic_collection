@@ -1,6 +1,6 @@
 """6 个 __main__ 入口 runpy 冒烟（#166）：确认 guard 真执行、退出码正确；全程离线 mock。
 
-topic 已由 tests/test_topic.py 覆盖，此处覆盖其余 6 个；wiki 的 __main__ 块末尾无 sys.exit。
+topic 已由 tests/test_topic.py 覆盖，此处覆盖其余 6 个；wiki 现与其他入口一致 raise SystemExit(main())。
 """
 
 from __future__ import annotations
@@ -59,7 +59,9 @@ def test_salon_flow_main_smoke_dry_run_rc0(monkeypatch: pytest.MonkeyPatch, tmp_
 
 
 def test_wiki_main_smoke_dry_run_prints(monkeypatch: pytest.MonkeyPatch, capsys) -> None:
-    run_main(monkeypatch, "feedkicker.wiki", ["tc-wiki", "--dry-run", "--env", "test", "--title", "冒烟"])
+    with pytest.raises(SystemExit) as ei:
+        run_main(monkeypatch, "feedkicker.wiki", ["tc-wiki", "--dry-run", "--env", "test", "--title", "冒烟"])
+    assert ei.value.code == 0
     assert "wiki_url" in capsys.readouterr().out
 
 
@@ -79,12 +81,14 @@ def test_wiki_main_file_creates_doc_with_file_content(monkeypatch: pytest.Monkey
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
     md_file = tmp_path / "draft.md"
     md_file.write_text("# 草稿\n- 要点\n", encoding="utf-8")
-    run_main(
-        monkeypatch,
-        "feedkicker.wiki",
-        ["tc-wiki", "--file", str(md_file), "--title", "草稿",
-         "--app-token", "app", "--space-id", "spc", "--parent-token", "parent"],
-    )
+    with pytest.raises(SystemExit) as ei:
+        run_main(
+            monkeypatch,
+            "feedkicker.wiki",
+            ["tc-wiki", "--file", str(md_file), "--title", "草稿",
+             "--app-token", "app", "--space-id", "spc", "--parent-token", "parent"],
+        )
+    assert ei.value.code == 0
     assert captured["md"] == "# 草稿\n- 要点\n"
     assert "wiki/nodX" in capsys.readouterr().out
 

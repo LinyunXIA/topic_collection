@@ -1073,8 +1073,8 @@ def test_bitable_purge_all_records(monkeypatch):
                         deleted.append(json.loads(args[args.index("--json") + 1]))
                         or FakeProc(0, "{}")
                         if "+record-delete" in args else FakeProc(0, stdout=page))
-    n = bitable.purge_all_records("app", "tbl")
-    assert n == 2
+    n, ok = bitable.purge_all_records("app", "tbl")
+    assert (n, ok) == (2, True)
     assert deleted[0]["record_id_list"] == ["recAAA", "recBBB"]
 
 
