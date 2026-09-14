@@ -41,8 +41,13 @@
 
 ```
 topic_collection/
+├── README.md                 # 项目总览与快速上手（入口，§23 F24）
 ├── pyproject.toml            # 依赖 + [project.scripts] tc-push/tc-salon/tc-purge
 ├── config-{dev,test,prod}.yaml  # 三环境分文件，均 gitignored（见 §4）
+├── docs/
+│   ├── PRD.md / DESIGN.md    # 产品权威 / 工程实现权威
+│   ├── CLI.md                # 7 命令命令行详解（§23 F25）
+│   └── OPS.md                # 运维手册：配置/凭据、launchd、飞书坑、排障（§23 F26）
 ├── data/                     # 运行时生成：tc-{env}.sqlite3（gitignore）
 ├── logs/                     # launchd 重定向写日志（gitignore）
 ├── feedkicker/
@@ -848,3 +853,32 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 - [x] tests/test_wiki_home.py（13 用例，subprocess 全 mock）；既有 sf.run 测试 autouse 打桩 update_homepage 防真实子进程
 - [x] ruff / basedpyright 0 errors，150 用例全绿，模块 ≤200 行
 - [x] 合并后人工执行一次 `wiki_home --env prod` 存量回填并核对主页渲染（3 篇，2026年9月表格）—— 执行状态待用户确认（截至本次裁决未核实）（2026-09-14 执行并复核，prod 重建 10 篇索引）
+
+---
+
+## 23. v0.7+ — 项目文档三件套（F24–F27，2026-09-14）
+
+面向运维补三份项目文档：`README.md`（入口）、`docs/CLI.md`（命令详解，核心）、`docs/OPS.md`（运维手册）。均为纯文档，**不改任何 `feedkicker/*.py` / `tests/*` / `pyproject.toml`**；与代码行为的一致性靠 `--help` 实跑 + 源码核对（F27 独立自检）。
+
+### 23.1 交付物清单
+
+| 交付物 | 路径 | 定位 | 对应功能 | PRD |
+|---|---|---|---|---|
+| 项目总览 | `README.md`（根） | 新读者入口：定位/环境/安装/配置概览/快速上手/命令总览/导航 | F24 | §20 |
+| 命令行详解 | `docs/CLI.md` | 7 命令 × dev/test/prod，参数/退出码/副作用/dry-run/错误码 | F25 | §20 |
+| 运维手册 | `docs/OPS.md` | 配置与凭据、launchd 定时、飞书三坑、排障、环境纪律 | F26 | §20 |
+
+### 23.2 各文档定位与结构
+
+- **README（F24）**：一句话定位 → 架构一句话（链 §1）→ 运行环境（Python ≥3.12 / 仓库内 `.venv` / 外部 `lark-cli` 已登录）→ 安装（`pip install -e .[dev]`）→ 配置与凭据概览（三份 `config-{env}.yaml` + 覆盖顺序一行 + 细节链 OPS）→ 快速上手（dev `--dry-run` 跑通 `tc-push`）→ 7 命令总览表（锚点链 `docs/CLI.md`）→ 目录导航（README/CLI/OPS/PRD/DESIGN/AGENTS）。保持入口性，不铺开逐命令细节。
+- **CLI（F25，核心）**：顶部「通用约定」（env 覆盖顺序 `--db` > `TC_DB` > `--env` > `TC_APP_ENV` > prod；`--env dev|test|prod`；`--config`/`--db`；**prod 示例一律 `--dry-run`**、真跑单列标 ⚠️；脱敏规则）。每命令一节：① 用途 + DESIGN 章节号；② 参数表（flag / 类型 / 默认 / 覆盖关系 / 说明，取自 argparse）；③ 环境差异（config / `data/tc-{env}.sqlite3` / 凭据）；④ dev/test/prod 三示例（示意输出 + 退出码 + 副作用）；⑤ `--dry-run` 示意输出；⑥ 注意/坑。附录：错误码对照表（11246 / 131005 / >20KB，取自代码与 AGENTS.md，不臆造）。
+- **OPS（F26）**：① 配置（三份 yaml 字段对齐 `config_models.py` dataclass + `.example` 引用 + 覆盖顺序 + db 分流）；② 凭据（`FEISHU_WEBHOOK`/`FEISHU_SECRET`/`MiniMax_Key`/`TC_SALON_TOKEN`；yaml gitignored；prod 与 dev-test 双 Base，dev/test 共享文件用「环境」列区分）；③ launchd 三 plist（push 8:30/16:00、salon 周五 10:00、purge 每月 1 号 10:30 仅 dry-run）+ `launchctl bootout && bootstrap`；④ 飞书三坑；⑤ 排障（症状→排查→处置）；⑥ 环境分级纪律（prod 默认禁写；purge `--apply` 必须人工）。引用 §4/§8/§9/§16/§20 + AGENTS.md。
+
+### 23.3 清单
+
+- [x] F24 `README.md`：定位/环境/安装/配置概览/快速上手/命令总览表/目录导航
+- [x] F25 `docs/CLI.md`：7 命令详解 + dev/test/prod 示例 + 错误码附录（参数/默认/退出码经 `--help`+源码核对）
+- [x] F26 `docs/OPS.md`：配置/凭据/launchd/飞书三坑/排障/环境纪律
+- [x] F27 三件套一致性自检（独立后续任务，2026-09-14 完成）
+
+**F27 自检结论（2026-09-14）**：六项检查（参数/退出码、脱敏、三环境、交叉引用、prod 示例、与代码一致）全部 PASS，CLI.md 回修 5 处示例；自检记录 `.omo/evidence/docs-trio/f27-selfcheck.log`（本地，gitignored）。

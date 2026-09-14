@@ -36,9 +36,9 @@ v2 **重开 = 瘦身**。真正的起点比 v1 小一个数量级：**不是一�
 | Phase 1+ | v0.2 | F7–F10：GitHub Pages 详情页 + launchd（F7–F9 已废弃，见 §13） | 已交付（Pages 链路废弃） |
 | Phase 2 | v0.3–v0.5 | F11–F16：多维表格归档（跨源去重、双分组视图） | 已交付 |
 | Phase 3 | v0.6–v0.7 | F17–F22：AI 沙龙每周大纲（salon）+ 365 天滚动保留（purge） | 已交付 |
-| Phase 3+ | v0.7+ | F23：Wiki 首页自动索引 | **当前所处阶段** |
+| Phase 3+ | v0.7+ | F23–F27：Wiki 首页自动索引 + 项目文档三件套（F24–F27 = README/CLI/OPS/一致性自检，进行中） | **当前所处阶段** |
 
-**当前所处阶段 = Phase 3+（v0.7+，F23）**；后续新增需求先落本映射，再落 §13 起的版本增量小节。
+**当前所处阶段 = Phase 3+（v0.7+，F23–F27：Wiki 首页自动索引已交付，项目文档三件套 F24–F27 进行中）**；后续新增需求先落本映射，再落 §13 起的版本增量小节。
 
 ---
 
@@ -360,3 +360,20 @@ feeds:
 - 数据源 = `wiki +node-list` 拉首页节点直属子节点（即时可靠，规避 node-get 对新建节点的 131005 传播延迟；拿到的是规范 /wiki/ node_token，不依赖 sqlite、不产生 /docx/ 回退链接）；仅收录 `obj_type=docx` 且标题匹配 `{话题}_{YYYY-MM-DD}_大纲` 的节点
 - 写入方式 = `docs +update --command overwrite --doc-format markdown --content @file`，`--doc` 直接传首页 wiki node token；整篇覆盖语义即「抹去原内容」
 - 设计见 DESIGN §22
+
+---
+
+## 20. v0.7+ 增量（2026-09-14）— 项目文档三件套（F24–F27）
+
+仓库当前无 README，`docs/` 仅有 PRD/DESIGN/AUDIT（面向设计与审计），日常操作靠 `AGENTS.md` 命令速查，缺「按环境展开 + 带预期输出/退出码/错误码对照」的操作手册。本增量补齐**面向运维的项目文档三件套**，核心是**命令行详解**（7 命令 × dev/test/prod 三环境示例）。
+
+| # | 特性 | 验收要点 | 优先级 |
+|---|---|---|---|
+| F24 | README 总览与快速上手 | 根 `README.md`：一句话定位 + 架构一句话（链 DESIGN §1）、运行环境（Python ≥3.12 / 仓库内 `.venv` / 外部 `lark-cli` 已登录）、安装、配置与凭据概览（三份 `config-{env}.yaml` + 覆盖顺序）、dev `--dry-run` 跑通 `tc-push` 的最小步骤、7 命令总览表（链 CLI.md 锚点）、目录导航 | P2 |
+| F25 | 命令行详解（7 命令） | `docs/CLI.md`：`tc-push`/`tc-salon`/`tc-purge`/`feedkicker.wiki_home`/`.bitable`/`.wiki`/`.topic` 逐命令分节——用途 + DESIGN 章节号、参数表（源码 argparse + `--help` 实跑）、dev/test/prod 环境差异、三环境示例（示意输出 + 退出码 + 副作用）、`--dry-run` 输出、注意/坑；附录错误码对照（11246/131005/>20KB） | P2 |
+| F26 | 运维手册 | `docs/OPS.md`：配置（对齐 `config_models.py` dataclass + `.example` + 覆盖顺序 + db 分流）、凭据（`FEISHU_WEBHOOK`/`FEISHU_SECRET`/`MiniMax_Key`/`TC_SALON_TOKEN`；yaml gitignored；prod 与 dev/test 双 Base）、launchd 三个 plist（push 8:30/16:00、salon 周五 10:00、purge 每月 1 号 10:30 仅 dry-run）+ 重载步骤、飞书三坑、排障（症状→排查→处置）、环境分级纪律 | P2 |
+| F27 | 三件套一致性自检 | README/CLI/OPS 与代码行为一致（参数/默认值/退出码经 `--help` + 源码核对）、交叉引用有效、无真实凭据泄漏 | P3 |
+
+- 组织方式：按命令分节、节内嵌三环境示例；输出**示意化**（结构真实、值脱敏/截断并标注），**prod 示例一律 `--dry-run`**，真跑命令单列并标 ⚠️。
+- 凭据一律占位符（`<webhook>`/`<salon-app-token>`/`<space-id>`…），不落真实 token。
+- 设计见 DESIGN §23；F27 为独立后续任务（本增量不实现）。
