@@ -84,6 +84,10 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
         if not isinstance(fields, list) or not isinstance(rows, list):
             raise RuntimeError(f"多维表格已有链接响应无法识别，中止本次同步: {str(data)[:200]}")
         if "链接" not in fields:
+            if rows:
+                raise RuntimeError(
+                    f"多维表格已有链接响应缺少「链接」字段（字段被改名或列序异常），中止本次同步: {str(fields)[:200]}"
+                )
             break
         i_link = fields.index("链接")
         for r in rows:

@@ -40,11 +40,17 @@ def _env_record_ids(app_token: str, table_id: str, env_name: str) -> tuple[list[
     pairs, list_ok, complete = bitable_purge._list_records(app_token, table_id, env_name)
     if not list_ok or not complete:
         return [], False
-    ids = [
-        rid
-        for rid, fds in pairs
-        if rid and bitable_backfill._cell_str(fds.get("环境")) == env_name
-    ]
+    ids: list[str] = []
+    envless = 0
+    for rid, fds in pairs:
+        if not rid:
+            continue
+        if bitable_backfill._cell_str(fds.get("环境")) == env_name:
+            ids.append(rid)
+        else:
+            envless += 1
+    if envless:
+        log.warning("reseed：%d 条「环境」为空或不匹配的行保守保留不删（env=%s）", envless, env_name)
     return ids, True
 
 
@@ -80,6 +86,10 @@ def purge_all_records(
             return deleted, False
         ids = bitable_lark._markdown_record_ids(proc.stdout if proc is not None else "")
         if not ids:
+            raw = (proc.stdout or "").strip() if proc is not None else ""
+            if raw:
+                log.warning("reseed：markdown 输出非空但解析不出 record id（非空表/列序异常），中止清理")
+                return deleted, False
             return deleted, True
         if dry_run:
             log.info("reseed dry-run：首屏 %d 条待清空（未删除）", len(ids))
