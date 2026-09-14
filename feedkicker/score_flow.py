@@ -6,7 +6,7 @@ import argparse
 import logging
 import sys
 
-from feedkicker import bitable_lark, score_source
+from feedkicker import bitable_lark, score_llm, score_source
 from feedkicker.config import load_config
 from feedkicker.config_models import Config
 from feedkicker.log_setup import setup_logging
@@ -68,8 +68,8 @@ def run(
 ) -> int:
     """读全表 → 校验目标列 → 组批 → dry-run 计划打印；rc 2 配置/参数非法、0 正常。
 
-    本阶段（F38）不调 LLM、不写表：`--apply` 显式拒绝为 rc2（写入属 F41）；provider 目标
-    列缺失亦 rc2、绝不自动建列。待打分/跳过统计留 F41 由 `plan_pending` 同源接口补齐。
+    本阶段（F38/F39）不调 LLM、不写表：`--apply` 显式拒绝为 rc2（写入属 F41）；prompt 文件
+    缺失 / provider 缺 key / 目标列缺失均 rc2，且均在发起任何 lark/LLM 调用前判定。
     """
     if apply:
         log.error("写入尚未实现（F41）")
@@ -86,17 +86,29 @@ def run(
     if _token_missing(cfg.salon.app_token) or _token_missing(cfg.salon.table_id):
         log.error("salon app_token/table_id 缺失或为占位，无法读取/校验话题表")
         return 2
+    try:
+        score_llm.load_template(cfg.score.prompt_file)
+    except RuntimeError as e:
+        log.error("提示词错误: %s", e)
+        return 2
+    try:
+        provider_conf = score_llm.resolve_for_score(cfg.score, provider)
+    except RuntimeError as e:
+        log.error("provider 配置错误: %s", e)
+        return 2
     app_token, table_id = cfg.salon.app_token, cfg.salon.table_id
-    rows = score_source.read_rows(app_token, table_id, limit)
+    projection = (*score_source.SCORE_FIELDS, *PROVIDER_COLUMNS[provider])
+    rows = score_source.read_rows(app_token, table_id, limit, projection)
     if ensure_columns(app_token, table_id, provider) != 0:
         return 2
-    batches = score_source.group_batches(rows, cfg.score.batch_size)
-    pending, skipped = score_source.plan_pending(rows, provider)
+    pending, skipped = score_source.plan_pending(rows, provider, force)
+    batches = score_source.group_batches(pending, cfg.score.batch_size)
+    sizes = [len(b) for b in batches]
     print(f"tc-score dry-run 计划：总行数={len(rows)} 批数={len(batches)} 待打分={len(pending)} 跳过={len(skipped)}")
     log.info(
-        "tc-score 运行计划：环境=%s db=%s 目标表=%s provider=%s 总行数=%d 批数=%d 待打分=%d 跳过=%d max_calls=%s force=%s",
-        cfg.app_env, cfg.db_path, table_id, provider,
-        len(rows), len(batches), len(pending), len(skipped), max_calls, force,
+        "tc-score 运行计划：环境=%s db=%s 目标表=%s 模板=%s provider=%s（%s）总行数=%d 批数=%d 每批行数=%s 待打分=%d 跳过=%d 横向上文=%d max_calls=%s force=%s",
+        cfg.app_env, cfg.db_path, table_id, cfg.score.prompt_file, provider, provider_conf.tool_label,
+        len(rows), len(batches), sizes, len(pending), len(skipped), len(skipped), max_calls, force,
     )
     return 0
 

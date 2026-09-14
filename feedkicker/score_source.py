@@ -14,25 +14,37 @@ log = logging.getLogger(__name__)
 SCORE_FIELDS = ("话题名称", "可使用工具", "相关AI原理", "资讯链接", "出处来源")
 
 
-def _normalize(record: dict[str, Any]) -> dict[str, Any]:
-    """行归一：仅保留 SCORE_FIELDS 与 `record_id`（其余列丢弃，F41 按 record_id 定位既有行）。"""
-    fields = record.get("fields")
-    fields = fields if isinstance(fields, dict) else {}
+def _normalize(record: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:
+    """行归一：5 输入字段按名保留，`*打分`/`*理由` 归一到统一键 `打分`/`理由`（不带 provider 名）。
+
+    统一键便于横向上文与 F41 写入，不把 provider（MMax/DS）写进行键。
+    """
+    raw = record.get("fields")
+    raw = raw if isinstance(raw, dict) else {}
     row: dict[str, Any] = {"record_id": record.get("record_id") or ""}
-    for name in SCORE_FIELDS:
-        row[name] = fields.get(name)
+    for name in fields:
+        if name.endswith("打分"):
+            row["打分"] = raw.get(name)
+        elif name.endswith("理由"):
+            row["理由"] = raw.get(name)
+        else:
+            row[name] = raw.get(name)
     return row
 
 
-def read_rows(app_token: str, table_id: str, limit: int = 0) -> list[dict[str, Any]]:
-    """分页读目标表全表行并归一到 5 输入字段；`limit>0` 最多 N 行，`limit=0` 全部。
+def read_rows(
+    app_token: str, table_id: str, limit: int = 0, fields: tuple[str, ...] | None = None
+) -> list[dict[str, Any]]:
+    """分页读目标表全表行并归一；`limit>0` 最多 N 行，`limit=0` 全部。
 
-    经 lark-cli `base +record-list`，复用 `bitable_lark` 的 offset/页数/页指纹三重兜底与
-    `_extract_records` 解析（不可识别响应 raise RuntimeError，#326）；rc/业务失败即 raise，
-    不得把「读半张表」当成功（对齐 `extract_write.existing_index`）。
+    `fields` 默认取 5 输入字段；传 `(*SCORE_FIELDS, "{label}打分", "{label}理由")` 时额外读目标
+    两列并归一到统一键 `打分`/`理由`。经 lark-cli `base +record-list`，复用 `bitable_lark` 的
+    offset/页数/页指纹三重兜底与 `_extract_records` 解析（不可识别响应 raise RuntimeError，
+    #326）；rc/业务失败即 raise，不得把「读半张表」当成功（对齐 `extract_write.existing_index`）。
     """
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")
+    projection = fields or SCORE_FIELDS
     rows: list[dict[str, Any]] = []
     offset = 0
     prev_fp = ""
@@ -40,7 +52,7 @@ def read_rows(app_token: str, table_id: str, limit: int = 0) -> list[dict[str, A
         bitable_lark._guard_offset(offset)
         bitable_lark.guard_pages(offset // bitable_lark._CHUNK + 1)
         args = ["base", "+record-list", "--base-token", app_token, "--table-id", table_id]
-        for name in SCORE_FIELDS:
+        for name in projection:
             args += ["--field-id", name]
         args += ["--limit", str(bitable_lark._CHUNK), "--offset", str(offset), "--json"]
         proc = bitable_lark._run(args, timeout=120)
@@ -49,7 +61,7 @@ def read_rows(app_token: str, table_id: str, limit: int = 0) -> list[dict[str, A
         data = bitable_lark._data(proc)
         prev_fp = bitable_lark._page_guard(prev_fp, data)
         records = _extract_records(data)
-        rows.extend(_normalize(rec) for rec in records)
+        rows.extend(_normalize(rec, projection) for rec in records)
         if limit and len(rows) >= limit:
             return rows[:limit]
         if len(records) < bitable_lark._CHUNK:
@@ -66,13 +78,30 @@ def group_batches(
     return [rows[i : i + width] for i in range(0, len(rows), width)]
 
 
-def plan_pending(
-    rows: list[dict[str, Any]], provider: str
-) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """(待打分, 跳过) 规划：F38 未读既有分，全部行待打分、跳过集为空。
+def _has_score(row: dict[str, Any]) -> bool:
+    for key in ("打分", "理由"):
+        value = row.get(key)
+        if isinstance(value, list):
+            if any(str(v).strip() for v in value):
+                return True
+        elif value is not None and str(value).strip():
+            return True
+    return False
 
-    F41 将按 provider 目标列（MMax/DS 打分列）读既有值实现「只补空」；本骨架先保留同形
-    接口，使 dry-run 清单与后续写入规划同源。
+
+def plan_pending(
+    rows: list[dict[str, Any]], provider: str, force: bool = False
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(待打分, 跳过)：默认只补空（已有 `打分`/`理由` 的行跳过），`force` 时全量重算。
+
+    跳过行即横向上文来源；F41 完成写入后重复 `--apply` 写入数=0 的幂等自然成立
+    （DESIGN §26.7）。
     """
-    log.debug("F38 骨架：provider=%s 既有分跳过统计留待 F41，当前全部视为待打分", provider)
-    return list(rows), []
+    if force:
+        return list(rows), []
+    pending: list[dict[str, Any]] = []
+    skipped: list[dict[str, Any]] = []
+    for row in rows:
+        (skipped if _has_score(row) else pending).append(row)
+    log.debug("provider=%s 待打分=%d 跳过（已有分）=%d", provider, len(pending), len(skipped))
+    return pending, skipped
