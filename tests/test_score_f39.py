@@ -220,19 +220,29 @@ def test_read_rows_default_fields_have_no_score_keys(monkeypatch) -> None:
     assert set(rows[0]) == {"record_id", *score_source.SCORE_FIELDS}
 
 
-def test_plan_pending_skips_existing_and_force() -> None:
+def test_has_score_only_checks_score_column() -> None:
+    assert score_source._has_score({"打分": "3.5", "理由": ""}) is True
+    assert score_source._has_score({"打分": ["3.5"], "理由": ""}) is True
+    assert score_source._has_score({"打分": "", "理由": "旧理由"}) is False
+    assert score_source._has_score({"打分": None, "理由": "旧理由"}) is False
+    assert score_source._has_score({}) is False
+
+
+def test_plan_pending_only_score_column_skips_and_force() -> None:
     rows = [
         {"话题名称": "A", "打分": "3.5", "理由": "x"},
-        {"话题名称": "B", "打分": None, "理由": None},
-        {"话题名称": "C"},
+        {"话题名称": "B", "打分": "", "理由": "旧理由"},
+        {"话题名称": "C", "打分": None, "理由": None},
+        {"话题名称": "D"},
+        {"话题名称": "E", "打分": ["3.5"], "理由": "x"},
     ]
 
     pending, skipped = score_source.plan_pending(rows, "minimax")
-    assert [r["话题名称"] for r in pending] == ["B", "C"]
-    assert [r["话题名称"] for r in skipped] == ["A"]
+    assert [r["话题名称"] for r in pending] == ["B", "C", "D"]
+    assert [r["话题名称"] for r in skipped] == ["A", "E"]
 
     all_pending, none_skipped = score_source.plan_pending(rows, "minimax", force=True)
-    assert len(all_pending) == 3 and none_skipped == []
+    assert len(all_pending) == 5 and none_skipped == []
 
 
 def test_read_rows_limit_then_group(monkeypatch) -> None:

@@ -25,7 +25,9 @@ class FakeProc:
         self.stderr = stderr
 
 
-def _records(n: int, *, start: int = 1, score: str | None = None) -> list[dict[str, object]]:
+def _records(
+    n: int, *, start: int = 1, score: str | None = None, reason: str | None = None
+) -> list[dict[str, object]]:
     rows: list[dict[str, object]] = []
     for i in range(n):
         fields: dict[str, object] = {
@@ -34,6 +36,8 @@ def _records(n: int, *, start: int = 1, score: str | None = None) -> list[dict[s
         }
         if score is not None:
             fields["MMax打分"] = score
+        if reason is not None:
+            fields["MMax理由"] = reason
         rows.append({"record_id": f"rec{start + i}", "fields": fields})
     return rows
 
@@ -163,6 +167,9 @@ def test_plan_writes_reason_only_still_writes() -> None:
     to_write, skipped = score_write.plan_writes(scored, force=False)
 
     assert len(to_write) == 1 and skipped == []
+    cell = score_write._cell(to_write[0], "MMax")
+    assert set(cell) == {"MMax打分", "MMax理由"}
+    assert cell["MMax打分"] == "4.0" and cell["MMax理由"].startswith("依据 可使用工具")
 
 
 def test_write_cell_maps_only_two_provider_columns() -> None:
@@ -352,6 +359,22 @@ def test_run_existing_scores_skipped_without_llm(tmp_path, monkeypatch, capsys) 
 
     summary = _summary(capsys.readouterr().out)
     assert rc == 0 and prompts == [] and summary["skipped"] == 2 and summary["written"] == 0
+
+
+def test_run_apply_rescores_reason_only_row(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    state = {"records": _records(1, reason="旧理由")}
+    payloads: list[dict] = []
+    _stub_lark(monkeypatch, field_names=_MM_FIELDS, state=state, payloads=payloads)
+    _stub_llm_echo(monkeypatch)
+
+    rc = score_flow.main(_args(cfg, tmp_path, "--apply"))
+
+    summary = _summary(capsys.readouterr().out)
+    assert rc == 0 and summary["written"] == 1 and summary["skipped"] == 0
+    assert set(payloads[0]["rec1"]) == {"MMax打分", "MMax理由"}
+    assert state["records"][0]["fields"]["MMax打分"] == "3.9"
+    assert state["records"][0]["fields"]["MMax理由"] != "旧理由"
 
 
 def test_run_missing_columns_rc2_before_write(tmp_path, monkeypatch, caplog) -> None:

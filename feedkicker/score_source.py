@@ -79,23 +79,21 @@ def group_batches(
 
 
 def _has_score(row: dict[str, Any]) -> bool:
-    for key in ("打分", "理由"):
-        value = row.get(key)
-        if isinstance(value, list):
-            if any(str(v).strip() for v in value):
-                return True
-        elif value is not None and str(value).strip():
-            return True
-    return False
+    """已有分数 = `打分` 列非空（**仅看打分列**）；`理由` 有值但 `打分` 空视为未完成，须重算补齐两列。"""
+    value = row.get("打分")
+    if isinstance(value, list):
+        return any(str(v).strip() for v in value)
+    return value is not None and bool(str(value).strip())
 
 
 def plan_pending(
     rows: list[dict[str, Any]], provider: str, force: bool = False
 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
-    """(待打分, 跳过)：默认只补空（已有 `打分`/`理由` 的行跳过），`force` 时全量重算。
+    """(待打分, 跳过)：默认只补空（**已有 `打分` 的行跳过**），`force` 时全量重算。
 
-    跳过行即横向上文来源；F41 完成写入后重复 `--apply` 写入数=0 的幂等自然成立
-    （DESIGN §26.7）。
+    跳过判据仅看打分列（DESIGN §26.7）：`理由` 有值但 `打分` 空的行视为未完成，重新打分并
+    补齐两列，自愈部分写入失败。跳过行即横向上文来源；F41 完成写入后重复 `--apply` 写入数=0
+    的幂等自然成立。
     """
     if force:
         return list(rows), []
@@ -103,5 +101,5 @@ def plan_pending(
     skipped: list[dict[str, Any]] = []
     for row in rows:
         (skipped if _has_score(row) else pending).append(row)
-    log.debug("provider=%s 待打分=%d 跳过（已有分）=%d", provider, len(pending), len(skipped))
+    log.debug("provider=%s 待打分=%d 跳过（打分列非空）=%d", provider, len(pending), len(skipped))
     return pending, skipped
