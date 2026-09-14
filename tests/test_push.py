@@ -477,6 +477,29 @@ def test_main_missing_config_returns_error():
     assert rc == 2
 
 
+def test_main_valid_config_runs_run_and_returns_zero(tmp_path):
+    cfg_path = tmp_path / "empty-feeds.yaml"
+    cfg_path.write_text("feeds: []\n", encoding="utf-8")
+    db = tmp_path / "m.sqlite3"
+    rc = push.main(["--config", str(cfg_path), "--db", str(db), "--env", "test"])
+    assert rc == 0
+    assert db.exists()
+
+
+def test_main_run_exception_returns_one(monkeypatch, tmp_path):
+    cfg_path = tmp_path / "empty-feeds.yaml"
+    cfg_path.write_text("feeds: []\n", encoding="utf-8")
+
+    def boom(cfg, conn, dry_run=False):
+        raise RuntimeError("编排爆炸")
+
+    monkeypatch.setattr(push, "run", boom)
+    rc = push.main(
+        ["--config", str(cfg_path), "--db", str(tmp_path / "m2.sqlite3"), "--env", "test"]
+    )
+    assert rc == 1
+
+
 def test_entry_key_of_takes_guid():
     class E(dict):
         pass

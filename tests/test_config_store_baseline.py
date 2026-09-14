@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from feedkicker import store
 from feedkicker.config import PROJECT_ROOT, BitableConf, config_path_for, load_config
 
@@ -46,3 +48,15 @@ def test_config_path_anchored_to_project_root_not_cwd(monkeypatch, tmp_path):
     monkeypatch.chdir(tmp_path)
     assert config_path_for("test") == PROJECT_ROOT / "config-test.yaml"
     assert load_config(app_env="test").app_env == "test"
+
+
+def test_load_config_unknown_env_raises():
+    with pytest.raises(ValueError, match="未知环境"):
+        load_config(app_env="staging")
+
+
+def test_load_config_feed_missing_url_raises(tmp_path):
+    path = tmp_path / "feeds-broken.yaml"
+    path.write_text("feeds:\n  - name: 只有名字\n", encoding="utf-8")
+    with pytest.raises(ValueError, match=r"feeds\[0\] 缺少 url"):
+        load_config(config_path=path, app_env="test")
