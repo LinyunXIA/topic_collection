@@ -378,6 +378,47 @@ def test_gen_outline_base_resp_zero_parses(monkeypatch):
     assert mm.gen_outline("topic", kind="tool", api_key="sk") == outline
 
 
+@pytest.mark.parametrize("payload", [["unexpected", "list"], "raw-string", None, 3])
+def test_parse_outline_non_dict_response_raises(payload):
+    with pytest.raises(RuntimeError, match="非 dict"):
+        mm._parse_outline_from_response(payload)
+
+
+@pytest.mark.parametrize("raw_args", ["null", "[1, 2]", '"plain-str"', "42"])
+def test_tool_call_arguments_non_object_raises(monkeypatch, raw_args):
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        data = {
+            "choices": [
+                {
+                    "message": {
+                        "tool_calls": [
+                            {
+                                "function": {
+                                    "name": "generate_ppt_outline",
+                                    "arguments": raw_args,
+                                }
+                            }
+                        ]
+                    }
+                }
+            ]
+        }
+        return FakeResp(200, data)
+
+    monkeypatch.setattr(mm.httpx, "post", fake_post)
+    with pytest.raises(RuntimeError, match="非对象"):
+        mm.gen_outline("topic", kind="tool", api_key="sk")
+
+
+def test_gen_outline_non_dict_response_raises_controlled(monkeypatch):
+    def fake_post(url, json=None, headers=None, timeout=None, **kw):
+        return FakeResp(200, ["unexpected", "list"])
+
+    monkeypatch.setattr(mm.httpx, "post", fake_post)
+    with pytest.raises(RuntimeError, match="非 dict"):
+        mm.gen_outline("topic", kind="tool", api_key="sk")
+
+
 def test_minimax_outline_mock(monkeypatch):
     outline = {
         "title": "Mock大纲",
