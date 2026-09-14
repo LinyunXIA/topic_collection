@@ -15,7 +15,7 @@ def print_dry_run(topics: list[dict[str, Any]], provider_label: str, run_date: s
     """逐条打印完整待写清单（人读行 + 可统计 JSON 行），不写表。"""
     print(f"待写选题 {len(topics)} 个（dry-run，未写表；目标表已存在跳过 {skipped} 个）：")
     for i, topic in enumerate(topics, 1):
-        record = extract_write.build_record(topic, provider_label, run_date)
+        record = extract_write.build_record(topic, provider_label, run_date, "未讨论")
         print(f"{i}. {record['话题名称']}")
         print(json.dumps(record, ensure_ascii=False))
 

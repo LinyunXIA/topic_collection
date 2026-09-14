@@ -1004,6 +1004,7 @@ extract:
 
 - 写入前 `existing_topics` 分页拉目标表「话题名称」列（`_page_guard` 防死循环；响应兼容 records 与 fields+data 两形态，容器异常 raise 中止写入而非静默空集）。
 - 命中「话题名称」或本批已出现 → 跳过；重复运行不新增重复行（幂等）。`--update` 刷新既有行本期不做。
+- `讨论状态` 写入形态按 `base +field-list` 字段元数据 `multiple` 决定：单选（权威元数据 `type:"select"`,`multiple:false`）写字符串 `"未讨论"`，多选（`multiple:true` 或类型码 4）写 `["未讨论"]`；元数据读取失败/字段缺失 → 保守按字符串并 WARNING（PRV-1）。
 
 ### 25.6 CLI（`tc-extract`）
 

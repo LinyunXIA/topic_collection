@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from pathlib import Path
 from typing import Any
 
@@ -11,7 +12,12 @@ import pytest
 from feedkicker import bitable_lark
 from feedkicker.config_models import ExtractConf, ProviderConf
 from feedkicker.extract_llm import resolve_provider
-from feedkicker.extract_write import build_record, existing_topics, write_topics
+from feedkicker.extract_write import (
+    build_record,
+    existing_topics,
+    resolve_status_value,
+    write_topics,
+)
 
 
 class FakeProc:
@@ -33,6 +39,11 @@ def _records_resp(names: list[str], start: int = 0) -> FakeProc:
         {"record_id": f"rec{start + i}", "fields": {"话题名称": name}} for i, name in enumerate(names)
     ]
     return FakeProc(0, json.dumps({"data": {"records": records}}, ensure_ascii=False))
+
+
+def _fields_resp(multiple: bool = False, ftype: object = "select") -> FakeProc:
+    body = {"data": {"fields": [{"field_name": "讨论状态", "type": ftype, "multiple": multiple}]}}
+    return FakeProc(0, json.dumps(body, ensure_ascii=False))
 
 
 def _topic(name: str, links: list[str] | None = None, sources: list[str] | None = None) -> dict:
@@ -63,6 +74,8 @@ def test_apply_skips_existing_topic_names(monkeypatch) -> None:
     created: list[list[dict]] = []
 
     def fake_run(args, stdin_text=None, timeout=120):
+        if "+field-list" in args:
+            return _fields_resp()
         if "+record-list" in args:
             return _records_resp(["话题A"])
         if "+record-batch-create" in args:
@@ -80,6 +93,8 @@ def test_apply_in_batch_duplicate_skipped(monkeypatch) -> None:
     created: list[list[dict]] = []
 
     def fake_run(args, stdin_text=None, timeout=120):
+        if "+field-list" in args:
+            return _fields_resp()
         if "+record-list" in args:
             return _records_resp([])
         created.append(_json_from_args(args)["create_records"])
@@ -95,6 +110,8 @@ def test_apply_field_mapping(monkeypatch) -> None:
     created: list[dict] = []
 
     def fake_run(args, stdin_text=None, timeout=120):
+        if "+field-list" in args:
+            return _fields_resp()
         if "+record-list" in args:
             return _records_resp([])
         created.extend(_json_from_args(args)["create_records"])
@@ -124,16 +141,105 @@ def test_build_record_newline_join_and_dedup() -> None:
         _topic("A", links=["https://a/1", "https://a/1", "https://b/2"], sources=["量子位"]),
         "DS（DeepSeek）",
         "2026-09-14",
+        "未讨论",
     )
 
     assert rec["资讯链接"] == "https://a/1\nhttps://b/2"
     assert rec["提取工具"] == "DS（DeepSeek）"
+    assert rec["讨论状态"] == "未讨论"
+
+
+def test_resolve_status_value_multiple_true_returns_list(monkeypatch) -> None:
+    seen: list[list[str]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        seen.append(list(args))
+        return _fields_resp(multiple=True)
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    assert resolve_status_value("app", "tbl") == ["未讨论"]
+    assert "+field-list" in seen[0] and "--json" in seen[0]
+
+
+def test_resolve_status_value_multiple_false_returns_str(monkeypatch) -> None:
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **k: _fields_resp(multiple=False))
+
+    assert resolve_status_value("app", "tbl") == "未讨论"
+
+
+def test_resolve_status_value_multi_select_type_code_returns_list(monkeypatch) -> None:
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **k: _fields_resp(multiple=False, ftype=4))
+
+    assert resolve_status_value("app", "tbl") == ["未讨论"]
+
+
+def test_resolve_status_value_field_list_failure_falls_back(monkeypatch, caplog) -> None:
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **k: FakeProc(1, "", "boom"))
+
+    with caplog.at_level(logging.WARNING):
+        assert resolve_status_value("app", "tbl") == "未讨论"
+
+    assert "兜底" in caplog.text
+
+
+def test_resolve_status_value_missing_field_falls_back(monkeypatch, caplog) -> None:
+    body = json.dumps({"data": {"fields": [{"field_name": "其他", "type": "text"}]}}, ensure_ascii=False)
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **k: FakeProc(0, body))
+
+    with caplog.at_level(logging.WARNING):
+        assert resolve_status_value("app", "tbl") == "未讨论"
+
+    assert "兜底" in caplog.text
+
+
+def test_apply_writes_status_per_field_metadata(monkeypatch) -> None:
+    created: list[list[dict]] = []
+    field_calls = 0
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        nonlocal field_calls
+        if "+field-list" in args:
+            field_calls += 1
+            return _fields_resp(multiple=True)
+        if "+record-list" in args:
+            return _records_resp([])
+        created.append(_json_from_args(args)["create_records"])
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    assert write_topics("app", "tbl", [_topic("A")], "MMX（MiniMax）", "2026-09-14") == (1, 0)
+    assert created[0][0]["讨论状态"] == ["未讨论"]
+    assert field_calls == 1
+
+
+def test_apply_writes_status_single_select_string(monkeypatch) -> None:
+    created: list[list[dict]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+field-list" in args:
+            return _fields_resp(multiple=False)
+        if "+record-list" in args:
+            return _records_resp([])
+        created.append(_json_from_args(args)["create_records"])
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    assert write_topics("app", "tbl", [_topic("A")], "MMX（MiniMax）", "2026-09-14") == (1, 0)
+    assert created[0][0]["讨论状态"] == "未讨论"
 
 
 def test_batch_create_chunks_at_200(monkeypatch) -> None:
     chunks: list[int] = []
+    field_calls = 0
 
     def fake_run(args, stdin_text=None, timeout=120):
+        nonlocal field_calls
+        if "+field-list" in args:
+            field_calls += 1
+            return _fields_resp()
         if "+record-list" in args:
             return _records_resp([])
         chunks.append(len(_json_from_args(args)["create_records"]))
@@ -144,12 +250,15 @@ def test_batch_create_chunks_at_200(monkeypatch) -> None:
     topics = [_topic(f"话题{i}") for i in range(205)]
     assert write_topics("app", "tbl", topics, "MMX（MiniMax）", "2026-09-14") == (205, 0)
     assert chunks == [200, 5]
+    assert field_calls == 1
 
 
 def test_partial_chunk_failure_counts_success(monkeypatch) -> None:
     calls = {"n": 0}
 
     def fake_run(args, stdin_text=None, timeout=120):
+        if "+field-list" in args:
+            return _fields_resp()
         if "+record-list" in args:
             return _records_resp([])
         calls["n"] += 1

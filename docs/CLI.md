@@ -392,6 +392,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 ### 注意 / 坑
 
 - **默认 dry-run**：真实写入必须显式 `--apply`；重复运行按「话题名称」精确匹配去重跳过（幂等）。
+- `讨论状态` 实际写入形态由 salon 表字段元数据决定（`field-list` 的 `multiple:true` → `["未讨论"]`，否则字符串 `"未讨论"`；元数据读取失败/字段缺失保守按字符串）；上方 dry-run 示意固定按单选字符串展示。
 - 时间窗 `COALESCE(published_at, first_seen) >= now − N 天`，边界含当天；仅 RSS 行（salon 占位行 `ppt_synced_at` 非空被排除）。
 - 单批 LLM 调用失败重试 1 次后跳过并汇总 WARNING，不阻断其余批；`--max-calls` 供联调限次。
 - 行为由 `prompts/extract.md` 定义（用户提示词原文 + 输出 JSON schema），改提示词即改提炼口径。
