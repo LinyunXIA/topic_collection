@@ -1,4 +1,4 @@
-"""F31 选题写入：字段映射 + 按「话题名称」去重 + 批量落表（DESIGN §25.5/#251）。"""
+"""F31 选题写入：字段映射 + 「资讯链接 OR 话题名称」双键去重 + 批量落表（DESIGN §25.5/#251）。"""
 
 from __future__ import annotations
 
@@ -7,19 +7,25 @@ from typing import Any
 
 from feedkicker import bitable_lark
 from feedkicker.extract_parse import _str_list, topic_key
+from feedkicker.fetch import canonicalize
 from feedkicker.topic_records import _extract_records
 
 log = logging.getLogger(__name__)
 
 
-def existing_topics(app_token: str, table_id: str) -> set[str]:
-    """分页拉目标表「话题名称」原始值集合；拉取失败/容器异常 raise（不静默空集）。
+def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
+    """分页拉目标表已有索引 `(归一话题名集合, 归一链接集合)`；拉取失败/容器异常 raise（不静默空集）。
 
+    双键去重之因：LLM 命名非确定性——同一新闻重跑会产出不同「话题名称」，仅按名去重会
+    漏判并重复落表（真跑已证）；故并列按 `资讯链接` 兜底。名称归一沿用 `topic_key`
+    （NFKC+strip+casefold），链接归一用 `feedkicker.fetch.canonicalize`（去 fragment、
+    host 小写、保留 query）。
     响应兼容 records/items 包装与 fields+data 行式（topic_records._extract_records 归一）；
     fields+data 形态缺「话题名称」列 → raise 中止（不得静默空集，PRV-4）。
     翻页走 offset 兜底 + 页指纹守卫（#245）。
     """
     names: set[str] = set()
+    links: set[str] = set()
     offset = 0
     prev_fp = ""
     while True:
@@ -30,6 +36,7 @@ def existing_topics(app_token: str, table_id: str) -> set[str]:
                 "--base-token", app_token,
                 "--table-id", table_id,
                 "--field-id", "话题名称",
+                "--field-id", "资讯链接",
                 "--limit", "200",
                 "--offset", str(offset),
                 "--json",
@@ -37,7 +44,7 @@ def existing_topics(app_token: str, table_id: str) -> set[str]:
             timeout=120,
         )
         if not bitable_lark._ok(proc):
-            raise RuntimeError("拉取选题表已有「话题名称」失败，中止写入以避免重复行")
+            raise RuntimeError("拉取选题表已有「话题名称/资讯链接」失败，中止写入以避免重复行")
         data = bitable_lark._data(proc)
         if not isinstance(data, dict):
             raise RuntimeError(f"选题表响应不是 JSON 对象: {str(data)[:200]}")
@@ -52,12 +59,17 @@ def existing_topics(app_token: str, table_id: str) -> set[str]:
             raise RuntimeError("选题表响应为 fields+data 形态但缺「话题名称」列，中止写入以避免重复行")
         records = _extract_records(data)
         for rec in records:
-            for name in _str_list((rec.get("fields") or {}).get("话题名称")):
-                names.add(name)
+            fields = rec.get("fields") or {}
+            for name in _str_list(fields.get("话题名称")):
+                names.add(topic_key(name))
+            for link in _str_list(fields.get("资讯链接")):
+                key = canonicalize(link).strip()
+                if key:
+                    links.add(key)
         if len(records) < bitable_lark._CHUNK:
             break
         offset += bitable_lark._CHUNK
-    return names
+    return names, links
 
 
 def build_record(
@@ -93,23 +105,35 @@ def write_topics(
     run_date: str,
     dry_run: bool = False,
 ) -> tuple[int, int]:
-    """按「话题名称」NFKC 归一比较键查重跳过（幂等）；dry_run 仅返回 (待写数, 跳过数)，零写调用。
+    """按「资讯链接 OR 话题名称」双键查重跳过（幂等）；dry_run 仅返回 (待写数, 跳过数)，零写调用。
 
+    双键是 LLM 命名非确定性下的真幂等兜底：话题名归一命中，或该 topic 任一 `资讯链接`
+    经 `canonicalize` 归一后命中表内/本批已见链接 → 跳过；两者皆无才写。本批内同样按
+    name 或 link 任一已见即跳过，避免同链接在批内重复落表。
     真写走 +record-batch-create ≤200/批；块失败 WARNING 后继续，返回实际成功数。
     """
     if not app_token or not table_id:
         raise RuntimeError("写入选题表需要 app_token 与 table_id（salon 配置段）")
-    existing = existing_topics(app_token, table_id)
-    existing_keys = {topic_key(n) for n in existing}
+    existing_names, existing_links = existing_index(app_token, table_id)
     picked: list[dict[str, Any]] = []
-    seen: set[str] = set()
+    seen_names: set[str] = set()
+    seen_links: set[str] = set()
     skipped = 0
     for topic in topics:
         key = topic_key(topic.get("话题名称"))
-        if not key or key in existing_keys or key in seen:
+        links = {canonicalize(link).strip() for link in _str_list(topic.get("资讯链接"))}
+        links.discard("")
+        if (
+            not key
+            or key in existing_names
+            or key in seen_names
+            or bool(links & existing_links)
+            or bool(links & seen_links)
+        ):
             skipped += 1
             continue
-        seen.add(key)
+        seen_names.add(key)
+        seen_links |= links
         picked.append(topic)
     if dry_run:
         return len(picked), skipped

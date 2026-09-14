@@ -1,4 +1,4 @@
-"""F31：字段映射 / 「话题名称」去重跳过 / dry-run 零写 / ≤200 分批（全 mock 离线）。"""
+"""F31：字段映射 / 「资讯链接 OR 话题名称」双键去重跳过 / dry-run 零写 / ≤200 分批（全 mock 离线）。"""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from feedkicker.config_models import ExtractConf, ProviderConf
 from feedkicker.extract_llm import resolve_provider
 from feedkicker.extract_write import (
     build_record,
-    existing_topics,
+    existing_index,
     write_topics,
 )
 
@@ -35,6 +35,13 @@ def _json_from_args(args: list[str]) -> dict[str, Any]:
 def _records_resp(names: list[str], start: int = 0) -> FakeProc:
     records = [
         {"record_id": f"rec{start + i}", "fields": {"话题名称": name}} for i, name in enumerate(names)
+    ]
+    return FakeProc(0, json.dumps({"data": {"records": records}}, ensure_ascii=False))
+
+
+def _link_records_resp(links: list[str]) -> FakeProc:
+    records = [
+        {"record_id": f"lrec{i}", "fields": {"资讯链接": link}} for i, link in enumerate(links)
     ]
     return FakeProc(0, json.dumps({"data": {"records": records}}, ensure_ascii=False))
 
@@ -93,6 +100,73 @@ def test_apply_in_batch_duplicate_skipped(monkeypatch) -> None:
 
     assert write_topics("app", "tbl", [_topic("A"), _topic("A"), _topic("B")], "MMax", "2026-09-14") == (2, 1)
     assert [r["话题名称"] for r in created[0]] == ["A", "B"]
+
+
+def test_apply_skips_when_link_matches_existing(monkeypatch) -> None:
+    created: list[list[dict]] = []
+    calls: list[list[str]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        calls.append(list(args))
+        if "+record-list" in args:
+            return _link_records_resp(["https://E.com/a#frag"])
+        created.append(_json_from_args(args)["create_records"])
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    topic = {"话题名称": "全新命名", "资讯链接": ["https://e.com/a"]}
+    assert write_topics("app", "tbl", [topic], "MMax", "2026-09-14") == (0, 1)
+    assert created == []
+    assert "--field-id" in calls[0]
+
+
+def test_apply_writes_when_both_keys_miss(monkeypatch) -> None:
+    created: list[list[dict]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+record-list" in args:
+            return FakeProc(
+                0,
+                json.dumps(
+                    {
+                        "data": {
+                            "records": [
+                                {"record_id": "r1", "fields": {"话题名称": "其他话题"}},
+                                {"record_id": "r2", "fields": {"资讯链接": "https://other/x"}},
+                            ]
+                        }
+                    },
+                    ensure_ascii=False,
+                ),
+            )
+        created.append(_json_from_args(args)["create_records"])
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    topic = {"话题名称": "新话题", "资讯链接": ["https://new/1"]}
+    assert write_topics("app", "tbl", [topic], "MMax", "2026-09-14") == (1, 0)
+    assert [r["话题名称"] for r in created[0]] == ["新话题"]
+
+
+def test_apply_in_batch_same_link_writes_once(monkeypatch) -> None:
+    created: list[list[dict]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+record-list" in args:
+            return _records_resp([])
+        created.append(_json_from_args(args)["create_records"])
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    topics = [
+        {"话题名称": "命名甲", "资讯链接": ["https://same/1"]},
+        {"话题名称": "命名乙", "资讯链接": ["https://same/1"]},
+    ]
+    assert write_topics("app", "tbl", topics, "MMax", "2026-09-14") == (1, 1)
+    assert [r["话题名称"] for r in created[0]] == ["命名甲"]
 
 
 def test_apply_field_mapping(monkeypatch) -> None:
@@ -190,42 +264,51 @@ def test_partial_chunk_failure_counts_success(monkeypatch) -> None:
     assert calls["n"] == 2
 
 
-def test_existing_topics_records_and_fields_data_shapes(monkeypatch) -> None:
+def test_existing_index_records_and_fields_data_shapes(monkeypatch) -> None:
     def fake_run_records(args, stdin_text=None, timeout=120):
         return _records_resp(["话题A", "话题B"])
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run_records)
-    assert existing_topics("app", "tbl") == {"话题A", "话题B"}
+    assert existing_index("app", "tbl") == ({"话题a", "话题b"}, set())
 
     def fake_run_fields_data(args, stdin_text=None, timeout=120):
         body = {"data": {"fields": ["话题名称", "其他"], "data": [["话题C", 1], ["话题D", 2]]}}
         return FakeProc(0, json.dumps(body, ensure_ascii=False))
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run_fields_data)
-    assert existing_topics("app", "tbl") == {"话题C", "话题D"}
+    assert existing_index("app", "tbl") == ({"话题c", "话题d"}, set())
 
 
-def test_existing_topics_multi_select_value_is_flattened(monkeypatch) -> None:
+def test_existing_index_multi_select_value_is_flattened(monkeypatch) -> None:
     def fake_run(args, stdin_text=None, timeout=120):
         body = {"data": {"records": [{"record_id": "rec1", "fields": {"话题名称": ["话题A", "话题B"]}}]}}
         return FakeProc(0, json.dumps(body, ensure_ascii=False))
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert existing_topics("app", "tbl") == {"话题A", "话题B"}
+    assert existing_index("app", "tbl") == ({"话题a", "话题b"}, set())
 
 
-def test_existing_topics_keeps_raw_names(monkeypatch) -> None:
+def test_existing_index_normalizes_names(monkeypatch) -> None:
     def fake_run(args, stdin_text=None, timeout=120):
         body = {"data": {"records": [{"record_id": "rec1", "fields": {"话题名称": " GPT-5 "}}]}}
         return FakeProc(0, json.dumps(body, ensure_ascii=False))
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    assert existing_topics("app", "tbl") == {"GPT-5"}
+    assert existing_index("app", "tbl") == ({"gpt-5"}, set())
 
 
-def test_existing_topics_fields_without_topic_name_raises(monkeypatch) -> None:
+def test_existing_index_normalizes_links(monkeypatch) -> None:
+    def fake_run(args, stdin_text=None, timeout=120):
+        return _link_records_resp(["https://Example.com/a#frag", " https://b.com/p?q=1 "])
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    assert existing_index("app", "tbl") == (set(), {"https://example.com/a", "https://b.com/p?q=1"})
+
+
+def test_existing_index_fields_without_topic_name_raises(monkeypatch) -> None:
     def fake_run(args, stdin_text=None, timeout=120):
         body = {"data": {"fields": ["其他"], "data": [["x"]]}}
         return FakeProc(0, json.dumps(body, ensure_ascii=False))
@@ -233,7 +316,7 @@ def test_existing_topics_fields_without_topic_name_raises(monkeypatch) -> None:
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
     with pytest.raises(RuntimeError, match="话题名称"):
-        existing_topics("app", "tbl")
+        existing_index("app", "tbl")
 
 
 def test_write_skips_existing_after_nfkc_normalization(monkeypatch) -> None:
@@ -270,7 +353,7 @@ def test_write_in_batch_dedup_after_nfkc_keeps_original_value(monkeypatch) -> No
     assert [r["话题名称"] for r in created[0]] == ["ＧＰＴ－５"]
 
 
-def test_existing_topics_paginates(monkeypatch) -> None:
+def test_existing_index_paginates(monkeypatch) -> None:
     offsets: list[str] = []
 
     def fake_run(args, stdin_text=None, timeout=120):
@@ -281,26 +364,27 @@ def test_existing_topics_paginates(monkeypatch) -> None:
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    names = existing_topics("app", "tbl")
+    names, links = existing_index("app", "tbl")
 
     assert offsets == ["0", "200"]
     assert len(names) == 201 and "话题-tail" in names
+    assert links == set()
 
 
-def test_existing_topics_business_failure_raises(monkeypatch) -> None:
+def test_existing_index_business_failure_raises(monkeypatch) -> None:
     monkeypatch.setattr(
         bitable_lark, "_run", lambda *a, **k: FakeProc(0, '{"ok": false, "error": {"message": "x"}}')
     )
 
     with pytest.raises(RuntimeError, match="中止写入"):
-        existing_topics("app", "tbl")
+        existing_index("app", "tbl")
 
 
-def test_existing_topics_bad_container_raises(monkeypatch) -> None:
+def test_existing_index_bad_container_raises(monkeypatch) -> None:
     monkeypatch.setattr(bitable_lark, "_run", lambda *a, **k: FakeProc(0, '{"ok": true, "data": {"records": ["坏"]}}'))
 
     with pytest.raises(RuntimeError):
-        existing_topics("app", "tbl")
+        existing_index("app", "tbl")
 
 
 def test_write_requires_tokens() -> None:
