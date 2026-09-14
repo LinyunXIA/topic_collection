@@ -206,7 +206,8 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 ### 注意 / 坑
 
 - 无 salon `app_token`/`table_id` 且**非** dry-run 时会 WARNING 后跳过（返回 `0`）。
-- 单条话题大纲生成 / Wiki 写入失败只 WARNING，不阻断其余话题。
+- wiki space/parent（`wiki.space_id`/`parent_token`，回退 `salon.wiki_*`）为空或含 `<` 占位时，**非 dry-run 直接 WARNING 跳过建 Wiki 与标记、rc `0`**（不产生孤儿 docx；dry-run 仍走 stub 预览）。
+- 单条话题大纲生成 / Wiki 写入失败只 WARNING，不阻断其余话题；全部失败也仅 WARNING，rc 不变。
 - Wiki 首页重建失败只 WARNING，不影响返回码、不触发 SOS。
 - 去重靠 `ppt_synced_at` + `ppt_last_status_{rid}` 翻转检测，已是「已选题」且已同步的会被跳过。
 - dry-run 也调用首页更新（传入 `dry_run=True`，只打印预览）。
@@ -404,16 +405,18 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 | `--db` | str | `None` | 覆盖 `TC_DB` 与 `--env` 推导 | sqlite 路径 |
 | `--env` | choice `{dev,test,prod}` | `None`（回落 prod） | 覆盖 `TC_APP_ENV` | 环境 |
 | `--init` | store_true | 关 | — | 补字段/视图/组织内只读分享 |
-| `--reseed` | store_true | 关 | — | 清空表内记录后全量重灌 |
-| `--backfill` | store_true | 关 | — | 回填存量空归档日期 |
-| `--fix-archive-date` | store_true | 关 | `--backfill` 的**别名** | 同「回填存量空归档日期」 |
+| `--reseed` | store_true | 关 | — | 清空本环境记录后全量重灌（dev/test 仅清「环境」匹配行，prod 全清）；与 `--backfill`/`--fix-archive-date` **互斥** |
+| `--backfill` | store_true | 关 | — | 回填存量空归档日期；与 `--reseed` **互斥** |
+| `--fix-archive-date` | store_true | 关 | `--backfill` 的**别名** | 同「回填存量空归档日期」；与 `--reseed` **互斥** |
 | `--dry-run` | store_true | 关 | — | 只读预览：不建 Base、不写表、不清空 |
+
+> `--reseed` / `--backfill` / `--fix-archive-date` 三者互斥（argparse mutually exclusive group），同时给出会以 usage 错误退出 rc `2`；无 flag 或仅 `--backfill`/`--fix-archive-date` 且 token 未就绪时**不自动建 Base**（见退出码）。
 
 ### 环境差异
 
 | 环境 | 配置 / db | 归档 Base |
 |---|---|---|
-| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | 与 test 共享 Base（「环境」列区分）；`backfill` 请求带出「环境」字段，`env_name=dev` 只处理该环境行（环境缺失/为空的行不额外过滤，向后兼容） |
+| dev | `config-dev.yaml` / `data/tc-dev.sqlite3` | 与 test 共享 Base（「环境」列区分）；`backfill` 请求带出「环境」字段，`env_name=dev` 只处理该环境行（环境缺失/为空的行不额外过滤，向后兼容）；`reseed` 同样按「环境」过滤——**只清 dev 行，test 行保留** |
 | test | `config-test.yaml` / `data/tc-test.sqlite3` | 同上，`env_name=test` |
 | prod | `config-prod.yaml` / `data/tc-prod.sqlite3` | 独立 prod Base；`env_name=None`（全表） |
 
@@ -463,13 +466,14 @@ dry-run：跳过 sync_env（不写记录）
 
 ### 退出码
 
-`0` = 正常 / 未启用 / dry-run；`2` = `--reseed` 但 Base 未配置或为占位 token（拒绝执行，防「先建后清」）；配置加载异常未捕获，进程以 Python 异常非 0 结束。
+`0` = 正常 / 未启用 / dry-run；`2` = `--reseed` 但 Base 未配置或为占位 token（拒绝执行，防「先建后清」），或**非 `--init`/`--reseed`（含无 flag 与仅 `--backfill`/`--fix-archive-date`）且 `app_token`/`table_id` 未就绪/占位**（log.error，不自动建 Base），或互斥 flag 同时给出（argparse usage 错误）；配置加载异常未捕获，进程以 Python 异常非 0 结束。
 
 ### 注意 / 坑
 
 - `bitable.enabled=false` 时直接 `return 0`（日志 `bitable 未启用`）。
-- `--reseed` 要求既有且非占位 `app_token`/`table_id`，否则返回 2。
-- `--backfill` 与 `--fix-archive-date` 等价，同时给也只回填一次。
+- `--reseed` 要求既有且非占位 `app_token`/`table_id`，否则返回 2；执行顺序为**先 reset 本地同步标记 → 按环境清表 → sync_env**，清表任一批失败即 log.error + rc 2 中止（标记已清，下轮可自愈重灌）。
+- `--backfill` 与 `--fix-archive-date` 等价；`--reseed`/`--backfill`/`--fix-archive-date` 三者互斥，同时给会以 usage 错误退出 rc `2`。
+- 无 flag 或仅回填类 flag 且 token 空/占位时 log.error + rc `2`（**不自动建 Base**）；仅 `--init`/`--reseed` 允许创建/修复 Base。
 - 占位 token（含 `<`）在 dry-run 下只提示「跳过预览」。
 
 ---
@@ -490,7 +494,7 @@ dry-run：跳过 sync_env（不写记录）
 | `--space-id` | str | `""` | 显式值 > 配置 | Wiki space id；非 dry-run 且缺省时从 `cfg.wiki.space_id` 回退 |
 | `--parent-token` | str | `""` | 显式值 > 配置 | 父节点 node_token；缺省时从 `cfg.wiki.parent_token` 回退 |
 | `--title` | str | `"示例话题"` | — | 文档标题，生成 `{title}_{日期}_大纲` |
-| `--file` | str | `None` | — | MD 文件路径，默认用 title 生成示例内容 |
+| `--file` | str | `None` | — | MD 文件路径，默认用 title 生成示例内容；`--dry-run` 下忽略（不读文件） |
 | `--dry-run` | store_true | 关 | — | 仅打印 wiki_url 不真传 |
 | `--env` | choice `{dev,test,prod}` | `None`（回落 prod） | 覆盖 `TC_APP_ENV` | 缺 token 时据此读配置 |
 
@@ -545,13 +549,14 @@ https://<host>/wiki/wiki_dry_示例话题
 
 ### 退出码
 
-无显式返回码：dry-run 正常结束 `0`；非 dry-run 创建失败（`docs +create` 失败、取不到 `document_id`）抛 `RuntimeError`，进程非 0。
+`0` = 成功（含 dry-run）；`2` = `--file` 读取失败（不存在 / 非 UTF-8 / 是目录），或**非 dry-run 且 space_id / parent 为空或占位**（拒绝建孤儿 docx，零 lark 调用），或创建失败（`docs +create` 业务失败、取不到 `document_id` 等 `RuntimeError`，统一 `log.error` 后返回 `2`）；配置加载异常未捕获时进程以 Python 异常非 0 结束。
 
 ### 注意 / 坑
 
 - 无 `--config`/`--db`：凭据只能走 `--env` 配置或直接传 token。
 - 取 `node_token` 有 node-get miss → node-list 兜底 → 最后回退 `/docx/<document_id>` 并发 WARNING（见 §19.5 / §21 的 131005 说明）。
-- `--file` 缺失时用 title 生成示例内容，不读真实草稿。
+- `--file` 缺失时用 title 生成示例内容，不读真实草稿；**`--dry-run` 忽略 `--file`**（直接打印 stub `wiki_dry_<标题>` 链接）。
+- 非 dry-run 时任一 token 缺失即触发配置回退（`--app-token`/`--space-id`/`--parent-token` 只要缺一个就加载配置补全）；配置也补不齐则按上表 rc `2` 拒绝执行。
 
 ---
 

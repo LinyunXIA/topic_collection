@@ -72,9 +72,11 @@ def _dry_run_plan(cfg: Any, args: Any) -> None:
     if args.reseed:
         if _tokens_ready(bt):
             env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
-            n, _ok = bitable_records.purge_all_records(
+            n, purge_ok = bitable_records.purge_all_records(
                 bt.app_token, bt.table_id, dry_run=True, env_name=env_name
             )
+            if not purge_ok:
+                log.warning("dry-run：清空预览拉取失败，%d 条仅为已扫描部分", n)
             log.info("dry-run：将清空 %d 条记录后全量重灌（未删除；prod markdown 路径仅数首屏）", n)
         else:
             log.info("dry-run：Base 未配置或为占位 token，跳过 reseed 预览")

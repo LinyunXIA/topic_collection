@@ -9,6 +9,7 @@ from typing import Any
 from feedkicker.feishu_card_body import _assemble
 
 _MAX_BODY_BYTES = 20000
+SIGN_RESERVE_BYTES = 128
 _MD_SPECIAL = re.compile(r"([\\`*_\[\]()#])")
 
 
@@ -31,15 +32,14 @@ def build_card(
     feed_order: list[str],
     top_n: int = 0,
     detail_url: str | None = None,
-    max_bytes: int = _MAX_BODY_BYTES,
+    max_bytes: int = _MAX_BODY_BYTES - SIGN_RESERVE_BYTES,
     detail_label: str = "📰 详情见多维表格",
     wiki_urls: list[str] | None = None,
     wiki_label: str = "📖 查看大纲",
 ) -> dict[str, Any]:
-    """每源保最新 `top_n` 条（`top_n<=0` 全取，时效键=published_at/first_seen），`selected` 最旧在前（#200）。
+    """每源保最新 `top_n` 条（时效键=published_at/first_seen），`selected` 最旧在前（#200）。
 
-    超限裁剪（#222）：先剥 description → 再从 selected 头部丢最旧条目（按源分组序，
-    跨源为近似全局丢最旧）→ 最后从 wiki_urls 尾部丢链接并在卡片提示截断数。
+    超限裁剪（#222）：剥 description → 按拼接序 pop(0) 丢最旧（跨源近似）→ 丢 wiki_urls 尾部并提示。
     """
     def time_key(item: dict[str, Any]) -> str:
         return item.get("published_at") or item.get("first_seen") or ""

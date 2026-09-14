@@ -611,7 +611,7 @@ def test_build_card_no_detail_no_button():
 
 
 def test_build_card_budget_reserves_signature_bytes():
-    """#201：build_card 预算须预留 send 注入 timestamp/sign 的字节余量。"""
+    """#201 / R4V-5：build_card 预算（含默认值）须预留 send 注入 timestamp/sign 的字节余量。"""
     from feedkicker import feishu_card
 
     budget = feishu_card._MAX_BODY_BYTES - feishu.SIGN_RESERVE_BYTES
@@ -621,9 +621,14 @@ def test_build_card_budget_reserves_signature_bytes():
     card = feishu.build_card(items, 0, ["F"], max_bytes=budget)
     raw = json.dumps(card, ensure_ascii=False).encode("utf-8")
     assert len(raw) + feishu.SIGN_RESERVE_BYTES <= feishu_card._MAX_BODY_BYTES
+    default_raw = json.dumps(feishu.build_card(items, 0, ["F"]), ensure_ascii=False).encode("utf-8")
+    assert len(default_raw) + feishu.SIGN_RESERVE_BYTES <= feishu_card._MAX_BODY_BYTES
 
 
 def test_push_run_reserves_signature_bytes(monkeypatch):
+    """R4V-5：余量在 build_card 默认值内；push 不再重复传 max_bytes。"""
+    import inspect
+
     conn = make_conn()
     cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
     cfg.feishu_webhook = "hook-x"
@@ -641,7 +646,9 @@ def test_push_run_reserves_signature_bytes(monkeypatch):
     monkeypatch.setattr(push.feishu, "build_card", spy)
     monkeypatch.setattr(push.feishu, "send", lambda p, *a, **kw: True)
     assert push.run(cfg, conn) == 0
-    assert captured_kwargs["max_bytes"] == feishu_card._MAX_BODY_BYTES - feishu.SIGN_RESERVE_BYTES
+    assert "max_bytes" not in captured_kwargs
+    default = inspect.signature(real_build).parameters["max_bytes"].default
+    assert default == feishu_card._MAX_BODY_BYTES - feishu.SIGN_RESERVE_BYTES
     assert feishu.SIGN_RESERVE_BYTES >= 128
     conn.close()
 
