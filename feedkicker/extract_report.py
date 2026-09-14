@@ -6,17 +6,21 @@ import json
 import logging
 from typing import Any
 
-from feedkicker import extract_write
-
 log = logging.getLogger(__name__)
 
 
-def print_dry_run(topics: list[dict[str, Any]], provider_label: str, run_date: str, skipped: int) -> None:
-    """逐条打印完整待写清单（人读行 + 可统计 JSON 行），不写表。"""
-    print(f"待写选题 {len(topics)} 个（dry-run，未写表；目标表已存在跳过 {skipped} 个）：")
-    for i, topic in enumerate(topics, 1):
-        record = extract_write.build_record(topic, provider_label, run_date, "未讨论")
-        print(f"{i}. {record['话题名称']}")
+def print_dry_run(planned: list[dict[str, Any]], skipped: list[dict[str, Any]]) -> None:
+    """逐条打印清单（`[将写入]`/`[已存在跳过]` 前缀 + 可统计 JSON 行），不写表。
+
+    入参来自 `extract_write.plan_writes`（与写入同一规划），故标注数量与 summary
+    `pending`/`skipped` 必然一致。
+    """
+    print(f"待写选题 {len(planned)} 个（dry-run，未写表；目标表已存在跳过 {len(skipped)} 个）：")
+    for i, record in enumerate(planned, 1):
+        print(f"[将写入] {i}. {record['话题名称']}")
+        print(json.dumps(record, ensure_ascii=False))
+    for i, record in enumerate(skipped, 1):
+        print(f"[已存在跳过] {i}. {record['话题名称']}")
         print(json.dumps(record, ensure_ascii=False))
 
 

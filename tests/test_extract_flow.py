@@ -225,7 +225,93 @@ def test_bad_json_batch_counts_failed_not_empty(tmp_path, monkeypatch, capsys) -
     stats = _last_summary(out)
     assert rc == 0
     assert stats["failed_batches"] == 2 and stats["empty_batches"] == 0
-    assert stats["llm_calls"] == 2
+    assert stats["llm_calls"] == 4
+
+
+def test_parse_failure_retried_then_success(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, calls)
+    monkeypatch.setattr(extract_flow.extract_source, "select_source", lambda conn, since_days, limit=None: _items(2))
+    state = {"n": 0}
+
+    def fake_llm(ex, prompt):
+        state["n"] += 1
+        return "抱歉，无法提炼" if state["n"] == 1 else _TOPICS_JSON
+
+    monkeypatch.setattr(extract_flow.extract_llm, "call_llm", fake_llm)
+
+    rc = extract_flow.main(["--dry-run", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
+
+    out = capsys.readouterr().out
+    stats = _last_summary(out)
+    assert rc == 0 and state["n"] == 2
+    assert stats["failed_batches"] == 0 and stats["empty_batches"] == 0
+    assert stats["llm_calls"] == 2 and stats["topics"] == 1
+
+
+def test_parse_failure_twice_counts_failed_batch(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, calls)
+    monkeypatch.setattr(extract_flow.extract_source, "select_source", lambda conn, since_days, limit=None: _items(2))
+    monkeypatch.setattr(extract_flow.extract_llm, "call_llm", lambda ex, prompt: "不是 JSON")
+
+    rc = extract_flow.main(["--dry-run", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
+
+    out = capsys.readouterr().out
+    stats = _last_summary(out)
+    assert rc == 0
+    assert stats["failed_batches"] == 1 and stats["empty_batches"] == 0
+    assert stats["llm_calls"] == 2 and stats["topics"] == 0
+
+
+def test_dry_run_labels_match_summary(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    existing = json.dumps(
+        {"data": {"records": [{"record_id": "rec1", "fields": {"话题名称": ["话题A"]}}]}},
+        ensure_ascii=False,
+    )
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+record-list" in args:
+            return FakeProc(0, existing)
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    monkeypatch.setattr(extract_flow.extract_source, "select_source", lambda conn, since_days, limit=None: _items(2))
+    two_topics = json.dumps(
+        {
+            "topics": [
+                {
+                    "话题名称": "话题A",
+                    "可使用工具": "工具X",
+                    "相关AI原理": "原理Y",
+                    "资讯链接": ["https://a/1"],
+                    "出处来源": ["量子位"],
+                },
+                {
+                    "话题名称": "话题B",
+                    "可使用工具": "工具Z",
+                    "相关AI原理": "原理W",
+                    "资讯链接": ["https://a/2"],
+                    "出处来源": ["量子位"],
+                },
+            ]
+        },
+        ensure_ascii=False,
+    )
+    monkeypatch.setattr(extract_flow.extract_llm, "call_llm", lambda ex, prompt: two_topics)
+
+    rc = extract_flow.main(["--dry-run", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
+
+    out = capsys.readouterr().out
+    stats = _last_summary(out)
+    assert rc == 0
+    assert "[将写入] 1. 话题B" in out
+    assert "[已存在跳过] 1. 话题A" in out
+    assert out.count("[将写入]") == stats["pending"] == 1
+    assert out.count("[已存在跳过]") == stats["skipped"] == 1
 
 
 def test_bad_topic_item_dropped_keeps_batch(tmp_path, monkeypatch, capsys) -> None:

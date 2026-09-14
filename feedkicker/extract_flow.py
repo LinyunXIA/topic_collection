@@ -88,10 +88,12 @@ def run(
             cfg.salon.app_token, cfg.salon.table_id, merged, provider.tool_label, run_date
         )
     else:
-        written, skipped = extract_write.write_topics(
-            cfg.salon.app_token, cfg.salon.table_id, merged, provider.tool_label, run_date, dry_run=True
+        names, links = extract_write.existing_index(cfg.salon.app_token, cfg.salon.table_id)
+        planned, skipped_records = extract_write.plan_writes(
+            merged, provider.tool_label, run_date, names, links
         )
-        print_dry_run(merged, provider.tool_label, run_date, skipped)
+        written, skipped = len(planned), len(skipped_records)
+        print_dry_run(planned, skipped_records)
     print_summary(
         {
             "mode": "apply" if apply else "dry-run",

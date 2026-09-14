@@ -15,6 +15,7 @@ from feedkicker.extract_write import (
     build_record,
     existing_index,
     link_keys,
+    plan_writes,
     write_topics,
 )
 
@@ -463,3 +464,21 @@ def test_existing_index_normalizes_markdown_wrapped_links(monkeypatch) -> None:
         set(),
         {"https://www.ifanr.com/1678637", "https://www.qbitai.com/2026/09/485431.html"},
     )
+
+
+def test_plan_writes_splits_picked_and_skipped_records() -> None:
+    topics = [_topic("A"), _topic("B"), _topic("A")]
+
+    picked, skipped = plan_writes(topics, "MMax", "2026-09-14", {"a"}, set())
+
+    assert [r["话题名称"] for r in picked] == ["B"]
+    assert [r["话题名称"] for r in skipped] == ["A", "A"]
+    assert picked[0]["讨论状态"] == ["未讨论"] and picked[0]["提炼日期"] == "2026-09-14"
+
+
+def test_plan_writes_skips_on_link_key_hit() -> None:
+    topics = [{"话题名称": "全新命名", "资讯链接": ["https://e.com/a?utm_source=rss"]}]
+
+    picked, skipped = plan_writes(topics, "MMax", "2026-09-14", set(), {"https://e.com/a"})
+
+    assert picked == [] and [r["话题名称"] for r in skipped] == ["全新命名"]
