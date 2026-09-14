@@ -73,7 +73,7 @@ def _md_temp_file(md_content: str, filename: str):
 
 def create_wiki_doc_from_md(
     _app_token: str,
-    _space_id: str,
+    space_id: str,
     parent_wiki_token: str,
     title: str,
     md_content: str,
@@ -85,9 +85,13 @@ def create_wiki_doc_from_md(
     流程（lark-cli，已实测）：
     1. ``docs +create --parent-token <wiki节点> --doc-format markdown --content @file``
        直接在 wiki 树内建 docx（obj_type=docx），取 data.document.document_id；
-    2. ``wiki +node-get --node-token <document_id>`` 反查 node_token 拼规范链接。
+    2. ``wiki +node-get --node-token <document_id>`` 反查 node_token 拼规范链接；
+       新建节点有秒级传播延迟（131005 not_found），node-get 失败时降级：
+    3. ``wiki +node-list --parent-node-token <父节点>`` 即时返回 data.nodes，
+       按 obj_token（或 objToken）== document_id、否则 title == doc_title 命中取 node_token（#140）；
+    4. 仅当 node-list 也失败/未命中，才回退 /docx/<document_id> 并发 WARNING（不阻塞话题）。
     注意：``drive +upload --wiki-token`` 只会产出 obj_type=file 的附件节点（#133），不可用。
-    app_token/space_id 保留入参兼容调用方，lark-cli 自行鉴权与空间解析。
+    space_id/parent_wiki_token 供 node-list 兜底；app_token 保留入参兼容调用方，lark-cli 自行鉴权。
     """
     doc_title = build_doc_title(title, date_str=date_str)
     if dry_run:
@@ -114,8 +118,17 @@ def create_wiki_doc_from_md(
         node_proc = wiki_lark.lark_node_get(doc_id)
         node_token, obj_type = wiki_lark.parse_node(node_proc)
         if not node_token:
+            nodes = wiki_lark.parse_node_list(wiki_lark.lark_node_list(space_id, parent_wiki_token))
+            hit = next(
+                (n for n in nodes if (n.get("obj_token") or n.get("objToken")) == doc_id),
+                next((n for n in nodes if n.get("title") == doc_title), None),
+            )
+            cand = (hit.get("node_token") or hit.get("nodeToken")) if hit is not None else None
+            if isinstance(cand, str) and cand:
+                node_token = cand
+        if not node_token:
             log.warning(
-                "wiki +node-get 未返回 node_token，回退 /docx/ 链接: %s",
+                "wiki +node-get/node-list 均未拿到 node_token，回退 /docx/ 链接: %s",
                 ((node_proc.stdout if node_proc is not None else "") or "")[:200],
             )
             return docx_url(doc_id)
