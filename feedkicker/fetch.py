@@ -19,7 +19,7 @@ _TRACKING = frozenset(("fbclid", "gclid", "igshid", "spm"))
 
 _TRACKING_PREFIXES = ("utm_", "mc_")
 
-_BARE_HOST_RE = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+(?:[/:?#]|$)")
+_BARE_HOST_RE = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?::[0-9]+)?/")
 
 
 def utc_now_iso() -> str:
@@ -71,7 +71,11 @@ def canonicalize(url: str) -> str:
 
 
 def is_url_token(token: str) -> bool:
-    """token 是否含 `://` 或形如裸域名（example.com/path）——非 URL 文本不得进入去重键（#329）。"""
+    """token 是否 URL：含 `://`，或形如带路径的裸域名（`example.com/path`，TLD ≥2 字母）。
+
+    点分但非 URL 的 token（版本号 `v2.0.1`、文件名 `report.pdf`）不得生成去重键，否则跨话题
+    同注记会被误判重复而静默漏写（#329/#361）。
+    """
     text = (token or "").strip()
     return "://" in text or bool(_BARE_HOST_RE.match(text))
 

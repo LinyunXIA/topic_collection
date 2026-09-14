@@ -121,8 +121,8 @@ def backfill_empty_archive_dates(
             log.error("backfill：lark-cli 执行失败(无返回)，中止以免不完整回填（已扫描 %d 条）", total_scanned)
             raise RuntimeError("lark-cli 执行失败(无返回)，backfill 中止")
         if not bitable_lark._ok(proc):
-            log.warning("backfill：第 %d 页拉取失败，提前结束（已扫描 %d 条）", offset // 200 + 1, total_scanned)
-            break
+            log.warning("backfill：第 %d 页拉取失败，中止以免不完整回填（已扫描 %d 条）", offset // 200 + 1, total_scanned)
+            raise RuntimeError(f"backfill 第 {offset // 200 + 1} 页拉取失败，中止")
         data = bitable_lark._data(proc)
         prev_fp = bitable_lark._page_guard(prev_fp, data)
         records: list[Any] = data.get("records") or []

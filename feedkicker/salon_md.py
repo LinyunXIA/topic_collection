@@ -64,12 +64,7 @@ def outline_to_md(outline: dict[str, Any], label: str) -> str:
         heading = s.get("heading") or f"第{idx}页"
         if not isinstance(heading, str):
             heading = f"第{idx}页"
-        bullets_raw = s.get("bullets")
-        bullets = (
-            [str(b) for b in bullets_raw if isinstance(b, (str, int, float))]
-            if isinstance(bullets_raw, list)
-            else []
-        )
+        bullets = [str(b) for b in (s.get("bullets") or []) if isinstance(b, (str, int, float))]
         note = s.get("speaker_note") or s.get("speakerNote") or ""
         lines.append(f"### {idx}. {heading}")
         for b in bullets:

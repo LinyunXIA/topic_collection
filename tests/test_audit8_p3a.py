@@ -362,10 +362,9 @@ def test_backfill_business_failure_warns(monkeypatch, caplog) -> None:
     monkeypatch.setattr(bitable_lark, "_has_batch_verb", lambda: "+record-batch-update")
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
 
-    with caplog.at_level(logging.WARNING):
-        n = bitable_backfill.backfill_empty_archive_dates("app", "tbl", dry_run=True)
+    with caplog.at_level(logging.WARNING), pytest.raises(RuntimeError, match="第 2 页|中止"):
+        bitable_backfill.backfill_empty_archive_dates("app", "tbl", dry_run=True)
 
-    assert n == 200
     assert any("backfill" in r.getMessage() for r in caplog.records)
 
 
