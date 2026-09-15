@@ -55,8 +55,6 @@ def _slides_of(outline: Any) -> list[dict[str, Any]]:
 
 
 def outline_to_md(outline: dict[str, Any], label: str) -> str:
-    if not isinstance(outline, dict):
-        outline = {}
     title = outline.get("title") or label
     slides = _slides_of(outline)
     lines = [f"## {label}", "", f"**{title}**", ""]

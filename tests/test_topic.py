@@ -311,6 +311,7 @@ def test_no_full_scan_memory_filter(monkeypatch):
 
 def test_cli_dry_run_stub(monkeypatch, capsys):
     import sys
+    monkeypatch.delitem(sys.modules, "feedkicker.topic", raising=False)
     monkeypatch.setattr(sys, "argv", ["topic", "--env", "test", "--dry-run"])
     def fake_run(args, stdin_text=None, timeout=120):
         payload = {"records": [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"]}}]}

@@ -57,8 +57,8 @@ def read_rows(
 
     `fields` 默认取 5 输入字段；传 `(*SCORE_FIELDS, "{label}打分", "{label}理由")` 时额外读目标
     两列并归一到统一键 `打分`/`理由`。经 lark-cli `base +record-list`，复用 `bitable_lark` 的
-    offset/页数/页指纹三重兜底与 `_extract_records` 解析（不可识别响应 raise RuntimeError，
-    #326）；rc/业务失败即 raise，不得把「读半张表」当成功（对齐 `extract_write.existing_index`）。
+    offset/页数/页指纹三重兜底与 `_extract_records` 解析（不可识别响应 raise RuntimeError，参见 #326）；
+    rc/业务失败即 raise，不得把「读半张表」当成功（对齐 `extract_write.existing_index`）。
     """
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")

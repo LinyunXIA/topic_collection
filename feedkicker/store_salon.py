@@ -86,10 +86,10 @@ def mark_topic_archived(
         ).fetchone()
         if exists is None:
             conn.execute(
-                "INSERT INTO articles (feed_id, entry_key, title, url, description, "
-                "published_at, first_seen, pushed_at, ppt_synced_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?) "
-                "ON CONFLICT (feed_id, entry_key) DO NOTHING",
+                """INSERT INTO articles (feed_id, entry_key, title, url, description,
+                published_at, first_seen, pushed_at, ppt_synced_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                ON CONFLICT (feed_id, entry_key) DO NOTHING""",
                 (feed_id, record_id, title, url, md_excerpt[:500], None, now_iso, now_iso),
             )
             conn.commit()
