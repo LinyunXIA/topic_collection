@@ -5,9 +5,10 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from feedkicker.extract_parse import _load_json_obj, topic_key
+from feedkicker.extract_parse import _load_json_obj
 from feedkicker.score_report import DistCheck as DistCheck
 from feedkicker.score_report import check_distribution as check_distribution
+from feedkicker.score_source import name_key
 
 log = logging.getLogger(__name__)
 
@@ -20,12 +21,10 @@ _REASON_LIMIT = 100
 
 
 def parse_results(raw: str) -> tuple[list[dict[str, Any]], int]:
-    """解析 LLM 原始文本 → `(scores, dropped)`，**权威口径 `scores` 数组 / `dimensions` 六维 /
-    `gate: "pass"|"zero"`（DESIGN §26.4）**；兼容回退 `results` 主键与 `scores` 维度键。
-
-    先经 `_load_json_obj` 剥离 thinking 推理块并容忍围栏；非法 JSON / 顶层非对象 / 权威键非列表 →
-    raise ValueError（调用方重试后计失败批）。单条丢弃（不整批弃）并计数：非对象 / 缺名 / 空名 /
-    缺 `reason`；`gate=pass` 时六维须为 0–5 数值（含 0.5 档）或 `"缺失"`，越界/非数字/bool/乱字符串丢弃。
+    """解析 LLM 原始文本 → `(scores, dropped)`，**权威口径 `scores`/`dimensions`/`gate: pass|zero`**
+    （DESIGN §26.4，兼容回退 `results` 主键与 `scores` 维度键）：非法 JSON / 顶层非对象 / 权威键非列表
+    → raise ValueError（调用方重试）；单条丢弃并计数：非对象 / 缺名 / 缺 `reason` / `gate=pass` 六维非
+    0–5 数值（含 0.5 档）或非 `"缺失"`（含越界/非数字/bool/乱字符串）。
     """
     obj = _load_json_obj(raw)
     if obj is None:
@@ -42,7 +41,7 @@ def parse_results(raw: str) -> tuple[list[dict[str, Any]], int]:
             dropped += 1
             continue
         name = str(item.get("话题名称") or "").strip()
-        if not topic_key(name) or not str(item.get("reason") or "").strip() or not _dims_ok(item):
+        if not name_key(name) or not str(item.get("reason") or "").strip() or not _dims_ok(item):
             dropped += 1
             continue
         parsed.append({**item, "话题名称": name})
@@ -68,7 +67,6 @@ def _num(value: Any) -> float | None:
 
 
 def _dim(scores: dict[str, Any], key: str) -> tuple[float | None, bool]:
-    """返回 `(值, 是否缺失)`；`"缺失"`/缺键/非数字一律按缺失（不填 0，PRD §22.6）。"""
     raw = scores.get(key)
     if raw is None or (isinstance(raw, str) and raw.strip() == _MISSING):
         return None, True
@@ -79,8 +77,8 @@ def _dim(scores: dict[str, Any], key: str) -> tuple[float | None, bool]:
 def weighted_total(
     scores: dict[str, Any], missing_extra: Any = ()
 ) -> tuple[float | None, list[str]]:
-    """缺失维剔除权重、其余按剩余权重归一后加权，round 到 1 位小数；全维缺失 → `(None, 全维)`；
-    `missing_extra`（模型 `missing` 列表）与「值为 `"缺失"`」两种缺失表达一并归一。"""
+    """缺失维剔除权重、其余按剩余权重归一后加权 round 到 1 位小数；全维缺失 → `(None, 全维)`；
+    `missing_extra` 与「值为 `"缺失"`」两种缺失表达一并归一（PRD §22.6）。"""
     extra = {str(k) for k in missing_extra}
     present: list[tuple[str, float]] = []
     missing: list[str] = []
@@ -160,34 +158,42 @@ def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]
 def normalize_results(
     items: list[dict[str, Any]], rows: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], DistCheck, int]:
-    """回填 `record_id` 并归类 → `(归一列表, 分布校验, dropped)`；按 `topic_key` NFKC 归一匹配输入行，
-    匹配不到的返回行（多余）与未被返回的输入行（缺返回）均计 dropped 并 WARNING（§26.8）。"""
-    by_key: dict[str, dict[str, Any]] = {}
+    """回填 `record_id` 并归类 → `(归一列表, 分布校验, dropped)`：优先用返回值 `record_id`，否则按
+    `name_key` 消费式匹配所有同名未匹配行（使表内多行同名都能写到，#374）；未匹配/未返回均计 dropped。
+    """
+    by_id: dict[str, dict[str, Any]] = {}
+    by_name: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        key = topic_key(row.get("话题名称"))
-        if key and key not in by_key:
-            by_key[key] = row
+        rid = str(row.get("record_id") or "")
+        if rid and rid not in by_id:
+            by_id[rid] = row
+        key = name_key(row.get("话题名称"))
+        if key:
+            by_name.setdefault(key, []).append(row)
     normalized: list[dict[str, Any]] = []
     dropped = 0
-    matched: set[str] = set()
+    used: set[int] = set()
     for item in items:
-        key = topic_key(item.get("话题名称"))
-        row = by_key.get(key)
+        rid = str(item.get("record_id") or "")
+        row = by_id.get(rid) if rid else None
+        if row is None or id(row) in used:
+            bucket = by_name.get(name_key(item.get("话题名称")), [])
+            row = next((c for c in bucket if id(c) not in used), None)
         if row is None:
             dropped += 1
-            log.warning("scores 多余项（表内无此话题，忽略）：%s", item.get("话题名称"))
+            log.warning("scores 多余项（表内无匹配行，忽略）：%s", item.get("话题名称"))
             continue
-        matched.add(key)
+        used.add(id(row))
         normalized.append(_normalize_item(item, row))
-    for key in set(by_key) - matched:
-        dropped += 1
-        log.warning("表内话题未被返回（缺返回行）：%s", by_key[key].get("话题名称"))
+    for row in rows:
+        if id(row) not in used:
+            dropped += 1
+            log.warning("表内话题未被返回（缺返回行）：%s", row.get("话题名称"))
     return normalized, check_distribution(normalized), dropped
 
 
 def normalize(
     items: list[dict[str, Any]], rows: list[dict[str, Any]]
 ) -> tuple[list[dict[str, Any]], DistCheck]:
-    """`normalize_results` 的二元视图（公开契约，dropped 由 `normalize_results` 计数）。"""
     normalized, dist, _ = normalize_results(items, rows)
     return normalized, dist

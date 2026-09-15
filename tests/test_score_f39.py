@@ -9,7 +9,7 @@ from pathlib import Path
 
 import pytest
 
-from feedkicker import bitable_lark, extract_llm, score_flow, score_llm, score_source
+from feedkicker import bitable_lark, extract_llm, score_flow, score_llm, score_parse, score_source
 from feedkicker.config_models import ProviderConf, ScoreConf
 
 _MM_FIELDS = ["话题名称", "可使用工具", "相关AI原理", "资讯链接", "出处来源", "MMax打分", "MMax理由"]
@@ -87,7 +87,14 @@ def _patch_lark(
 
 
 def _write_cfg(
-    tmp_path: Path, *, provider: str = "minimax", key: str = "sk-test", prompt_file: str = "prompts/score.md"
+    tmp_path: Path,
+    *,
+    provider: str = "minimax",
+    key: str = "sk-test",
+    prompt_file: str = "prompts/score.md",
+    batch_size: int = 100,
+    max_calls: int = 0,
+    timeout_seconds: int = 600,
 ) -> Path:
     path = tmp_path / "f39-cfg.yaml"
     path.write_text(
@@ -98,13 +105,19 @@ def _write_cfg(
         "  enabled: true\n"
         f"  provider: {provider}\n"
         f"  prompt_file: {prompt_file}\n"
-        "  batch_size: 100\n"
+        f"  batch_size: {batch_size}\n"
+        f"  max_calls: {max_calls}\n"
+        f"  timeout_seconds: {timeout_seconds}\n"
         "  providers:\n"
         f"    {provider}:\n"
         f"      api_key: \"{key}\"\n",
         encoding="utf-8",
     )
     return path
+
+
+def _last_summary(out: str) -> dict:
+    return json.loads([ln for ln in out.splitlines() if ln.startswith("{")][-1])
 
 
 def test_load_template_missing_raises() -> None:
@@ -342,9 +355,7 @@ def test_run_existing_scores_skipped_as_context(tmp_path, monkeypatch, caplog) -
 
 
 def test_run_passes_configured_timeout_to_call_llm(tmp_path, monkeypatch) -> None:
-    cfg = _write_cfg(tmp_path)
-    path = Path(cfg)
-    path.write_text(path.read_text(encoding="utf-8") + "  timeout_seconds: 42\n", encoding="utf-8")
+    cfg = _write_cfg(tmp_path, timeout_seconds=42)
     seen: list[float] = []
 
     def fake(conf, prompt, timeout=180.0):
@@ -359,9 +370,7 @@ def test_run_passes_configured_timeout_to_call_llm(tmp_path, monkeypatch) -> Non
 
 
 def test_invalid_timeout_rc2(tmp_path, monkeypatch, caplog) -> None:
-    cfg = _write_cfg(tmp_path)
-    path = Path(cfg)
-    path.write_text(path.read_text(encoding="utf-8") + "  timeout_seconds: 0\n", encoding="utf-8")
+    cfg = _write_cfg(tmp_path, timeout_seconds=0)
     calls: list[list[str]] = []
     _patch_lark(monkeypatch, pages=[_records(1)], field_names=_MM_FIELDS, calls=calls)
 
@@ -369,3 +378,35 @@ def test_invalid_timeout_rc2(tmp_path, monkeypatch, caplog) -> None:
         rc = score_flow.main(["--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
 
     assert rc == 2 and calls == [] and "timeout_seconds" in caplog.text
+
+
+def test_run_uses_config_max_calls(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path, batch_size=1, max_calls=1)
+    _patch_lark(monkeypatch, pages=[_records(2)], field_names=_MM_FIELDS)
+    _stub_llm_echo(monkeypatch)
+
+    assert score_flow.main(["--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")]) == 0
+    assert _last_summary(capsys.readouterr().out)["llm_calls"] == 1
+
+
+def test_cli_max_calls_overrides_config(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path, batch_size=1, max_calls=1)
+    _patch_lark(monkeypatch, pages=[_records(2)], field_names=_MM_FIELDS)
+    _stub_llm_echo(monkeypatch)
+
+    rc = score_flow.main(["--max-calls", "2", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
+
+    assert rc == 0 and _last_summary(capsys.readouterr().out)["llm_calls"] == 2
+
+
+@pytest.mark.parametrize("name", ["行一\n行二", "双  空格名", "超" * 250])
+def test_name_injection_and_matching_consistent(name: str) -> None:
+    row = {"record_id": "recX", "话题名称": name}
+    prompt = score_llm.build_prompt("模板", [row], [])
+    shown = next(ln for ln in prompt.splitlines() if ln.startswith("1. 话题名称：")).split("：", 1)[1]
+    dims = {"普适痛点强度": 4.0, "分层承载力": 4.0, "可演示性": 4.0, "时效与稀缺": 4.0, "内容复用价值": 4.0, "讲解成本": 4.0}
+    item = {"话题名称": shown, "gate": "pass", "dimensions": dims, "reason": "依据"}
+
+    normalized, _dist, dropped = score_parse.normalize_results([item], [row])
+
+    assert dropped == 0 and len(normalized) == 1 and normalized[0]["record_id"] == "recX"

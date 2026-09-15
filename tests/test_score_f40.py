@@ -493,3 +493,31 @@ def test_run_apply_writes(tmp_path, monkeypatch, capsys) -> None:
 
     summary = _summary(capsys.readouterr().out)
     assert rc == 0 and summary["mode"] == "apply" and summary["written"] == 1
+
+
+def test_normalize_same_name_two_rows_both_scored() -> None:
+    rows = [{"record_id": "rec1", "话题名称": "同名话题"}, {"record_id": "rec2", "话题名称": "同名话题"}]
+
+    normalized, _dist, dropped = score_parse.normalize_results(
+        [_result("同名话题"), _result("同名话题")], rows
+    )
+
+    assert dropped == 0 and {n["record_id"] for n in normalized} == {"rec1", "rec2"}
+
+
+def test_normalize_duplicate_return_dropped() -> None:
+    rows = [{"record_id": "rec1", "话题名称": "同名话题"}]
+
+    normalized, _dist, dropped = score_parse.normalize_results(
+        [_result("同名话题"), _result("同名话题")], rows
+    )
+
+    assert len(normalized) == 1 and normalized[0]["record_id"] == "rec1" and dropped == 1
+
+
+def test_normalize_prefers_item_record_id() -> None:
+    rows = [{"record_id": "rec1", "话题名称": "A"}, {"record_id": "rec2", "话题名称": "B"}]
+
+    normalized, _dist, dropped = score_parse.normalize_results([_result("A", record_id="rec2")], rows)
+
+    assert dropped == 1 and len(normalized) == 1 and normalized[0]["record_id"] == "rec2"

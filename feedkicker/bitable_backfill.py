@@ -5,7 +5,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from feedkicker import bitable_lark
+from feedkicker import bitable_lark, topic_records
 
 log = logging.getLogger(__name__)
 
@@ -128,14 +128,14 @@ def backfill_empty_archive_dates(
         records: list[Any] = data.get("records") or []
         fields: list[str] = data.get("fields") or []
         rows: list[Any] = data.get("data") or []
-        rids: list[Any] = data.get("record_ids") or data.get("recordIds") or data.get("ids") or []
+        rids: list[Any] = topic_records.row_ids(data)
         pairs: list[tuple[str, dict[str, Any]]] = []
         if records and not all(isinstance(rec, dict) for rec in records):
             raise RuntimeError(f"backfill：records 子项非 dict，中止以免误判: {str(records)[:200]}")
         if records:
-            for rec in records:
+            for i, rec in enumerate(records):
                 fds = rec.get("fields") or rec.get("record") or {}
-                rid = rec.get("record_id") or rec.get("id") or rec.get("recordId") or ""
+                rid = rids[i] if i < len(rids) else ""
                 pairs.append((str(rid or ""), fds if isinstance(fds, dict) else {}))
             page_size = len(records)
         elif fields and rows:

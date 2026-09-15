@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Any
 
-from feedkicker import bitable_backfill, bitable_lark
+from feedkicker import bitable_backfill, bitable_lark, topic_records
 
 log = logging.getLogger(__name__)
 
@@ -93,14 +93,14 @@ def _list_records(
                 f"purge：record-list 响应无法识别（无 records/fields 容器），中止以免误判空表: {str(data)[:200]}"
             )
         prev_fp = bitable_lark._page_guard(prev_fp, data)
+        ids = topic_records.row_ids(data)
         records: list[Any] = data.get("records") or []
         if records and not all(isinstance(rec, dict) for rec in records):
             raise RuntimeError(f"purge：records 子项非 dict，中止以免误判空表: {str(records)[:200]}")
         if records:
-            for rec in records:
-                rid = str(rec.get("record_id") or rec.get("id") or rec.get("recordId") or "")
+            for i, rec in enumerate(records):
                 fds = rec.get("fields") or rec.get("record") or {}
-                out.append((rid, fds if isinstance(fds, dict) else {}))
+                out.append((ids[i] if i < len(ids) else "", fds if isinstance(fds, dict) else {}))
             if len(records) < _CHUNK:
                 return out, True, True
             offset += _CHUNK
@@ -109,12 +109,11 @@ def _list_records(
         rows: list[Any] = data.get("data") or []
         if not fields or not rows:
             return out, True, True
-        rids = data.get("record_ids") or data.get("recordIds") or data.get("ids") or []
         idx_push = fields.index("推送时间") if "推送时间" in fields else -1
         idx_arch = fields.index("归档日期") if "归档日期" in fields else -1
         idx_env = fields.index("环境") if "环境" in fields else -1
         for i, r in enumerate(rows):
-            rid = str(rids[i] if i < len(rids) else "")
+            rid = ids[i] if i < len(ids) else ""
             if isinstance(r, dict):
                 fds = r.get("fields") or r.get("values") or r
                 out.append((rid, fds if isinstance(fds, dict) else {}))

@@ -11,7 +11,15 @@ from datetime import UTC, datetime
 
 import pytest
 
-from feedkicker import bitable_lark, bitable_purge, purge, store
+from feedkicker import (
+    bitable_backfill,
+    bitable_lark,
+    bitable_purge,
+    bitable_reseed,
+    purge,
+    store,
+    topic_records,
+)
 from feedkicker.config import (
     BitableConf,
     Config,
@@ -551,3 +559,79 @@ def test_purge_cli_retention_days_zero_and_negative_clamped(monkeypatch, tmp_pat
         out = capsys.readouterr().out
         stats = json.loads(out[out.index("{") :])
         assert stats["retention_days"] == 1
+
+
+# ── #373：矩阵形态（字段+data+record_id_list）rid 提取 ──
+
+
+def matrix_page(rids, fields, rows):
+    return json.dumps(
+        {"ok": True, "data": {"fields": fields, "record_id_list": rids, "data": rows}},
+        ensure_ascii=False,
+    )
+
+
+def test_row_ids_prefers_records_then_top_level() -> None:
+    assert topic_records.row_ids({"records": [{"record_id": "recA"}, {"id": "recB"}]}) == ["recA", "recB"]
+    assert topic_records.row_ids({"fields": ["a"], "data": [["x"]], "record_id_list": ["rec1", "rec2"]}) == [
+        "rec1",
+        "rec2",
+    ]
+    assert topic_records.row_ids({"fields": ["a"], "data": [], "record_ids": []}) == []
+    assert topic_records.row_ids("nope") == []
+
+
+def test_purge_matrix_form_reads_record_id_list(monkeypatch):
+    page = matrix_page(
+        ["recOld", "recNew"],
+        ["推送时间", "归档日期"],
+        [["2025-01-15T10:00:00+08:00", None], ["2026-09-01T10:00:00+08:00", None]],
+    )
+    calls, deletes = install_fake_lark(monkeypatch, [page])
+
+    deleted, expired, scanned = outcome_triple("app", "tbl", "2025-09-07")
+
+    assert (scanned, expired, deleted) == (2, 1, 1)
+    assert deletes[0]["record_id_list"] == ["recOld"]
+    assert len([c for c in calls if "+record-delete" in c]) == 1
+
+
+def test_reseed_env_matrix_reads_record_id_list(monkeypatch):
+    page = matrix_page(
+        ["recDev", "recTest"],
+        ["环境", "推送时间", "归档日期"],
+        [["dev", None, None], ["test", None, None]],
+    )
+    calls, deletes = install_fake_lark(monkeypatch, [page])
+
+    deleted, ok = bitable_reseed.purge_all_records("app", "tbl", env_name="dev")
+
+    assert ok and deleted == 1
+    assert deletes[0]["record_id_list"] == ["recDev"]
+    assert len([c for c in calls if "+record-delete" in c]) == 1
+
+
+def test_backfill_matrix_reads_record_id_list(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        calls.append(list(args))
+        if args[:2] == ["base", "--help"]:
+            return FakeProc(0, stdout="+record-batch-update")
+        if "+record-list" in args:
+            return FakeProc(
+                0,
+                stdout=matrix_page(
+                    ["recX"],
+                    ["归档日期", "推送时间"],
+                    [[None, "2025-01-15T10:00:00+08:00"]],
+                ),
+            )
+        return FakeProc(0, stdout="{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    fixed = bitable_backfill.backfill_empty_archive_dates("app", "tbl")
+
+    assert fixed == 1
+    assert len([c for c in calls if "+record-batch-update" in c]) == 1

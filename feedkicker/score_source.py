@@ -7,11 +7,24 @@ from typing import Any
 
 from feedkicker import bitable_lark
 from feedkicker.config_models import MAX_SCORE_BATCH as MAX_SCORE_BATCH
+from feedkicker.extract_parse import topic_key
 from feedkicker.topic_records import _extract_records
 
 log = logging.getLogger(__name__)
 
 SCORE_FIELDS = ("话题名称", "可使用工具", "相关AI原理", "资讯链接", "出处来源")
+
+NAME_LIMIT = 200
+
+
+def name_text(name: Any) -> str:
+    """话题名展示归一：折叠空白 + 截断到 NAME_LIMIT（注入展示名与匹配键同源，#377）。"""
+    return " ".join(str(name or "").split())[:NAME_LIMIT]
+
+
+def name_key(name: Any) -> str:
+    """话题名匹配键：`name_text` 后再 `topic_key`；与注入时的展示名同口径（#377）。"""
+    return topic_key(name_text(name))
 
 
 def _normalize(record: dict[str, Any], fields: tuple[str, ...]) -> dict[str, Any]:

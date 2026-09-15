@@ -69,11 +69,30 @@ def _dim_text(value: Any) -> str:
         return _MISSING
 
 
+def _dedupe(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """按 `record_id` 去重（空 id 丢弃），避免同名/重复返回值把 `written` 虚高（#374）。"""
+    seen: set[str] = set()
+    out: list[dict[str, Any]] = []
+    for row in rows:
+        rid = str(row.get("record_id") or "")
+        if rid and rid not in seen:
+            seen.add(rid)
+            out.append(row)
+    return out
+
+
 def _cell(item: dict[str, Any], label: str) -> dict[str, str]:
-    """单条记录的目标 2 列：`{label}打分` 纯数字（全维缺失写「缺失」）+ 单行 `{label}理由`。"""
+    """单条记录的目标 2 列：`{label}打分` 纯数字（全维缺失写「缺失」）+ 单行 `{label}理由`。
+
+    六维渲染以**归一后的 `missing` 集合**为准：列入 missing 的维一律输出「缺失」，即使模型给了
+    数值，保证与 `weighted_total`（缺失维剔除权重）口径一致（#375）。
+    """
     scores = item.get("scores")
     scores = scores if isinstance(scores, dict) else {}
-    dims = "/".join(f"{_SHORT_DIM[k]}{_dim_text(scores.get(k))}" for k in _SHORT_DIM)
+    missing = {str(k) for k in (item.get("missing") or [])}
+    dims = "/".join(
+        f"{_SHORT_DIM[k]}{_MISSING if k in missing else _dim_text(scores.get(k))}" for k in _SHORT_DIM
+    )
     total = item.get("weighted_total")
     score = _MISSING if total is None else f"{float(total):.1f}"
     risk = "true" if item.get("risk_flag") else "false"
@@ -83,8 +102,11 @@ def _cell(item: dict[str, Any], label: str) -> dict[str, str]:
     return {f"{label}打分": score, f"{label}理由": detail}
 
 
-def _batch_write(conf: WriteConf, chunk: list[dict[str, Any]], label: str) -> bool:
-    """`+record-batch-update`（`--json` 体 = help 的 `{"update_records": {record_id: fields}}`）。"""
+def _batch_write(conf: WriteConf, chunk: list[dict[str, Any]], label: str) -> int:
+    """`+record-batch-update`（`--json` 体 = help 的 `{"update_records": {record_id: fields}}`）。
+
+    返回**实际 payload 键数**（成功）或 0（失败），供 `written` 如实计数（#374）。
+    """
     payload = {"update_records": {str(r.get("record_id") or ""): _cell(r, label) for r in chunk}}
     with bitable_lark._json_arg(payload) as (jflag, jval):
         proc = bitable_lark._run(
@@ -92,7 +114,7 @@ def _batch_write(conf: WriteConf, chunk: list[dict[str, Any]], label: str) -> bo
              "--table-id", conf.table_id, jflag, jval],
             timeout=300,
         )
-    return bitable_lark._ok(proc)
+    return len(payload["update_records"]) if bitable_lark._ok(proc) else 0
 
 
 def _single_write(conf: WriteConf, row: dict[str, Any], label: str) -> bool:
@@ -111,7 +133,9 @@ def write_scores(conf: WriteConf, rows: list[dict[str, Any]], *, dry_run: bool) 
 
     `dry_run=True` 零写调用；`+record-batch-update` 缺失时回退逐条 `+record-update`（§26.6 写失败只计数）。
     """
-    stats = ScoreStats(scored=len(rows))
+    stats = ScoreStats()
+    rows = _dedupe(rows)
+    stats.scored = len(rows)
     if dry_run or not rows:
         return stats
     verb = bitable_lark._has_batch_verb()
@@ -121,11 +145,11 @@ def write_scores(conf: WriteConf, rows: list[dict[str, Any]], *, dry_run: bool) 
     for i in range(0, len(rows), WRITE_CHUNK):
         chunk = rows[i : i + WRITE_CHUNK]
         if verb == "+record-batch-update":
-            if _batch_write(conf, chunk, label):
-                stats.written += len(chunk)
-            else:
+            written = _batch_write(conf, chunk, label)
+            stats.written += written
+            if written < len(chunk):
                 log.warning("打分批量写入失败（第 %d 批 %d 条）", i // WRITE_CHUNK + 1, len(chunk))
-                stats.failed_writes += len(chunk)
+                stats.failed_writes += len(chunk) - written
             continue
         failed = 0
         for row in chunk:

@@ -93,7 +93,7 @@ def test_ops_md_documents_score_section() -> None:
     assert "score` 段补充" in text
     assert "prompts/score.md" in text
     assert "MiniMax_Key" in text and "DEEPSEEK_API_KEY" in text
-    assert "batch_size=20" in text and "timeout_seconds=300" in text
+    assert "batch_size=20" in text and "timeout_seconds=600" in text
     assert "只补空" in text
 
 

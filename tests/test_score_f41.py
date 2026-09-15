@@ -478,3 +478,84 @@ def test_run_dropped_item_not_in_write_plan(tmp_path, monkeypatch, capsys) -> No
     summary = _summary(capsys.readouterr().out)
     assert rc == 0 and summary["written"] == 1 and summary["dropped"] >= 1
     assert set(payloads[0]) == {"rec1"}
+
+
+def test_write_scores_dedupes_record_id(monkeypatch) -> None:
+    payloads: list[dict] = []
+    _stub_lark(monkeypatch, field_names=_MM_FIELDS, payloads=payloads)
+
+    stats = score_write.write_scores(
+        score_write.WriteConf("appTest", "tblTest", "minimax"), [_item("A"), _item("A")], dry_run=False
+    )
+
+    assert stats.written == 1 and stats.scored == 1
+    assert list(payloads[0]) == ["recA"]
+
+
+def test_reason_cell_missing_set_overrides_numeric_dim() -> None:
+    item = _item("A", scores={**_DIMS, "普适痛点强度": 5.0}, missing=["普适痛点强度"])
+
+    detail = score_write._cell(item, "MMax")["MMax理由"]
+
+    assert "普适痛点缺失" in detail and "普适痛点5.0" not in detail
+
+
+def test_run_apply_all_llm_batches_fail_rc1(tmp_path, monkeypatch, caplog) -> None:
+    cfg = _write_cfg(tmp_path, batch_size=1)
+    _stub_lark(monkeypatch, pages=[_records(2)], field_names=_MM_FIELDS)
+
+    def boom(conf, prompt, timeout=180.0):
+        raise RuntimeError("超时")
+
+    monkeypatch.setattr(score_llm, "call_llm", boom)
+
+    with caplog.at_level(logging.ERROR):
+        rc = score_flow.main(_args(cfg, tmp_path, "--apply"))
+
+    assert rc == 1 and "rc=1" in caplog.text
+
+
+def test_run_apply_partial_batch_failure_rc0(tmp_path, monkeypatch) -> None:
+    cfg = _write_cfg(tmp_path, batch_size=1)
+    _stub_lark(monkeypatch, pages=[_records(2)], field_names=_MM_FIELDS)
+    state = {"n": 0}
+
+    def flaky(conf, prompt, timeout=180.0):
+        state["n"] += 1
+        if state["n"] <= 2:
+            raise RuntimeError("超时")
+        return json.dumps(
+            {"scores": [{"话题名称": "话题2", "gate": "pass", "dimensions": dict(_DIMS), "reason": "依据"}]},
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(score_llm, "call_llm", flaky)
+
+    assert score_flow.main(_args(cfg, tmp_path, "--apply")) == 0
+
+
+def test_run_apply_all_skipped_rc0(tmp_path, monkeypatch) -> None:
+    cfg = _write_cfg(tmp_path)
+    _stub_lark(monkeypatch, pages=[_records(2, score="3.5")], field_names=_MM_FIELDS)
+
+    def fake(conf, prompt, timeout=180.0):
+        raise AssertionError("全跳过时不应调用 LLM")
+
+    monkeypatch.setattr(score_llm, "call_llm", fake)
+
+    assert score_flow.main(_args(cfg, tmp_path, "--apply")) == 0
+
+
+def test_run_same_name_rows_both_written(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    rows = [
+        {"record_id": "rec1", "fields": {"话题名称": "同名话题"}},
+        {"record_id": "rec2", "fields": {"话题名称": "同名话题"}},
+    ]
+    _stub_lark(monkeypatch, pages=[rows], field_names=_MM_FIELDS)
+    _stub_llm_echo(monkeypatch)
+
+    rc = score_flow.main(_args(cfg, tmp_path, "--apply"))
+
+    summary = _summary(capsys.readouterr().out)
+    assert rc == 0 and summary["written"] == 2 and summary["dropped"] == 0

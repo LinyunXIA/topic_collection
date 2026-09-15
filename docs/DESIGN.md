@@ -1070,7 +1070,7 @@ tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-s
 
 ## 26. v0.9 — 话题自动打分（F38–F42）
 
-对「沙龙话题清单」（`cfg.salon`：`app_token=TikpbwV0oaFAnYsoMCxchMRyncr` / `table_id=tblNPcbupKIBzLAx`）**全部行**逐条自动打分：六维各 0–5（0.5 档）→ 加权总分 0–5（1 位小数）→ 写回 `MMax打分`/`MMax理由` 或 `DS打分`/`DS理由`。默认 dry-run 打印清单，`--apply` 才写表；**幂等只补空**。产品约束见 PRD §22。
+对「沙龙话题清单」（`cfg.salon`：`app_token=<salon-app-token>` / `table_id=<salon-table-id>`）**全部行**逐条自动打分：六维各 0–5（0.5 档）→ 加权总分 0–5（1 位小数）→ 写回 `MMax打分`/`MMax理由` 或 `DS打分`/`DS理由`。默认 dry-run 打印清单，`--apply` 才写表；**幂等只补空**。产品约束见 PRD §22。
 
 ### 26.1 架构与数据流
 
@@ -1112,12 +1112,12 @@ score:
   prompt_file: prompts/score.md
   batch_size: 20           # 默认 20；上限 MAX_SCORE_BATCH=100，越界 rc 2
   max_calls: 0             # 0 = 不限
-  timeout_seconds: 300     # 单次 LLM 读超时（须 > 0，越界 rc 2）
+  timeout_seconds: 600     # 单次 LLM 读超时（须 > 0，越界 rc 2）
 ```
 
 - dataclass：`ScoreConf{enabled, prompt_file, batch_size, provider, max_calls, timeout_seconds, providers}`（`config_models.py`）；provider 的 `base_url`/`model`/`api_key` **复用 `providers` 段**（`ProviderConf`），key 覆盖口径同 `extract`（env `MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`，占位 `<...>` 清空）。
 - `prompt_file` 为仓库根相对路径（`config.PROJECT_ROOT / prompt_file`），默认 `prompts/score.md`；缺失 → rc 2。
-- `batch_size` 默认 **20**（上限 `MAX_SCORE_BATCH=100`）：单批越小越不易读超时，可用 `timeout_seconds`（默认 300）进一步放宽。
+- `batch_size` 默认 **20**（上限 `MAX_SCORE_BATCH=100`）：单批越小越不易读超时，可用 `timeout_seconds`（默认 600）进一步放宽；MiniMax M3 约 10–15s/行（批 20 约 4–5 分钟），仍超时则把 `batch_size` 调至 10。
 
 ### 26.4 提示词与 JSON 契约
 
@@ -1181,7 +1181,7 @@ score:
 | 目标列缺失 | 在读表前（先 `+field-list`）、任何 LLM/写调用前判定，rc 2（零表数据读取） |
 | 超长字段（`资讯链接`/`相关AI原理` 等） | 输入按字符上限截断后再入提示词；模型 `reason` 超 100 字按上限截断并在六维明细处保留原值 |
 | 批上限 | 组批恒 ≤ `MAX_SCORE_BATCH=100`；`score.batch_size` 默认 **20**（上限 100）；配置/参数越界 rc 2，不静默放大 |
-| 单批超时 | 单批条数越大输出越长、越易读超时：默认批 20 + `score.timeout_seconds=300`（实测 85 条/批约 1.7 万 token，180s 会读超时）；超时按调用异常重试 1 次后计 `failed_batches` |
+| 单批超时 | 单批条数越大输出越长、越易读超时：默认批 20 + `score.timeout_seconds=600`（MiniMax M3 约 10–15s/行，批 20 约 4–5 分钟；85 条/批约 1.7 万 token 会超时）；仍超时则把 `batch_size` 调至 10；超时按调用异常重试 1 次后计 `failed_batches` |
 | 模型返回缺行 / 多行 | 按 `话题名称` 与批内行对齐；缺返回的行计 `dropped`，多出的行忽略并 WARNING |
 | 已填行混入 | 默认跳过（判据：`打分` 列非空）；`--force` 才重算 |
 

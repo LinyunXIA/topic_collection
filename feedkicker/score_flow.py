@@ -69,13 +69,15 @@ def run(
     """读全表 → 校验目标列 → 组批 → 逐批 LLM 打分 → dry-run 清单 / `--apply` 写入。
 
     rc 2 配置/参数非法；prompt 文件缺失 / provider 缺 key / 目标列缺失均 rc2，且均在发起任何
-    lark/LLM 调用前判定。默认只补空：已有 `打分`/`理由` 的行计入 skipped 并作为横向上文，
-    不进入本批（§26.7）；`--apply` 全失败（written=0 且 failed_writes>0）→ rc1（§26.6）。
+    lark/LLM 调用前判定。默认只补空：已有 `打分` 的行计入 skipped 并作为横向上文，不进入本批
+    （§26.7）。`max_calls` 为 0 时取 `score.max_calls`（CLI 覆盖配置，#379）；`--apply` 且有待打分
+    行却一条未写成（写失败或整批 LLM 失败）→ rc1（§26.6/#378）。
     """
     provider = (provider or cfg.score.provider or "minimax").strip()
     if provider not in PROVIDER_COLUMNS:
         log.error("未知 provider: %s（可用 %s）", provider, sorted(PROVIDER_COLUMNS))
         return 2
+    max_calls = max_calls or cfg.score.max_calls
     if limit < 0 or max_calls < 0:
         log.error("参数非法：limit=%s max_calls=%s（须 ≥0）", limit, max_calls)
         return 2
@@ -136,8 +138,13 @@ def run(
             "empty_batches": result.empty,
         }
     )
-    if apply and written_stats.failed_writes and not written_stats.written:
-        log.error("写入全部失败：failed_writes=%d（rc=1）", written_stats.failed_writes)
+    if apply and pending and not written_stats.written and (
+        written_stats.failed_writes or result.failed
+    ):
+        log.error(
+            "写入全部失败/整批 LLM 失败：pending=%d written=0 failed_writes=%d failed_batches=%d（rc=1）",
+            len(pending), written_stats.failed_writes, result.failed,
+        )
         return 1
     return 0
 

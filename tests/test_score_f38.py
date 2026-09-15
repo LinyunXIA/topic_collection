@@ -251,7 +251,7 @@ def test_score_conf_defaults() -> None:
     assert cfg.score.batch_size == 20
     assert cfg.score.provider == "minimax"
     assert cfg.score.max_calls == 0
-    assert cfg.score.timeout_seconds == 300.0
+    assert cfg.score.timeout_seconds == 600.0
     assert cfg.score.providers == {}
 
 

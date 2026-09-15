@@ -440,7 +440,7 @@ feeds:
 
 | 维度 | 决策 |
 |---|---|
-| 目标表 | 飞书「沙龙话题清单」`app_token=TikpbwV0oaFAnYsoMCxchMRyncr`、`table_id=tblNPcbupKIBzLAx`（复用 `cfg.salon`，**不调 `ensure_initialized`、不改表结构**） |
+| 目标表 | 飞书「沙龙话题清单」`app_token=<salon-app-token>`、`table_id=<salon-table-id>`（复用 `cfg.salon`，**不调 `ensure_initialized`、不改表结构**） |
 | 范围 | 表内**全部行**，**无视 `提取工具` 列**（MMax / DS / 人工来源一律同标准打分） |
 | 输入字段 | `话题名称`（必）+ `可使用工具` + `相关AI原理` + `资讯链接` + `出处来源` |
 | 不抓正文 | **不抓 `资讯链接` 指向的网页正文**；理由必须引用**表内字段**（题面四要素）作依据，保持单次调用无外网抓取、可离线复现 |

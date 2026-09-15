@@ -52,3 +52,39 @@ def test_no_long_record_id_tokens_in_tracked_files() -> None:
     assert proc.returncode == 1, (
         "tracked 文件出现 ≥15 字符的 record-id 形态 token（无匹配时 rc==1）:\n" + proc.stdout
     )
+
+
+_DOC_PATHSPEC = ("docs", "README.md", "AGENTS.md", "*.example")
+
+_BASE_TOKEN_RE = r"[A-Za-z0-9]{20,}"
+
+_TABLE_ID_RE = r"tbl[A-Za-z0-9]{12,}"
+
+
+def _looks_like_base_token(token: str) -> bool:
+    """真实 Base app_token 形态：≥20 位字母数字、同时含字母与数字（排除 pyright 规则名等纯字母标识符）。"""
+    return len(token) >= 20 and any(c.isdigit() for c in token) and any(c.isalpha() for c in token)
+
+
+def _doc_matches(pattern: str) -> list[str]:
+    proc = _git("grep", "-n", "-o", "-E", pattern, "--", *_DOC_PATHSPEC)
+    assert proc.returncode in (0, 1), f"git grep 异常 rc={proc.returncode}: {proc.stderr.strip()}"
+    return [ln for ln in proc.stdout.splitlines() if ln]
+
+
+def test_base_token_predicate_ignores_code_identifiers() -> None:
+    assert _looks_like_base_token("Abc123Def456Ghi789Jkl0")
+    assert not _looks_like_base_token("reportImplicitStringConcatenation")
+    assert not _looks_like_base_token("short")
+
+
+def test_no_real_base_token_shape_in_tracked_docs() -> None:
+    _require_work_tree()
+    hits = [ln for ln in _doc_matches(_BASE_TOKEN_RE) if _looks_like_base_token(ln.rsplit(":", 1)[-1])]
+    assert hits == [], f"tracked 文档出现 Base token 形态标识符（脱敏回归）: {hits[:5]}"
+
+
+def test_no_real_table_id_shape_in_tracked_docs() -> None:
+    _require_work_tree()
+    hits = _doc_matches(_TABLE_ID_RE)
+    assert hits == [], f"tracked 文档出现 tbl 表 id 形态标识符（脱敏回归）: {hits[:5]}"

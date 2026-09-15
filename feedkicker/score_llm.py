@@ -10,12 +10,12 @@ from typing import Any
 from feedkicker import extract_llm, score_parse
 from feedkicker.config import PROJECT_ROOT
 from feedkicker.config_models import ProviderConf, ScoreConf
-from feedkicker.score_source import SCORE_FIELDS
+from feedkicker.score_source import SCORE_FIELDS, name_text
 
 log = logging.getLogger(__name__)
 
 _FIELD_LIMITS: dict[str, int] = {
-    "话题名称": 200, "可使用工具": 300, "相关AI原理": 300, "资讯链接": 500, "出处来源": 200,
+    "可使用工具": 300, "相关AI原理": 300, "资讯链接": 500, "出处来源": 200,
 }
 
 _PRIOR_LIMIT = 200
@@ -51,7 +51,8 @@ def build_prompt(
     """在模板末尾追加「## 本批话题（含横向上文）」：逐条 5 字段（空值占位）+ 已打分参考（≤200 条）。
 
     摘要类字段做长度上限（`相关AI原理` ≤300 字符）；`prior_scores` 超出 200 条按行序取最近，
-    以控 prompt 体积（DESIGN §26.4 / PRD §22.7 横向上文）。
+    以控 prompt 体积（DESIGN §26.4 / PRD §22.7 横向上文）。话题名与匹配键同源
+    （`name_text`/`name_key`：折叠空白 + 截断 ≤200，#377）。
     """
     lines = [template.rstrip(), "", "## 本批话题（含横向上文）"]
     if prior_scores:
@@ -60,13 +61,13 @@ def build_prompt(
             lines.append(f"- {name}：{score}")
     lines.append("### 本批话题")
     for i, row in enumerate(batch, 1):
-        lines.append(f"{i}. 话题名称：{_cell(row.get('话题名称'), _FIELD_LIMITS['话题名称'])}")
+        lines.append(f"{i}. 话题名称：{name_text(row.get('话题名称')) or '（空）'}")
         for name in SCORE_FIELDS[1:]:
             lines.append(f"   {name}：{_cell(row.get(name), _FIELD_LIMITS[name])}")
     return "\n".join(lines)
 
 
-def call_llm(conf: ProviderConf, prompt: str, timeout: float = 180.0) -> str:
+def call_llm(conf: ProviderConf, prompt: str, timeout: float = 600.0) -> str:
     """委托 `extract_llm.post_chat`（单一 HTTP 出口 + 错误码归一，不另起一套）；`timeout` 透传。"""
     return extract_llm.post_chat(conf, prompt, timeout)
 
@@ -96,7 +97,7 @@ def refine_batches(
     batches: list[list[dict[str, Any]]],
     prior_scores: list[tuple[str, str]],
     max_calls: int,
-    timeout: float = 300.0,
+    timeout: float = 600.0,
 ) -> BatchResult:
     """逐批「调用+解析」共享重试预算（第 1 次失败重试 1 次，总 HTTP ≤2/批），返回 `BatchResult`。
 
