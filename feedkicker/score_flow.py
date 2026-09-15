@@ -169,7 +169,8 @@ def main(argv: list[str] | None = None) -> int:
         help="LLM provider（默认取 config score.provider，默认 minimax）",
     )
     parser.add_argument("--limit", type=_non_negative_int, default=0, help="最多处理行数（0=全部）")
-    parser.add_argument("--max-calls", type=_non_negative_int, default=0, help="LLM 调用上限（0=不限）")
+    parser.add_argument("--max-calls", type=_non_negative_int, default=0,
+                        help="LLM 调用上限（省略或 0 取 score.max_calls，配置 0=不限）")
     parser.add_argument("--force", action="store_true", help="忽略既有打分重算（覆盖目标两列）")
     parser.add_argument("--config", default=None, help="指定 config-{env}.yaml 路径")
     parser.add_argument("--db", default=None, help="sqlite 路径（覆盖 TC_DB 与 --env 推导）")

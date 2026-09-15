@@ -215,8 +215,9 @@ published_at   = iso_utc(entry.published_parsed) 若存在，否则 None
 
 ### 6.2 canonicalize(url) / entry_key 规则
 
-- `canonicalize`：URL parse + `#` fragment 去掉 + host 转小写；保留 query（query 差异可能代表不同文章，不粗暴丢弃）。**例外**：path 为空/根**且** fragment 形如 `#/…`（hash 路由站点）时保留 fragment 参与归一，避免 `/#/post/1` 与 `/#/post/2` 误并（#R9-24）；普通 `#section` 仍去 fragment。
+- `canonicalize`：URL parse + `#` fragment 去掉 + host 转小写（IDNA 归一，省略默认端口）；保留 query（query 差异可能代表不同文章，不粗暴丢弃）。**例外**：无 query 且 fragment 以 `/` 开头（hash 路由站点的 `#/…`）即保留 fragment 参与归一，**不限 path 是否为根**——避免 `spa.example/app#/post/1` 与 `#/post/2` 误并（#R10-19；早前 #R9-24 仅覆盖 path 为空/根）；普通 `#section` 仍去 fragment。
 - `entry_key`：优先 `entry.guid`；无 guid 时用 canonicalize(link)；两 source 均无 → 用 title 规范化（strip、lower）作兜底，避免空 key 全部撞一条。
+- 跨源去重另有共享键 `dedup_key`：渲染层（`feishu_card.build_card` 全局去重）、归档侧（`bitable_records` 链接比对）与提炼写入（`extract_write.link_keys`）三处统一复用——在 `canonicalize` 之上再剥 tracking 参数、query 按名排序、路径非根去尾斜杠（#289/#325/#332/#333；tracking 白名单与保留理由见 §25.5）。入库侧 `entry_key` 仍只用 `canonicalize`（保留 query，跨源同链各保留一行）。
 
 ### 6.3 store.download 幂等
 
@@ -642,7 +643,7 @@ python -m feedkicker.sheets_archive --env prod [--init]   # [--init] 设置组�
 
 - 每周五 10:00（可配置）自动将 Tikp 多维表「AI 沙龙换题管理」(`<salon-app-token>` / `<salon-table-id>`) 中新增的「已选题」增量生成双大纲并入 Wiki
 - 仅产 Markdown 大纲（自适应 5–8 页），不产 PPTX；独立进程 `feedkicker.salon_flow`，不混入 `push.py` 编排；配置与调度可验证（`--help` / `launchctl print`）
-- 增量语义（F18，#211；#292 修订）：服务端 filter 只返回「已选题」，本流程只对**首次**进入「已选题」且从未处理（`ppt_synced_at IS NULL`）的题目生成；跳过判据**仅** `is_ppt_synced(rid)`（`ppt_synced_at IS NOT NULL`），`ppt_last_status_{rid}` 仅作诊断、**不参与**跳过判定——第三段 `mark_topic_archived` 写 `last_status` 失败不再导致下轮重建 Wiki。
+- 增量语义（F18，#211；#292 修订；#324 增补）：服务端 filter 只返回「已选题」，本流程只对**首次**进入「已选题」且从未处理（`ppt_synced_at IS NULL`）的题目生成。跳过主判据是 `is_ppt_synced(rid)`（`ppt_synced_at IS NOT NULL`）；另以 `get_ppt_last_status(rid) == "已选题"` 作**部分写失败兜底**——`mark_topic_archived` 三段各试（见 PRD §17），首段 INSERT 占位行失败（此时 `ppt_synced_at` 未落库）时第三段仍写 `last_status=已选题`，下轮据此跳过，防 Wiki docx 重复创建（`salon_flow.run` 的跳过表达式即二者 OR）。`ppt_last_status_{rid}` 不承担正常流程语义（服务端 filter 只返回「已选题」，生产不会出现其它值）；第三段写 `last_status` 失败也不再影响已建成的 Wiki。
 
 ### 19.2 配置（config.yaml 新增段）
 
@@ -766,7 +767,7 @@ wiki:
 
 - **OBS1（P2）卡片连败 SOS**：Wiki 大纲卡片推送从「strip_actions 重试 1 次 + WARNING、`run()` 恒返回 0」对齐 push.py 的成熟模式——失败累计 meta `salon_fail_streak`，连续 3 次且 webhook 非空时发纯文本 SOS（`feishu.send_text`，文案含「连续 N 次」与最近一班 Wiki 已建成的提示）后清零；成功即清零（有旧值记恢复日志）。逻辑收敛在 `salon_notify.send_wiki_card(cfg, conn, wiki_urls, dry_run) -> bool`，`salon_flow.run()` 据返回值返回 0/1（卡片最终失败 rc=1，launchd 记失败，与 push 一致）。
 - **OBS2（P2）dry-run 不得计费**：`--dry-run` 无条件使用 `salon_md.stub_outlines(title)` 占位大纲（5 页工具/原理页，标题含「工具类大纲」标记），不再因配置了真实 MiniMax key 而发起计费调用（原先每题 2 次）。测试以「gen_outline 被调即抛 AssertionError」做真守卫（旧守卫的 AssertionError 被 broad except 吞掉而假通过）。
-- **OBS3（P3）死逻辑移除**：`_unsynced_keys` 的 if/else 两分支都赋 `ppt_synced_is_null=True`，整段删除；同步判定改为单一来源 `store.is_ppt_synced(conn, rid)`（`ppt_synced_at IS NOT NULL`），死代码 `select_pushed_since` / `select_unsynced_topics` 一并删除；跳过判据仅 `is_ppt_synced`，`ppt_last_status` 仅作诊断、不参与跳过判定（#292，见 §19.1）。
+- **OBS3（P3）死逻辑移除**：`_unsynced_keys` 的 if/else 两分支都赋 `ppt_synced_is_null=True`，整段删除；同步判定改为单一来源 `store.is_ppt_synced(conn, rid)`（`ppt_synced_at IS NOT NULL`），死代码 `select_pushed_since` / `select_unsynced_topics` 一并删除；跳过主判据为 `is_ppt_synced`，`ppt_last_status` 不承担正常流程语义，仅在 `mark_topic_archived` 首段 INSERT 失败时以 `== "已选题"` 兜底跳过（防下轮重复建 Wiki docx，#324，见 §19.1；#292）。
 
 ### 21.2 模块拆分（依赖单向无环）
 
@@ -810,7 +811,7 @@ bitable（CLI + facade re-export，§21.2）
 
 - **facade 约定**：被搬走的公共函数在原模块以 `from x import y as y` 显式 re-export（抑制 ruff F401 且表明是刻意重导），全部既有调用点（`store.get_ppt_last_status`、`feishu.build_card`、`mm.PROMPT_TEMPLATES` 等 ~25 处）与测试 monkeypatch 目标零改动。
 - **monkeypatch 约定**：跨模块调用必须走模块属性访问（`feishu.send`、`bitable_lark._run`、`wiki_lark.time.sleep`），不可 `from x import y` 解包后调用，否则 patch 不生效。bitable 拆分（§21.4）后随之迁移的 patch 点：`bitable._run/_parse/_ok/_data/lark_bin/subprocess/os/SHANGHAI` → `bitable_lark.*`；`bitable.find_base_by_title/create_base/get_table_id/create_table/ensure_initialized` → `bitable_schema.*`；`bitable.setup_view/create_date_view/ensure_archive_date_field/set_tenant_readonly` → `bitable_views.*`；`bitable.existing_links/sync_records/purge_all_records/sync_env` → `bitable_records.*`；`bitable._cell_str/_shanghai_date/backfill_empty_archive_dates` → `bitable_backfill.*`。外部调用点（push/wiki/wiki_lark/wiki_home/topic/bitable_purge）同步改为引用 owner 模块。此前的 `wk.time.sleep` → `wiki_lark.time.sleep` 迁移遵循同一约定。
-- 拆分后行数（`wc -l feedkicker/*.py`，2026-09-14 实测）：全部 ≤200；最大 `topic.py` 200；`feishu_card.py` 141 + `feishu_card_body.py` 86（#222 抽取）；`config.py` 138 + `config_models.py` 80（#171 拆分，原先 1 行之差逼近 200 行门）。
+- 拆分后行数：全部 ≤200，以 `wc -l feedkicker/*.py` 实测为准（2026-09-15 实测最大 200：`salon_flow.py`/`purge.py`/`bitable_lark.py` 贴线；不再维护逐模块数字，避免快照漂移；历史拆分背景：`feishu_card_body.py` 见 #222，`config_models.py` 见 #171）。
 - **config 拆分（#171）**：`config_models.py` 承载 `PROJECT_ROOT`/`DEFAULT_DB_PATH`/`VALID_ENVS` 与全部 dataclass（`Config.db_path` 默认值一并迁入，`config` 单向依赖 `config_models`，无环）；`config.py` 以 `from feedkicker.config_models import X as X` 全量 re-export，`db_path_for`/`config_path_for`/`load_config` 仍定义于 `config.py`，故 conftest 对 `config.config_path_for` 与调用方对 `feedkicker.config.load_config` 的 patch 目标不变。
 - **包版本解耦（#228 裁定）**：`pyproject.toml` `version` 是安装包版本，与产品/文档 v0.x 解耦、不随文档同步；产品版本以 PRD 为准。
 
@@ -1032,7 +1033,7 @@ extract:
 ### 25.5 去重
 
 - 写入前 `existing_index` 分页拉目标表 **`话题名称` + `资讯链接`** 两列（同页一次拉取），返回 `(归一话题名集合, 归一链接集合)`；名称按 `topic_key`（NFKC+strip+casefold）、链接按 `link_keys` 归一（`_page_guard` 防死循环；响应兼容 records 与 fields+data 两形态，容器异常 raise 中止写入而非静默空集）。
-- **链接归一 = 去 markdown 包裹 + 拆行 + 去 tracking 参数**（`link_keys`，`existing_index` 与 `write_topics` 共用）：表内 `资讯链接` 真实值常是 **markdown 链接包裹 + 换行拼接** 的单字符串且带 tracking 参数（如 `[<url1?utm_source=rss>\n<url2>](<url1?utm_source=rss>\n<url2>)`），而 LLM 输出的是不含 utm 的裸 URL 列表——旧 `canonicalize(整串)` 把 `[...](...)`+换行+utm 当一个 URL → 永不命中（真跑 `skipped=0` 已证）。故先取 markdown 链接目标（target）URL、按空白（含换行）拆成多个 URL，再对每个 URL `canonicalize` 后剥 tracking 参数（键名小写以 `utm_` 开头或属 `{spm,from,fbclid,gclid,ref,ref_src,source,mc_cid,mc_eid}`），其余 query 按名排序重建；无法解析则原样 canonicalize。
+- **链接归一 = 去 markdown 包裹 + 拆行 + 去 tracking 参数**（`link_keys`，`existing_index` 与 `write_topics` 共用）：表内 `资讯链接` 真实值常是 **markdown 链接包裹 + 换行拼接** 的单字符串且带 tracking 参数（如 `[<url1?utm_source=rss>\n<url2>](<url1?utm_source=rss>\n<url2>)`），而 LLM 输出的是不含 utm 的裸 URL 列表——旧 `canonicalize(整串)` 把 `[...](...)`+换行+utm 当一个 URL → 永不命中（真跑 `skipped=0` 已证）。故先取 markdown 链接目标（target）URL、按空白（含换行）拆成多个 URL，再对每个 URL 走共享键 `dedup_key`（即 `canonicalize` 之上的归一，§6.2）：剥 tracking 参数（键名小写以 `utm_`/`mc_` 为前缀，或精确属 `{fbclid,gclid,igshid,spm}`），**刻意保留** `from`/`ref`/`ref_src`/`source`——这些参数承载内容差异，剥掉会把 `?source=alpha` 与 `?source=beta` 两篇误并（#333）；其余 query 按 (键,值) 排序重建，路径非根时去尾斜杠、`&amp;` 与 `&` 等价（#332）；无法解析则原样 canonicalize。
 - **按 资讯链接 OR 话题名称 双键去重**：命中任一既有键（或本批已出现）→ 跳过；两者皆无才写，重复运行不新增重复行（幂等）。动机：LLM 命名非确定性——同一新闻重跑会产出不同「话题名称」，仅按名去重会漏判并重复落表（真跑已证）；链接键是跨命名的稳定兜底，且 `link_keys` 保证 `#frag`/host 大小写/tracking 参数等形态差异不逃逸。`--update` 刷新既有行本期不做。
 - **去重规划抽为 `plan_writes(topics, provider_label, run_date, existing_names, existing_links)` → `(将写入记录, 将跳过记录)`**：`write_topics` 真写与 dry-run 打印**共用同一规划**，保证清单标注、summary `pending`/`skipped` 与实际写入三者同源一致（F35）。
 - `讨论状态` / `提取工具` 均为单选 select，按 lark-cli select CellValue 协议**一律写单元素数组**：`["未讨论"]` / `[provider_label]`（`base +record-batch-create --help` Tips 明确 select CellValue 恒为数组，`multiple=false` 时也须数组；写字符串会被服务端拒）。取值须为表内已有选项（`讨论状态`：`未讨论`/`已选题`/`不选择`/`待继续评估`；`提取工具`：`MMax`/`DS`），写表外新值被拒 `800030005 Provide an existing option value`（真跑已证）。不再读 `+field-list` 字段元数据判形态（真跑已证伪，PRV-1）。
@@ -1168,7 +1169,7 @@ score:
 ### 26.6 错误与退出码
 
 - **rc 2（配置/参数非法，且不发任何 LLM/写调用）**：config 加载失败 / prompt 文件缺失 / `--provider` 未知或未注册 / 所选 provider 缺 key（配置与 env 均无）/ salon token 占位或缺失 / **目标 provider 对应列缺失**（`MMax打分`/`MMax理由` 或 `DS打分`/`DS理由` 任一不在表内）。
-- **rc 1（未捕获异常，或 `--apply` 全部写入失败，或全部 LLM 批失败）**：`written == 0` 且（`failed_writes > 0` 或 `failed_batches > 0` 或待写非空，R9-27 / #R10-12）。
+- **rc 1（未捕获异常，或 `--apply` 全部写入失败，或 `--apply` 全部 LLM 批失败）**：后两个分支**仅 `--apply`** 触发——`written == 0` 且（`failed_writes > 0` 或 `failed_batches > 0` 或待写非空，R9-27 / #R10-12）；dry-run 全批失败不命中（dry-run `written` 恒 0），仍 rc 0，看统计 `failed_batches`。
 - **rc 0（正常，含部分行/批失败跳过）**：单行解析失败或写入失败只跳过并计数，不阻断其余行。
 - 解析失败单批重试 1 次（调用 + 解析共享同一重试预算，总 HTTP ≤2/批）；`max_calls > 0` 时每次调用前检查，达限停止剩余批并 WARNING。
 
