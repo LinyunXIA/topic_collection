@@ -99,11 +99,11 @@ def test_r10_01_score_schema_echo_fence_before_real() -> None:
 def test_r10_01_extract_refine_retries_real_answer(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(extract_llm, "call_llm", lambda ex, prompt: _topics_json() + '\n示例 {"topics": []}')
 
-    collected, calls, failed, empty = extract_llm.refine_batches(
+    collected, calls, failed, empty, all_dropped = extract_llm.refine_batches(
         ExtractConf(), "T", [[{"title": "t", "url": "https://a.com/1"}]], 0
     )
 
-    assert len(collected) == 1 and calls == 1 and failed == 0 and empty == 0
+    assert len(collected) == 1 and calls == 1 and failed == 0 and empty == 0 and all_dropped == 0
 
 
 def test_r10_01_brace_scan_linear_on_many_unmatched(monkeypatch: pytest.MonkeyPatch) -> None:

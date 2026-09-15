@@ -104,6 +104,8 @@ def refine_batches(
     两次都失败计 `failed`；`max_calls` 达限时当前批（已尝试未解析）计入失败并停止剩余批
     （对齐 `extract_llm.refine_batches` 的 #334 教训）；空 scores 计 `empty`；归一后 dropped
     累计（解析侧 + 缺返回/多余行）；命中行回灌 `prior_scores` 作为下一批横向上文。
+    按批分布违规仅收集进 `violations` 并打 DEBUG（尾批切单易误报），全局结论由 score_flow
+    收尾对全部 `scored` 统一输出（R11-15）。
     `timeout` 透传每次 LLM 调用（`score.timeout_seconds`，大批量需调大）。
     """
     scored: list[dict[str, Any]] = []
@@ -154,7 +156,7 @@ def refine_batches(
         normalized, dist, norm_dropped = score_parse.normalize_results(items, batch, dropped_keys)
         dropped += parsed_dropped + norm_dropped
         if dist.violations:
-            log.warning("第 %d/%d 批分布校验违规：%s", no, len(batches), "；".join(dist.violations))
+            log.debug("第 %d/%d 批分布校验违规：%s", no, len(batches), "；".join(dist.violations))
         violations.extend(dist.violations)
         scored.extend(normalized)
         prior.extend((name_text(n["话题名称"]), _score_text(n["weighted_total"])) for n in normalized)

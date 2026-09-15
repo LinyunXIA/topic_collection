@@ -39,10 +39,10 @@ def download(
         return 0
     try:
         cur = conn.executemany(
-            "INSERT INTO articles"
-            " (feed_id, entry_key, title, url, description, published_at, first_seen, pushed_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, NULL)"
-            " ON CONFLICT (feed_id, entry_key) DO NOTHING",
+            """INSERT INTO articles
+            (feed_id, entry_key, title, url, description, published_at, first_seen, pushed_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, NULL)
+            ON CONFLICT (feed_id, entry_key) DO NOTHING""",
             rows,
         )
         conn.commit()
@@ -63,8 +63,8 @@ def promise_skip_old(
     conn: sqlite3.Connection, feed_id: str, cutoff_iso: str, now_iso: str
 ) -> int:
     cur = conn.execute(
-        "UPDATE articles SET pushed_at = ?"
-        " WHERE feed_id = ? AND published_at IS NOT NULL AND published_at < ? AND pushed_at IS NULL",
+        """UPDATE articles SET pushed_at = ?
+        WHERE feed_id = ? AND published_at IS NOT NULL AND published_at < ? AND pushed_at IS NULL""",
         (now_iso, feed_id, cutoff_iso),
     )
     conn.commit()
@@ -74,9 +74,9 @@ def promise_skip_old(
 def select_pending(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """待推送真实资讯行；排除 salon 占位行（占位行必有 ppt_synced_at，#196），返 first_seen 供 top_n 时效键（#220）。"""
     rows = conn.execute(
-        "SELECT feed_id, entry_key, title, url, description, published_at, first_seen"
-        " FROM articles WHERE pushed_at IS NULL AND ppt_synced_at IS NULL"
-        " ORDER BY feed_id, first_seen, entry_key"
+        """SELECT feed_id, entry_key, title, url, description, published_at, first_seen
+        FROM articles WHERE pushed_at IS NULL AND ppt_synced_at IS NULL
+        ORDER BY feed_id, first_seen, entry_key"""
     ).fetchall()
     keys = ("feed_id", "entry_key", "title", "url", "description", "published_at", "first_seen")
     return [dict(zip(keys, r)) for r in rows]
@@ -92,9 +92,9 @@ def mark_pushed(conn: sqlite3.Connection, items: list[dict[str, Any]], now_iso: 
 
 def bump_fail(conn: sqlite3.Connection, feed_id: str, url: str) -> None:
     conn.execute(
-        "INSERT INTO feeds (feed_id, url, first_run_at, fail_streak)"
-        " VALUES (?, ?, '', 1)"
-        " ON CONFLICT (feed_id) DO UPDATE SET fail_streak = fail_streak + 1, url = excluded.url",
+        """INSERT INTO feeds (feed_id, url, first_run_at, fail_streak)
+        VALUES (?, ?, '', 1)
+        ON CONFLICT (feed_id) DO UPDATE SET fail_streak = fail_streak + 1, url = excluded.url""",
         (feed_id, url),
     )
     conn.commit()
@@ -107,11 +107,11 @@ def clear_fail(conn: sqlite3.Connection, feed_id: str) -> None:
 
 def update_first_run_all(conn: sqlite3.Connection, feeds: list[Feed], now_iso: str) -> None:
     conn.executemany(
-        "INSERT INTO feeds (feed_id, url, first_run_at, fail_streak)"
-        " VALUES (?, ?, ?, 0)"
-        " ON CONFLICT (feed_id) DO UPDATE SET"
-        "   first_run_at = CASE WHEN first_run_at = '' THEN excluded.first_run_at ELSE first_run_at END,"
-        "   url = excluded.url",
+        """INSERT INTO feeds (feed_id, url, first_run_at, fail_streak)
+        VALUES (?, ?, ?, 0)
+        ON CONFLICT (feed_id) DO UPDATE SET
+           first_run_at = CASE WHEN first_run_at = '' THEN excluded.first_run_at ELSE first_run_at END,
+           url = excluded.url""",
         [(f.name, f.url, now_iso) for f in feeds],
     )
     conn.commit()
@@ -120,9 +120,9 @@ def update_first_run_all(conn: sqlite3.Connection, feeds: list[Feed], now_iso: s
 def select_unsynced(conn: sqlite3.Connection) -> list[dict[str, Any]]:
     """待归档真实资讯行，排除 salon 占位行（理由同 select_pending，共用表，#196）。"""
     rows = conn.execute(
-        "SELECT feed_id, entry_key, title, url, description, published_at, pushed_at, first_seen, bitable_synced_at"
-        " FROM articles WHERE bitable_synced_at IS NULL AND ppt_synced_at IS NULL"
-        " ORDER BY first_seen, feed_id"
+        """SELECT feed_id, entry_key, title, url, description, published_at, pushed_at, first_seen, bitable_synced_at
+        FROM articles WHERE bitable_synced_at IS NULL AND ppt_synced_at IS NULL
+        ORDER BY first_seen, feed_id"""
     ).fetchall()
     keys = (
         "feed_id",

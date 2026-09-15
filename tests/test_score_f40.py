@@ -237,6 +237,34 @@ def test_weighted_total_rounds_to_one_decimal() -> None:
     assert total == 3.9
 
 
+@pytest.mark.parametrize(
+    ("values", "expected"),
+    [
+        ((5, 5, 2.5, 0, 0.5, 2.5), 3.3),
+        ((5, 5, 2.5, 5, 4.5, 2.5), 4.3),
+        ((2.5, 2.5, 0, 0, 0, 0), 1.3),
+    ],
+)
+def test_weighted_total_half_up_ties(values: tuple[float, ...], expected: float) -> None:
+    """R11-14：x.25 四舍五入（3.25→3.3/4.25→4.3/1.25→1.3），银行家舍入会得偶数尾。"""
+    scores = dict(zip(_DIMS_4, values, strict=True))
+
+    total, missing = score_parse.weighted_total(scores)
+
+    assert total == expected and missing == []
+
+
+def test_weighted_total_missing_denominator_396_over_92_stays_4_3() -> None:
+    """R11-14 回归：缺失维剔除后 396/92=4.304… 非 tie，改 HALF_UP 后仍为 4.3。"""
+    scores = dict(_DIMS_4)
+    scores["普适痛点强度"] = 5
+    scores["讲解成本"] = "缺失"
+
+    total, missing = score_parse.weighted_total(scores)
+
+    assert total == 4.3 and missing == ["讲解成本"]
+
+
 def test_gate_zero_string_skips_dimensions() -> None:
     items, _ = score_parse.normalize(
         [_result("A", gate="zero", dimensions={}, reason="无内容内核")],
@@ -461,7 +489,8 @@ def test_run_dry_run_listing_and_summary(tmp_path, monkeypatch, capsys) -> None:
     assert summary["mode"] == "dry-run" and summary["scored"] == 2 and summary["failed_writes"] == 0
 
 
-def test_run_distribution_violation_warning(tmp_path, monkeypatch, caplog) -> None:
+def test_run_distribution_violation_dry_run_stdout(tmp_path, monkeypatch, caplog, capsys) -> None:
+    """R11-15：dry-run 全局结论只走 print_dry_run 末行；按批 WARNING 已降 DEBUG，caplog 不再出现。"""
     cfg = _write_cfg(tmp_path)
     _patch_lark(monkeypatch, pages=[_records(1)], field_names=_MM_FIELDS)
     _stub_llm(monkeypatch, lambda prompt: _results(["话题1"], dimensions={k: 5.0 for k in _DIMS_4}))
@@ -469,7 +498,47 @@ def test_run_distribution_violation_warning(tmp_path, monkeypatch, caplog) -> No
     with caplog.at_level(logging.WARNING):
         rc = score_flow.main(_args(cfg, tmp_path))
 
-    assert rc == 0 and "分布校验违规" in caplog.text and "≥4.0" in caplog.text
+    out = capsys.readouterr().out
+    assert rc == 0 and "分布校验 ≥4.0 占比 100% 超过 20%" in out
+    assert "分布校验违规" not in caplog.text
+
+
+def test_run_apply_global_distribution_violation_logged(tmp_path, monkeypatch, caplog) -> None:
+    """R11-15：--apply 收尾对全部 scored 做一次全局校验，违规 WARNING 可见（dry-run 走 stdout 清单）。"""
+    cfg = _write_cfg(tmp_path)
+    _patch_lark(monkeypatch, pages=[_records(1)], field_names=_MM_FIELDS)
+    _stub_llm(monkeypatch, lambda prompt: _results(["话题1"], dimensions={k: 5.0 for k in _DIMS_4}))
+
+    with caplog.at_level(logging.WARNING, logger="feedkicker.score_flow"):
+        rc = score_flow.main(_args(cfg, tmp_path, "--apply"))
+
+    assert rc == 0
+    assert "全局分布校验违规" in caplog.text and "≥4.0" in caplog.text
+
+
+def test_run_apply_global_distribution_compliant_info(tmp_path, monkeypatch, caplog) -> None:
+    """R11-15：全局合规（0% ≥4.0、20% <2.0）只在 INFO 给结论，不出 WARNING。"""
+    import re
+
+    cfg = _write_cfg(tmp_path)
+    _patch_lark(monkeypatch, pages=[_records(10)], field_names=_MM_FIELDS)
+
+    def responder(prompt: str) -> str:
+        names = [m.strip() for m in re.findall(r"^\d+\. 话题名称：(.+)$", prompt, re.MULTILINE)]
+        rows = [
+            _result(n, dimensions={k: (1.0 if i % 5 == 0 else 3.0) for k in _DIMS_4})
+            for i, n in enumerate(names)
+        ]
+        return json.dumps({"scores": rows}, ensure_ascii=False)
+
+    _stub_llm(monkeypatch, responder)
+
+    with caplog.at_level(logging.INFO, logger="feedkicker.score_flow"):
+        rc = score_flow.main(_args(cfg, tmp_path, "--apply"))
+
+    assert rc == 0
+    assert "全局分布校验合规（10 行" in caplog.text
+    assert "全局分布校验违规" not in caplog.text
 
 
 def test_run_prior_context_feeds_next_batch(tmp_path, monkeypatch) -> None:

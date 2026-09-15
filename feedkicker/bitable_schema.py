@@ -122,6 +122,19 @@ def _configured(value: Any) -> bool:
     return bool(value) and "<" not in str(value)
 
 
+def resolved_url(bt: Any) -> str:
+    """卡片「详情」链接的唯一选择口径：真值非占位 url 优先，否则按真实 app_token 现算 base_url。
+
+    占位 url（`.example` 出厂态 `…/base/<dev-app-token>`）按未配置处理：真值判断会让占位永久
+    胜出，ensure_initialized 自动解析回写真 app_token 后按钮仍指向占位 404（R11-10）；
+    app_token 同为占位/空时返回空串，由调用方退化为无按钮，绝不拼出 `…/base/<...>`。
+    """
+    if _configured(bt.url):
+        return str(bt.url)
+    app_token = bt.app_token if _configured(bt.app_token) else ""
+    return base_url(app_token) if app_token else ""
+
+
 def ensure_initialized(bt: Any, app_env: str = "prod") -> dict[str, Any]:
     """解析/创建 Base 与数据表，并把解析结果回写到空配置字段（A1）。
 
@@ -133,7 +146,7 @@ def ensure_initialized(bt: Any, app_env: str = "prod") -> dict[str, Any]:
     title = BASE_TITLES.get(app_env, BASE_TITLE_DEFAULT)
     app_token = bt.app_token if _configured(bt.app_token) else ""
     table_id = bt.table_id if _configured(bt.table_id) else ""
-    url = bt.url or (base_url(app_token) if app_token else "")
+    url = resolved_url(bt)
     if not app_token:
         found = find_base_by_title(title) or create_base(title, app_env)
         app_token = found["app_token"]
@@ -144,6 +157,6 @@ def ensure_initialized(bt: Any, app_env: str = "prod") -> dict[str, Any]:
         bt.app_token = app_token
     if not _configured(bt.table_id):
         bt.table_id = table_id
-    if not bt.url:
+    if not _configured(bt.url):
         bt.url = url
     return {"app_token": app_token, "table_id": table_id, "url": url}

@@ -296,3 +296,26 @@ def test_init_with_placeholder_tokens_rejects_rc2_without_lark(monkeypatch, tmp_
     assert calls == []
     assert not Path(cfg.db_path).exists()
     assert not any("同步完成" in r.getMessage() for r in caplog.records)
+
+
+def test_main_action_exception_caught_rc1(monkeypatch, tmp_path, caplog):
+    """R11-11：动作段业务 RuntimeError 由 main 顶层收口为 rc1+错误日志，不向调用方裸抛 traceback
+    （与 purge.main 同构）；config/dry-run/守卫各 rc2 路径语义不变。"""
+    cfg = make_cfg(tmp_path, enabled=True, app_token="appReal", table_id="tblReal")
+    monkeypatch.setattr("feedkicker.config.load_config", lambda *a, **kw: cfg)
+    monkeypatch.setattr(
+        bitable_schema,
+        "ensure_initialized",
+        lambda bt, env: {"app_token": "appReal", "table_id": "tblReal", "url": "https://x"},
+    )
+    monkeypatch.setattr(
+        bitable_records, "sync_env",
+        lambda *a, **k: (_ for _ in ()).throw(RuntimeError("existing_links 中止")),
+    )
+
+    with caplog.at_level(logging.ERROR, logger="feedkicker.bitable"):
+        rc = bitable.main(["--env", "test"])
+
+    assert rc == 1
+    assert any("未捕获异常" in r.getMessage() for r in caplog.records)
+    assert any(r.exc_info is not None for r in caplog.records)

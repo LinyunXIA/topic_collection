@@ -187,6 +187,14 @@ def test_score_cell_one_decimal_and_missing() -> None:
     assert score_write._cell(_item("A", total=None), "MMax")["MMax打分"] == "缺失"
 
 
+@pytest.mark.parametrize(
+    ("total", "expected"), [(3.25, "3.3"), (4.25, "4.3"), (1.25, "1.3")]
+)
+def test_score_cell_half_up_tie_string(total: float, expected: str) -> None:
+    """R11-14：理由列打分字符串同样四舍五入（3.25→"3.3"），f-string 默认银行家舍入会得 "3.2"。"""
+    assert score_write._cell({"weighted_total": total}, "MMax")["MMax打分"] == expected
+
+
 def test_reason_cell_single_line_flags_and_dims() -> None:
     cell = score_write._cell(_item("A", reason="引用 可使用工具", risk_flag=True), "MMax")
     detail = cell["MMax理由"]

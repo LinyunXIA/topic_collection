@@ -64,8 +64,8 @@ def purge_sqlite(
     dry_run 时 deleted=0 但 archivable 仍为「本可删除」行数，供巡检可见（#278）。
     """
     rows = conn.execute(
-        "SELECT feed_id, entry_key, bitable_synced_at FROM articles"
-        " WHERE pushed_at IS NOT NULL AND pushed_at < ?",
+        """SELECT feed_id, entry_key, bitable_synced_at FROM articles
+        WHERE pushed_at IS NOT NULL AND pushed_at < ?""",
         (cutoff,),
     ).fetchall()
     archivable = [(r[0], r[1]) for r in rows if r[2]]

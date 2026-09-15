@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from feedkicker import bitable_lark
-from feedkicker.score_report import truthy
+from feedkicker.score_report import round_half_up_1, truthy
 
 log = logging.getLogger(__name__)
 
@@ -103,7 +103,7 @@ def _cell(item: dict[str, Any], label: str) -> dict[str, str]:
         f"{_SHORT_DIM[k]}{_MISSING if k in missing else _dim_text(scores.get(k))}" for k in _SHORT_DIM
     )
     total = item.get("weighted_total")
-    score = _MISSING if total is None else f"{float(total):.1f}"
+    score = _MISSING if total is None else f"{round_half_up_1(float(total)):.1f}"
     risk = "true" if truthy(item.get("risk_flag")) else "false"
     source = "true" if truthy(item.get("source_flag")) else "false"
     reason = str(item.get("reason") or "").strip()

@@ -96,17 +96,18 @@ def test_parse_topics_blank_name_plus_good_keeps_good() -> None:
     assert dropped == 1
 
 
-def test_refine_batches_all_blank_names_count_failed(monkeypatch) -> None:
+def test_refine_batches_all_blank_names_count_all_dropped(monkeypatch) -> None:
+    """R11-13：整批元素全非法（1 次 HTTP、未重试）单列 all_dropped，不再混入 failed。"""
     from feedkicker.config_models import ExtractConf
 
     raw = json.dumps({"topics": [_full_topic("  ")]}, ensure_ascii=False)
     monkeypatch.setattr(extract_llm, "call_llm", lambda ex, prompt: raw)
 
-    collected, calls, failed, empty = extract_llm.refine_batches(
+    collected, calls, failed, empty, all_dropped = extract_llm.refine_batches(
         ExtractConf(), "模板", [[{"title": "t", "url": "https://a/1"}]], 0
     )
 
-    assert collected == [] and failed == 1 and empty == 0 and calls == 1
+    assert collected == [] and failed == 0 and empty == 0 and all_dropped == 1 and calls == 1
 
 
 # ── #297 空 fields + 有数据行须 raise，空 data 为合法空表 ──

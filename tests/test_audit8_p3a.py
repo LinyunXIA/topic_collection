@@ -164,11 +164,11 @@ def test_refine_batches_max_calls_counts_failed(monkeypatch) -> None:
         raise RuntimeError("boom")
 
     monkeypatch.setattr(extract_llm, "call_llm", boom)
-    collected, calls, failed, empty = extract_llm.refine_batches(
+    collected, calls, failed, empty, all_dropped = extract_llm.refine_batches(
         ExtractConf(), "t", [[{"title": "a", "url": "u", "description": ""}]], max_calls=1
     )
 
-    assert (collected, calls, failed, empty) == ([], 1, 1, 0)
+    assert (collected, calls, failed, empty, all_dropped) == ([], 1, 1, 0, 0)
 
 
 # ── #335 prompt 体积上界 + MAX_BATCH_SIZE ──

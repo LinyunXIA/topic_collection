@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass, field
+from decimal import ROUND_HALF_UP, Decimal
 from typing import Any
 
 log = logging.getLogger(__name__)
@@ -50,10 +51,17 @@ def dim(scores: dict[str, Any], key: str) -> tuple[float | None, bool]:
     return (val, False) if val is not None else (None, True)
 
 
+def round_half_up_1(value: float) -> float:
+    """四舍五入到 1 位小数（Decimal ROUND_HALF_UP，3.25→3.3）；内置 `round` 是银行家舍入（3.25→3.2），
+    与 DESIGN §26.4「四舍五入」不符（R11-14）。`str(value)` 走最短十进制表示，避免二进制尾噪翻转边界。
+    """
+    return float(Decimal(str(value)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP))
+
+
 def weighted_total(
     scores: dict[str, Any], missing_extra: Any = ()
 ) -> tuple[float | None, list[str]]:
-    """缺失维剔除权重、其余按剩余权重归一后加权 round 到 1 位小数；全维缺失 → `(None, 全维)`；
+    """缺失维剔除权重、其余按剩余权重归一后加权四舍五入到 1 位小数；全维缺失 → `(None, 全维)`；
     `missing_extra` 与「值为 `"缺失"`」两种缺失表达一并归一（PRD §22.6）。"""
     extra = {str(k) for k in missing_extra} if isinstance(missing_extra, (list, tuple, set)) else set()
     present: list[tuple[str, float]] = []
@@ -68,7 +76,7 @@ def weighted_total(
         return None, missing
     total_w = sum(WEIGHTS[k] for k, _ in present)
     acc = sum(WEIGHTS[k] * v for k, v in present)
-    return round(acc / total_w, 1), missing
+    return round_half_up_1(acc / total_w), missing
 
 
 @dataclass

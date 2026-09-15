@@ -72,17 +72,19 @@ def call_llm(cfg: ExtractConf, prompt: str) -> str:
 
 def refine_batches(
     ex: ExtractConf, template: str, batches: list[list[dict[str, Any]]], max_calls: int
-) -> tuple[list[dict[str, Any]], int, int, int]:
-    """逐批 LLM 提炼，返回 (topics, calls, failed, empty)。
+) -> tuple[list[dict[str, Any]], int, int, int, int]:
+    """逐批 LLM 提炼，返回 (topics, calls, failed, empty, all_dropped)。
 
     单批「调用 + 解析」共享同一重试预算：第 1 次尝试失败（调用异常或 JSON/契约解析失败）
     重试 1 次，两次都失败才计 failed（总 HTTP ≤2/批）；模型合法返回空列表计 empty（PRV-2）；
-    单条非法 topic 丢弃并计数（PRV-6）。
+    单条非法 topic 丢弃并计数（PRV-6）；模型合法返回信封但整批 topic 全非法（仅 1 次 HTTP、
+    未触发重试）单列 all_dropped，不混入 failed（后者代表基础设施/解析失败，R11-13）。
     """
     collected: list[dict[str, Any]] = []
     calls = 0
     failed = 0
     empty = 0
+    all_dropped = 0
     for no, batch in enumerate(batches, 1):
         prompt = build_batch_prompt(template, batch)
         parsed: list[dict[str, Any]] | None = None
@@ -119,15 +121,15 @@ def refine_batches(
             log.warning("第 %d/%d 批丢弃 %d 条非法 topic", no, len(batches), dropped)
         if not parsed:
             if dropped:
-                failed += 1
-                log.warning("第 %d/%d 批 %d 条 topic 全部非法，计失败批", no, len(batches), dropped)
+                all_dropped += 1
+                log.warning("第 %d/%d 批 %d 条 topic 全部非法，计全废批（非失败批）", no, len(batches), dropped)
             else:
                 empty += 1
                 log.info("第 %d/%d 批模型合法返回空话题列表", no, len(batches))
             continue
         collected.extend(parsed)
         log.info("第 %d/%d 批提炼 %d 个话题", no, len(batches), len(parsed))
-    return collected, calls, failed, empty
+    return collected, calls, failed, empty, all_dropped
 
 
 def post_chat(conf: ProviderConf, prompt: str, timeout: float = 180.0) -> str:

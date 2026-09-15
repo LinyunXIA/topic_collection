@@ -817,6 +817,125 @@ def test_push_detail_url_none_when_no_token_or_url(monkeypatch):
     conn.close()
 
 
+def test_resolved_url_placeholder_semantics():
+    """R11-10：占位 url 当未配置（真值非占位 url 仍优先），回退真 token 现算，两者皆占位给空串。"""
+    def bt(**kw):
+        return type("BT", (), kw)()
+
+    real = bitable_schema.base_url("appReal")
+    assert bitable_schema.resolved_url(bt(url="https://x.test/base", app_token="appReal")) == "https://x.test/base"
+    assert bitable_schema.resolved_url(
+        bt(url="https://x.feishu.cn/base/<dev-app-token>", app_token="appReal")
+    ) == real
+    assert bitable_schema.resolved_url(bt(url="", app_token="appReal")) == real
+    assert bitable_schema.resolved_url(
+        bt(url="https://x.feishu.cn/base/<dev-app-token>", app_token="<dev-app-token>")
+    ) == ""
+    assert bitable_schema.resolved_url(bt(url="", app_token="")) == ""
+
+
+def test_push_detail_url_ignores_placeholder_after_resolve(monkeypatch):
+    """R11-10：example 起始态（url/token 均占位）经 sync_env 内 ensure_initialized 回写真 token 后，
+    详情按钮必须指向 base_url(真 token)，不得永久指向占位 404。"""
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.bitable.enabled = True
+    cfg.bitable.app_token = "<dev-app-token>"
+    cfg.bitable.table_id = "<dev-table-id>"
+    cfg.bitable.url = "https://x.feishu.cn/base/<dev-app-token>"
+    entries = [_norm("ph item", "https://e.com/ph1")]
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+
+    def fake_ensure(bt, env):
+        bt.app_token = "appResolved"
+        bt.table_id = "tblResolved"
+        return {"app_token": "appResolved", "table_id": "tblResolved",
+                "url": bitable_schema.base_url("appResolved")}
+
+    monkeypatch.setattr(push.bitable_schema, "ensure_initialized", fake_ensure)
+    monkeypatch.setattr(push.bitable_records, "sync_records", lambda *a, **kw: True)
+    sent = []
+    monkeypatch.setattr(feishu, "send", lambda p, *a, **kw: sent.append(p) or True)
+
+    rc = push.run(cfg, conn)
+    assert rc == 0
+    actions = [el for el in sent[0]["card"]["elements"] if el.get("tag") == "action"]
+    url = actions[0]["actions"][0]["url"]
+    assert url == bitable_schema.base_url("appResolved")
+    assert "<" not in url
+    conn.close()
+
+
+def test_empty_pending_catchup_archives_pushed_unsynced_rows(monkeypatch):
+    """R11-12：无 pending 的非 dry-run 班次仍补一次 sync_env（已推行 bitable_synced_at NULL 的补归档），
+    不构造空卡片、不发送、rc0；DESIGN §16.3 失败批次保留待重试。"""
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.bitable.enabled = True
+    cfg.bitable.app_token = "app-x"
+    entries = [_norm("seen", "https://e.com/seen")]
+    store.download(conn, "F", entries, "2026-08-25T00:00:00Z")
+    store.mark_pushed(conn, store.select_pending(conn), "2026-08-25T00:00:00Z")
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    syncs: list[str | None] = []
+    monkeypatch.setattr(
+        push.bitable_records, "sync_env",
+        lambda b, env, c, now_iso=None: syncs.append(now_iso) or 1,
+    )
+    built = []
+    monkeypatch.setattr(push.feishu, "build_card", lambda *a, **kw: built.append(1) or {})
+    monkeypatch.setattr(
+        feishu, "send", lambda *a, **kw: (_ for _ in ()).throw(AssertionError("空 pending 不发送"))
+    )
+
+    assert push.run(cfg, conn) == 0
+    assert len(syncs) == 1 and syncs[0]
+    assert not built
+    assert store.select_pending(conn) == []
+    conn.close()
+
+
+def test_empty_pending_catchup_sync_error_still_rc0(monkeypatch, caplog):
+    """R11-12：补归档失败与主归档块同口径仅 WARNING，班次仍 rc0（下轮继续补）。"""
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.bitable.enabled = True
+    cfg.bitable.app_token = "app-x"
+    entries = [_norm("seen", "https://e.com/seen2")]
+    store.download(conn, "F", entries, "2026-08-25T00:00:00Z")
+    store.mark_pushed(conn, store.select_pending(conn), "2026-08-25T00:00:00Z")
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    monkeypatch.setattr(
+        push.bitable_records, "sync_env",
+        lambda *a, **kw: (_ for _ in ()).throw(RuntimeError("写入失败")),
+    )
+
+    with caplog.at_level(logging.WARNING, logger="feedkicker.push"):
+        rc = push.run(cfg, conn)
+
+    assert rc == 0
+    assert any("补归档" in r.getMessage() for r in caplog.records)
+    conn.close()
+
+
+def test_empty_pending_dry_run_skips_catchup_archive(monkeypatch):
+    """R11-12：dry-run 保持不归档（即使 bitable.enabled 且无 pending）。"""
+    conn = make_conn()
+    cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
+    cfg.bitable.enabled = True
+    entries = [_norm("seen", "https://e.com/seen3")]
+    store.download(conn, "F", entries, "2026-08-25T00:00:00Z")
+    store.mark_pushed(conn, store.select_pending(conn), "2026-08-25T00:00:00Z")
+    monkeypatch.setattr(push, "fetch_feed", lambda u, h: entries)
+    monkeypatch.setattr(
+        push.bitable_records, "sync_env",
+        lambda *a, **kw: (_ for _ in ()).throw(AssertionError("dry-run 不归档")),
+    )
+
+    assert push.run(cfg, conn, dry_run=True) == 0
+    conn.close()
+
+
 def test_run_sos_after_three_failures(monkeypatch):
     conn = make_conn()
     cfg = make_cfg([Feed(name="F", url="https://e.com/rss")])
