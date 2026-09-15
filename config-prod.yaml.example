@@ -67,6 +67,6 @@ extract:
       tool_label: "MMax"
     deepseek:
       api_key: "<deepseek-key via DEEPSEEK_API_KEY env>"
-      model: "deepseek-chat"
+      model: "deepseek-flash"
       base_url: "https://api.deepseek.com/v1"
       tool_label: "DS"

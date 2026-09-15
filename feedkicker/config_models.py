@@ -28,7 +28,7 @@ _KNOWN_SECTION_KEYS = {
     "extract": (
         "enabled", "since_days", "batch_size", "provider", "prompt_file", "max_calls", "providers",
     ),
-    "score": ("enabled", "prompt_file", "batch_size", "provider", "max_calls", "providers"),
+    "score": ("enabled", "prompt_file", "batch_size", "provider", "max_calls", "timeout_seconds", "providers"),
 }
 
 _KNOWN_PROVIDER_KEYS = frozenset(("base_url", "model", "api_key", "tool_label"))

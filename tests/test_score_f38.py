@@ -212,6 +212,37 @@ def test_score_unknown_keys_warn_and_still_load(tmp_path, caplog) -> None:
     assert cfg.score.enabled is False
 
 
+def test_score_all_valid_keys_no_unknown_warning(tmp_path, caplog) -> None:
+    path = tmp_path / "all-valid.yaml"
+    path.write_text(
+        "score:\n"
+        "  enabled: true\n"
+        "  prompt_file: prompts/score.md\n"
+        "  batch_size: 20\n"
+        "  timeout_seconds: 300\n"
+        "  provider: minimax\n"
+        "  max_calls: 0\n"
+        "  providers:\n"
+        "    minimax:\n"
+        "      api_key: \"sk-test\"\n",
+        encoding="utf-8",
+    )
+
+    with caplog.at_level(logging.WARNING):
+        cfg = load_config(path, app_env="test")
+
+    assert "配置未知键：score." not in caplog.text
+    assert cfg.score.timeout_seconds == 300.0 and cfg.score.batch_size == 20
+
+
+def test_score_whitelist_covers_all_scoreconf_fields() -> None:
+    from dataclasses import fields
+
+    from feedkicker.config_models import _KNOWN_SECTION_KEYS, ScoreConf
+
+    assert set(_KNOWN_SECTION_KEYS["score"]) == {f.name for f in fields(ScoreConf)}
+
+
 def test_score_conf_defaults() -> None:
     cfg = load_config(app_env="test")
 

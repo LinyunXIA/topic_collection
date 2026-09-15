@@ -26,7 +26,7 @@ PROVIDERS: dict[str, ProviderConf] = {
     ),
     "deepseek": ProviderConf(
         base_url="https://api.deepseek.com/v1",
-        model="deepseek-chat",
+        model="deepseek-flash",
         tool_label="DS",
     ),
 }
