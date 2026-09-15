@@ -576,3 +576,60 @@ def test_provider_missing_key_rc2_no_http(tmp_path, monkeypatch, caplog) -> None
 
     assert rc == 2 and posts == [] and calls == []
     assert "provider" in caplog.text and "api_key" in caplog.text
+
+
+def test_main_dry_run_injects_existing_topics_into_prompt(tmp_path, monkeypatch) -> None:
+    cfg = _write_cfg(tmp_path)
+    prompts: list[str] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+record-list" in args:
+            return FakeProc(
+                0,
+                '{"data": {"records": [{"record_id": "r1", "fields": '
+                '{"话题名称": "老话题：llm CLI 入门", "资讯链接": "https://old/1"}}]}}',
+            )
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    monkeypatch.setattr(extract_flow.extract_source, "select_source", lambda *a, **k: _items(1))
+    monkeypatch.setattr(
+        extract_flow.extract_llm,
+        "call_llm",
+        lambda ex, prompt: prompts.append(prompt) or _TOPICS_JSON,
+    )
+
+    rc = extract_flow.main(["--dry-run", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
+
+    assert rc == 0
+    assert prompts and "## 已有话题（避免重复）" in prompts[0]
+    assert "老话题：llm CLI 入门" in prompts[0]
+    head, tail = prompts[0].split("## 本批资讯", 1)
+    assert "## 已有话题" in head and "标题0" in tail
+
+
+def test_apply_reads_existing_index_once_before_llm(tmp_path, monkeypatch) -> None:
+    cfg = _write_cfg(tmp_path)
+    events: list[str] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        if "+record-list" in args:
+            events.append("list")
+            return FakeProc(0, '{"data": {"records": []}}')
+        if "+record-batch-create" in args:
+            events.append("create")
+            return FakeProc(0, "{}")
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+    monkeypatch.setattr(extract_flow.extract_source, "select_source", lambda *a, **k: _items(1))
+    monkeypatch.setattr(
+        extract_flow.extract_llm,
+        "call_llm",
+        lambda ex, prompt: events.append("llm") or _TOPICS_JSON,
+    )
+
+    rc = extract_flow.main(["--apply", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
+
+    assert rc == 0
+    assert events == ["list", "llm", "create"]

@@ -24,9 +24,20 @@ def _clip(text: str, limit: int) -> str:
     return text[:limit] + "…" if len(text) > limit else text
 
 
-def build_batch_prompt(template: str, items: list[dict[str, Any]]) -> str:
-    """把本批条目（编号+标题+url+摘要）注入模板尾部；摘要/标题/链接截断控 prompt 体积（#335）。"""
-    lines = [template.rstrip(), "", "## 本批资讯（先整合去重，再按 schema 输出 JSON）"]
+def build_batch_prompt(
+    template: str, items: list[dict[str, Any]], existing: list[str] | None = None
+) -> str:
+    """把「已有话题」清单（可空）与本批条目（编号+标题+url+摘要）注入模板尾部（#392/#335）。
+
+    `existing` 为选题表已有话题原始名（保序去重），提示模型同工具/方法仅版本或角度不同时
+    不重复输出；为空时整段省略。摘要/标题/链接截断控 prompt 体积（#335），清单上限 200 条。
+    """
+    lines = [template.rstrip()]
+    existing_topics = [t for t in ((n or "").strip() for n in (existing or [])) if t][:200]
+    if existing_topics:
+        lines += ["", "## 已有话题（避免重复）", "以下话题已在选题清单中，同工具/方法仅版本或角度不同的不要重复输出："]
+        lines += [f"- {_clip(' '.join(name.split()), 200)}" for name in existing_topics]
+    lines += ["", "## 本批资讯（先整合去重，再按 schema 输出 JSON）"]
     for i, it in enumerate(items, 1):
         title = _clip(" ".join(str(it.get("title") or "").split()), 200)
         url = _clip(str(it.get("url") or "").strip(), 500)

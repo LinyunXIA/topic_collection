@@ -71,14 +71,14 @@ def call_llm(cfg: ExtractConf, prompt: str) -> str:
 
 
 def refine_batches(
-    ex: ExtractConf, template: str, batches: list[list[dict[str, Any]]], max_calls: int
+    ex: ExtractConf, template: str, batches: list[list[dict[str, Any]]], max_calls: int,
+    existing: list[str] | None = None,
 ) -> tuple[list[dict[str, Any]], int, int, int, int]:
-    """逐批 LLM 提炼，返回 (topics, calls, failed, empty, all_dropped)。
+    """逐批 LLM 提炼，返回 (topics, calls, failed, empty, all_dropped)；`existing` 注入「已有话题」段（#392）。
 
-    单批「调用 + 解析」共享同一重试预算：第 1 次尝试失败（调用异常或 JSON/契约解析失败）
-    重试 1 次，两次都失败才计 failed（总 HTTP ≤2/批）；模型合法返回空列表计 empty（PRV-2）；
-    单条非法 topic 丢弃并计数（PRV-6）；模型合法返回信封但整批 topic 全非法（仅 1 次 HTTP、
-    未触发重试）单列 all_dropped，不混入 failed（后者代表基础设施/解析失败，R11-13）。
+    单批「调用 + 解析」共享同一重试预算：第 1 次失败重试 1 次，两次都失败计 failed（总 HTTP
+    ≤2/批）；合法空列表计 empty（PRV-2）；单条非法丢弃计数（PRV-6）；合法信封但整批全非法
+    （仅 1 次 HTTP、未重试）单列 all_dropped，不混入 failed（后者=基础设施/解析失败，R11-13）。
     """
     collected: list[dict[str, Any]] = []
     calls = 0
@@ -86,7 +86,7 @@ def refine_batches(
     empty = 0
     all_dropped = 0
     for no, batch in enumerate(batches, 1):
-        prompt = build_batch_prompt(template, batch)
+        prompt = build_batch_prompt(template, batch, existing)
         parsed: list[dict[str, Any]] | None = None
         dropped = 0
         limit_reached = False

@@ -29,16 +29,20 @@ def link_keys(raw: Any) -> set[str]:
     return keys
 
 
-def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
-    """分页拉目标表已有索引 `(归一话题名集合, 归一链接集合)`；拉取失败/容器异常 raise（不静默空集）。
+def existing_index_full(
+    app_token: str, table_id: str
+) -> tuple[set[str], set[str], list[str]]:
+    """分页拉目标表索引 `(归一话题名集合, 归一链接集合, 原始话题名列表)`；失败/容器异常 raise。
 
-    双键之因：LLM 命名非确定性，仅按名去重会漏判重复落表（真跑已证），并列按 `资讯链接`
-    兜底。响应兼容 records/items 与 fields+data 行式；两者皆非（如 rc0 的 `{}`）→ raise
+    前两项供双键去重（#251）；原始话题名（按归一键去重、保序）供提炼提示词注入
+    「已有话题（避免重复）」清单，拦概念重复（同工具仅版本/角度不同、链接不同，#392）。
+    响应兼容 records/items 与 fields+data 行式；两者皆非（如 rc0 的 `{}`）→ raise
     （不可识别响应不得静默空集，#265）；fields+data 缺「话题名称」列 → raise（PRV-4）；
     翻页走 offset + 页指纹守卫（#245）。
     """
     names: set[str] = set()
     links: set[str] = set()
+    raw_names: list[str] = []
     offset = 0
     prev_fp = ""
     while True:
@@ -75,11 +79,20 @@ def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
             fields = rec.get("fields") or {}
             fields = fields if isinstance(fields, dict) else {}
             for name in _str_list(fields.get("话题名称")):
-                names.add(topic_key(name))
+                key = topic_key(name)
+                if key and key not in names:
+                    raw_names.append(name)
+                names.add(key)
             links |= link_keys(fields.get("资讯链接"))
         if len(records) < bitable_lark._CHUNK:
             break
         offset += bitable_lark._CHUNK
+    return names, links, raw_names
+
+
+def existing_index(app_token: str, table_id: str) -> tuple[set[str], set[str]]:
+    """双键去重索引（归一话题名, 归一链接）；包装 `existing_index_full`，兼容既有调用点。"""
+    names, links, _ = existing_index_full(app_token, table_id)
     return names, links
 
 
@@ -142,15 +155,17 @@ def write_topics(
     topics: list[dict[str, Any]],
     provider_label: str,
     run_date: str,
+    index: tuple[set[str], set[str]] | None = None,
 ) -> tuple[int, int, int]:
     """按双键查重跳过（幂等）后真写；dry-run 由 `extract_flow` 走 `existing_index`+`plan_writes`（#283）。
 
+    `index` 可传入编排层为提示词注入而提前拉取的 `(names, links)`，避免 apply 路径重复分页；
     真写走 +record-batch-create ≤200/批；块失败 WARNING 后继续，返回 `(written, skipped, failed)`
     （failed = picked − written，使 summary 的 written+skipped+failed == topics，#298）。
     """
     if not app_token or not table_id:
         raise RuntimeError("写入选题表需要 app_token 与 table_id（salon 配置段）")
-    existing_names, existing_links = existing_index(app_token, table_id)
+    existing_names, existing_links = index if index is not None else existing_index(app_token, table_id)
     picked, skipped = plan_writes(topics, provider_label, run_date, existing_names, existing_links)
     written = 0
     for i in range(0, len(picked), bitable_lark._CHUNK):

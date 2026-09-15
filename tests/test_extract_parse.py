@@ -257,3 +257,43 @@ def test_strip_reasoning_mixed_nested_tags_keeps_json() -> None:
     raw = '<think>a<thinking>b</thinking>c</think>{"topics": []}'
 
     assert strip_reasoning(raw) == '{"topics": []}'
+
+
+def test_prompt_file_contains_human_score_filter_clauses() -> None:
+    text = _PROMPT_FILE.read_text(encoding="utf-8")
+
+    assert "受众定位过滤（toB / 开发者 / 通用职场）" in text
+    assert "跨行业普适过滤" in text
+    assert "现场可达性过滤" in text
+    assert "「被提及」≠「可提炼」" in text
+    assert "信源可核实过滤" in text
+    assert "正反例（取自人工评审真实判定" in text
+    assert "## 已有话题（避免重复）" in text
+
+
+def test_build_batch_prompt_injects_existing_topics_section() -> None:
+    items = [{"feed_id": "源", "title": "标题", "url": "https://a/1", "description": ""}]
+
+    out = build_batch_prompt("模板正文", items, ["已存在话题 A", " 已存在话题 B "])
+
+    head, tail = out.split("## 本批资讯", 1)
+    assert "## 已有话题（避免重复）" in head
+    assert "- 已存在话题 A" in head and "- 已存在话题 B" in head
+    assert "标题" in tail
+
+
+def test_build_batch_prompt_omits_existing_section_when_empty() -> None:
+    out_none = build_batch_prompt("t", [], None)
+    out_empty = build_batch_prompt("t", [], ["  ", ""])
+
+    assert "## 已有话题" not in out_none
+    assert "## 已有话题" not in out_empty
+    assert "## 本批资讯" in out_none
+
+
+def test_build_batch_prompt_caps_existing_topics_at_200() -> None:
+    out = build_batch_prompt("t", [], [f"话题{i}" for i in range(205)])
+
+    section = out.split("## 本批资讯")[0]
+    assert section.count("\n- ") == 200
+    assert "话题204" not in section
