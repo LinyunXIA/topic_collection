@@ -297,3 +297,14 @@ def test_build_batch_prompt_caps_existing_topics_at_200() -> None:
     section = out.split("## 本批资讯")[0]
     assert section.count("\n- ") == 200
     assert "话题204" not in section
+
+
+def test_prompt_file_contains_exemption_clauses() -> None:
+    text = _PROMPT_FILE.read_text(encoding="utf-8")
+
+    assert "豁免（职场效率 Agent）" in text
+    assert "豁免 A（开源 / 端侧模型本地落地）" in text
+    assert "豁免 B（可动手复现的研究）" in text
+    assert "豁免 C（事件承载的选型 / 成本工程）" in text
+    assert "豁免不适用的情形" in text
+    assert "仅在发布会上「宣布开源" in text
