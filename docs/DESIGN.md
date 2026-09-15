@@ -972,11 +972,13 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 ### 25.1 数据流
 
 ```
-select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(published_at,first_seen) >= cutoff
-  → 按 batch_size 切批                     # cutoff = UTC now − N 天（ISO 秒级，与库内同格式）
-  → call_llm(cfg.extract, prompt)          # provider 分派：minimax / deepseek（OpenAI 兼容）
-  → parse_topics(raw) → merge_topics       # 容错 JSON、缺字段整批弃、同话题链接/来源去重
-  → existing_index(app_token, table_id)    # 按「资讯链接 OR 话题名称」双键去重（幂等）
+select_source(conn, since_days, limit)         # ppt_synced_at IS NULL 且 COALESCE(published_at,first_seen) >= cutoff
+  → existing_index_full(app_token, table_id)  # 一次读：双键去重索引 + 原始话题名清单（#392，先于 LLM）
+  → 按 batch_size 切批                          # cutoff = UTC now − N 天（ISO 秒级，与库内同格式）
+  → call_llm(cfg.extract, prompt)             # provider 分派：minimax / deepseek（OpenAI 兼容）
+                                               # prompt 注入「## 已有话题（避免重复）」段（≤200 条，#392）
+  → parse_topics(raw) → merge_topics          # 容错 JSON、缺字段整批弃、同话题链接/来源去重
+  → plan_writes（双键）                        # 按「资讯链接 OR 话题名称」去重（幂等）；apply 复用预取索引不重复读
   → dry-run 打印完整清单 / --apply: +record-batch-create ≤200/批
 ```
 
@@ -985,9 +987,9 @@ select_source(conn, since_days, limit)    # ppt_synced_at IS NULL 且 COALESCE(p
 | 模块 | 职责 | 关键接口 |
 |---|---|---|
 | `extract_source.py` | sqlite 选源 | `select_source(conn, since_days, limit=None, now=None)` |
-| `extract_parse.py` | 提示词构建与 JSON 解析（自 extract_llm 拆出，#250） | `build_batch_prompt(template, items)`、`parse_topics(raw) -> (list[dict], dropped)`、`merge_topics(topics) -> list[dict]` |
-| `extract_llm.py` | provider 抽象 + 批量提炼编排 | `call_llm(cfg, prompt) -> str`、`refine_batches(ex, template, batches, max_calls) -> (topics, calls, failed, empty)`、`resolve_provider(cfg, name=None)` |
-| `extract_write.py` | 字段映射与写入 | `existing_index(app_token, table_id) -> tuple[set[str], set[str]]`、`build_record(topic, provider_label, run_date, status="未讨论") -> dict`、`write_topics(...) -> tuple[int, int, int]` |
+| `extract_parse.py` | 提示词构建与 JSON 解析（自 extract_llm 拆出，#250） | `build_batch_prompt(template, items, existing=None)`（existing 非空时注入「已有话题」段，≤200 条，#392）、`parse_topics(raw) -> (list[dict], dropped)`、`merge_topics(topics) -> list[dict]` |
+| `extract_llm.py` | provider 抽象 + 批量提炼编排 | `call_llm(cfg, prompt) -> str`、`refine_batches(ex, template, batches, max_calls, existing=None) -> (topics, calls, failed, empty)`、`resolve_provider(cfg, name=None)` |
+| `extract_write.py` | 字段映射与写入 | `existing_index_full(app_token, table_id) -> tuple[set[str], set[str], list[str]]`（第三项=原始话题名，供提示词注入，#392；`existing_index` 为其二元包装）、`build_record(topic, provider_label, run_date, status="未讨论") -> dict`、`write_topics(..., index=None) -> tuple[int, int, int]`（index 复用编排层预取） |
 | `extract_flow.py` | 编排 + CLI | `run(cfg, conn, *, apply, since_days=None, limit=None, batch_size=None, max_calls=None, provider=None) -> int`、`main(argv) -> int` |
 | `extract_report.py` | dry-run 清单与运行统计输出（自 extract_flow 拆出，#252） | `print_dry_run(planned, skipped)`、`print_summary(stats)` |
 
@@ -1025,6 +1027,8 @@ extract:
 ### 25.4 提示词与 JSON 契约
 
 - `prompts/extract.md` 原样收录用户 4 条提示词（五要素 / 过滤营销与无工具纯新闻 / 无法提炼即跳过 / 写前确认），并追加「输出必须为 JSON」的 schema 段与分批输入说明。
+- **人工评分反馈收紧（#392，2026-09-15）**：76 行三方评分（MMax/DS/人工）显示 LLM 提炼行人工 0 分率 73%，拒稿集中在 toC 消费级、行业垂直、现场不可达、纯研究、事件伪装。提示词追加四条硬过滤（受众定位 toB/开发者、跨行业普适、国内现场可达、「被提及 ≠ 可提炼」+ 信源可核实）与真实正反例；依据为 salon 表人工评分行，条款随提示词文件为准。
+- **已有话题注入（#392）**：`existing_index_full` 在 LLM 调用前读取表内话题名称（保序去重、≤200 条），`build_batch_prompt` 注入「## 已有话题（避免重复）」段，拦「同一工具/方法仅版本或角度不同、链接不同」的概念级重复（双键去重只抓同链接/同名，抓不到此类）。预取索引在 apply 写入时复用（`write_topics(index=...)`），全程只读表一次。
 - 解析前剥离推理块：`reasoning.strip_reasoning` 移除成对 `<think|thinking|reasoning>` 块（含嵌套与属性/空白，字符串字面量内标签保留，#331）；仅残留裸开标签时自该处截断，未闭合推理不可能含完整 JSON（#321/#323）。
 - 输出契约：`{"topics":[{"话题名称":"","可使用工具":"","相关AI原理":"","资讯链接":[""],"出处来源":[""]}]}`。
 - `parse_topics`：容忍 ```json 围栏；JSON 非法、顶层非对象、`topics` 非列表 → raise `ValueError`（调用方重试 1 次，两次都失败才计 failed 并 WARNING 跳过，不抛到运行级）；单个 topic 非对象或缺 5 键 → 丢弃该条、`dropped` 计数并 WARNING，不整批弃（PRV-6）；`资讯链接`/`出处来源` 接受 str（归一为单元素列表）或 list。
