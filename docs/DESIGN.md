@@ -42,9 +42,10 @@
 ```
 topic_collection/
 ├── README.md                 # 项目总览与快速上手（入口，§23 F24）
-├── pyproject.toml            # 依赖 + [project.scripts] tc-push/tc-salon/tc-purge/tc-extract
+├── pyproject.toml            # 依赖 + [project.scripts] tc-push/tc-salon/tc-purge/tc-extract/tc-score
 ├── config-{dev,test,prod}.yaml  # 三环境分文件，均 gitignored（见 §4）
 ├── prompts/extract.md        # 资讯→选题提炼提示词（用户原文 + 输出 JSON schema，§25）
+├── prompts/score.md          # 话题自动打分提示词（用户原文 + 「本批话题（含横向上文）」注入说明，§26）
 ├── docs/
 │   ├── PRD.md / DESIGN.md    # 产品权威 / 工程实现权威
 │   ├── CLI.md                # 8 命令命令行详解（§23 F25）
@@ -88,6 +89,12 @@ topic_collection/
 │   ├── extract_write.py      # 选题表字段映射 + 「资讯链接 OR 话题名称」双键去重写入（F31，§25）
 │   ├── extract_flow.py       # tc-extract 编排 + CLI（F32，§25）
 │   ├── extract_report.py     # dry-run 清单与运行统计输出（自 extract_flow 拆出，§25.6/#252）
+│   ├── score_source.py       # 读「沙龙话题清单」全表行 + 组批（≤100）（F38/F39，§26）
+│   ├── score_llm.py          # provider 调用（复用 PROVIDERS/resolve_provider）（F38，§26）
+│   ├── score_parse.py        # 打分契约解析/归一/否决/缺失/分布校验（F40，§26）
+│   ├── score_write.py        # 写列/幂等/统计（F41，§26）
+│   ├── score_report.py       # dry-run 清单与摘要（F40/F41，§26）
+│   ├── score_flow.py         # tc-score 编排 + CLI（F38–F41，§26）
 │   ├── push.py               # push 编排主流程
 │   └── purge.py              # tc-purge 编排：365 天滚动保留（§20）
 └── tests/                    # 全离线，subprocess/httpx 一律 mock（test_push/test_salon_*/test_purge 等）
@@ -1057,3 +1064,138 @@ tc-extract [--apply | --dry-run(默认)] [--since-days N] [--limit N] [--batch-s
 - [x] F35 `refine_batches` 解析失败重试 1 次 + dry-run 清单 `[将写入]`/`[已存在跳过]` 标注（#258）
 - [x] F36 `prompts/extract.md`：`可使用工具` 不得为评测基准/榜单/数据集（#259）
 - [x] F37 `tc-extract --provider {minimax,deepseek}` 单次运行切换 provider（#261）
+
+---
+
+## 26. v0.9 — 话题自动打分（F38–F42）
+
+对「沙龙话题清单」（`cfg.salon`：`app_token=TikpbwV0oaFAnYsoMCxchMRyncr` / `table_id=tblNPcbupKIBzLAx`）**全部行**逐条自动打分：六维各 0–5（0.5 档）→ 加权总分 0–5（1 位小数）→ 写回 `MMax打分`/`MMax理由` 或 `DS打分`/`DS理由`。默认 dry-run 打印清单，`--apply` 才写表；**幂等只补空**。产品约束见 PRD §22。
+
+### 26.1 架构与数据流
+
+```
+score_source.read_rows(app_token, table_id, limit)   # 全表分页读 5 个输入字段（可选过滤 --limit）
+  → score_source.group_batches(rows, MAX_SCORE_BATCH=100)   # 组批，单批恒 ≤100
+  → score_llm.build_prompt(template, batch, prior_scores)   # 注入本批 + 「已打分参考」横向上文
+  → score_llm.call_llm(provider_conf, prompt)               # 复用 extract_llm.PROVIDERS/resolve_provider
+  → score_parse.parse_scores(raw)                           # strip_reasoning → JSON 契约解析
+  → score_parse.normalize(scores)                           # 闸门筛除 / 缺失归一 / 致命否决 / 分布校验
+  → dry-run 打印清单 / --apply: score_write.write_scores(...)  # 只补空（或 --force）写 2 列 + 统计
+```
+
+- 读表走 lark-cli（`base +record-list` 分页，与 `extract_write.existing_index` 同封装），**不调 `ensure_initialized`、不改表结构**。
+- LLM 调用统一 OpenAI 兼容 `POST {base_url}/chat/completions`，取 `choices[0].message.content` 原始文本。
+- 归一后按 PRD §22.7 做**分布校验**（统计 `≥4.0` 占比与 `<2.0` 占比），越界只 WARNING 提示、不阻断。
+
+### 26.2 模块划分（依赖单向，每个文件 ≤200 行）
+
+| 模块 | 职责 | 关键接口 | F |
+|---|---|---|---|
+| `score_source.py` | 读目标表全表行、组批（≤100）、行字段归一 | `read_rows(app_token, table_id, limit=0) -> list[dict]`、`group_batches(rows, size=MAX_SCORE_BATCH) -> list[list[dict]]` | F38/F39 |
+| `score_llm.py` | provider 调用 + 提示词注入（横向上文） | `build_prompt(template, batch, prior_scores) -> str`、`call_llm(provider, prompt) -> str` | F38/F39 |
+| `score_parse.py` | 契约解析、闸门/否决/缺失归一、分布校验 | `parse_scores(raw) -> list[dict]`、`normalize(scores) -> (list[dict], DistCheck)` | F40 |
+| `score_write.py` | 目标列存在性校验、只补空/`--force` 写入、统计 | `ensure_columns(...)`、`plan_writes(scores, existing) -> (write, skip)`、`write_scores(...) -> ScoreStats` | F41 |
+| `score_report.py` | dry-run 清单与运行摘要打印 | `print_dry_run(planned, skipped)`、`print_summary(stats)` | F40/F41 |
+| `score_flow.py` | `tc-score` 编排 + CLI | `run(cfg, *, apply, provider=None, limit=0, max_calls=0, force=False) -> int`、`main(argv) -> int` | F38–F41 |
+
+- provider 注册表**直接复用** `extract_llm.PROVIDERS` 与 `resolve_provider`（含 `_post_chat` 错误码归一、`_resolve_api_key` 缺 key/占位 key 校验），不另起一套；`minimax → MMax打分/MMax理由`、`deepseek → DS打分/DS理由`（列映射常量在本模块，PRD §22.8）。
+- **约束**：`feedkicker/score_*.py` 每个 ≤200 行（`wc -l`），新逻辑进对应子模块，不堆进 `score_flow.py`。
+
+### 26.3 配置（`score:` 段）
+
+```yaml
+score:
+  enabled: true
+  provider: minimax        # minimax | deepseek
+  prompt_file: prompts/score.md
+  max_calls: 0             # 0 = 不限
+```
+
+- dataclass：`ScoreConf{enabled, provider, prompt_file, max_calls}`（`config_models.py`）；provider 的 `base_url`/`model`/`api_key` **复用 `providers` 段**（`ProviderConf`），key 覆盖口径同 `extract`（env `MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`，占位 `<...>` 清空）。
+- `prompt_file` 为仓库根相对路径（`config.PROJECT_ROOT / prompt_file`），默认 `prompts/score.md`；缺失 → rc 2。
+
+### 26.4 提示词与 JSON 契约
+
+- `prompts/score.md` **原样收录**用户提示词（0 分闸门 / 六维与权重 / 致命否决 / 硬标记 / 打分纪律），末尾追加「`## 本批话题（含横向上文）`」注入说明，由代码填充本批每条 `话题名称`/`可使用工具`/`相关AI原理`/`资讯链接`/`出处来源` 与「已打分参考」。
+- 解析前剥离推理块：复用 `reasoning.strip_reasoning`（`<think|thinking|reasoning>`），仅残留裸开标签时截断；若模型走 `reasoning_content` 分支则回退取该字段（与 `minimax_parse` 同口径）。
+- 输出契约（模型返回 JSON）：
+
+```json
+{
+  "scores": [
+    {
+      "话题名称": "示例话题",
+      "gate": "pass",
+      "dimensions": {
+        "普适痛点强度": 4.0, "分层承载力": 3.5, "可演示性": 5.0,
+        "时效与稀缺": 4.0, "内容复用价值": 3.5, "讲解成本": 2.0
+      },
+      "missing": [],
+      "risk_flag": false,
+      "source_flag": false,
+      "reason": "引用 可使用工具/相关AI原理 的具体依据，≤100 字"
+    },
+    {
+      "话题名称": "某公司发布财报",
+      "gate": "zero",
+      "reason": "无内容内核；抢救建议：改造为「财报里企业如何裁 AI 预算」"
+    }
+  ]
+}
+```
+
+- `parse_scores`：容忍 ```json 围栏；JSON 非法、顶层非对象、`scores` 非列表 → raise `ValueError`（调用方重试 1 次，两次都失败该批计 `failed_batches` 并 WARNING 跳过，不抛到运行级）。
+- 单条 `scores` 元素：`gate=zero` 时总分置 0、跳过六维；`gate=pass` 时六维必须是 0–5（含 0.5 档）或 `"缺失"`，越界 / 非数字 / 缺 `reason` 的元素丢弃并 `dropped` 计数。
+- `normalize`：按 PRD §22.6 缺失归一（剔除该维权重、其余归一）、PRD §22.4③ 致命否决（`普适痛点强度=0` 或 `分层承载力=0` → `weighted=0`，**六维明细仍输出**）；加权结果四舍五入到 1 位小数。
+- `risk_flag`/`source_flag` 为独立 bool，序列化进理由（`｜risk=true/source=false` 形态）。
+
+### 26.5 写入格式
+
+- `打分` 列 = 纯数字字符串（1 位小数，如 `3.5`）。
+- `理由` 列 = `理由正文 ｜risk/source 标记 ｜六维明细` 压缩为**单行**；日期可缀在理由末尾，**不新增「打分日期」列**。
+- 写调用用 `base +record-update`（按 `record_id` 定位既有行，只更新目标 2 列），**不 batch-create、不删行、不动其它列**。
+
+### 26.6 错误与退出码
+
+- **rc 2（配置/参数非法，且不发任何 LLM/写调用）**：config 加载失败 / prompt 文件缺失 / `--provider` 未知或未注册 / 所选 provider 缺 key（配置与 env 均无）/ salon token 占位或缺失 / **目标 provider 对应列缺失**（`MMax打分`/`MMax理由` 或 `DS打分`/`DS理由` 任一不在表内）。
+- **rc 1（未捕获异常，或 `--apply` 全部写入失败）**：`failed_writes > 0 且 written == 0`。
+- **rc 0（正常，含部分行/批失败跳过）**：单行解析失败或写入失败只跳过并计数，不阻断其余行。
+- 解析失败单批重试 1 次（调用 + 解析共享同一重试预算，总 HTTP ≤2/批）；`max_calls > 0` 时每次调用前检查，达限停止剩余批并 WARNING。
+
+### 26.7 幂等语义
+
+- 默认**只补空**：读表时取目标 provider 两列既有值，`打分` 列非空（或理由非空）的行**跳过**，只对空行调用 LLM 并写入。
+- `--force`：忽略既有值，对全部命中行重算并覆盖。
+- `plan_writes(scores, existing)` 返回 `(write, skip)`，dry-run 清单、summary `pending`/`skipped` 与实际写入**同源一致**。重复运行 `--apply`（无 `--force`）写入数为 **0**，满足 PRD §22.10 幂等验收。
+
+### 26.8 边界
+
+| 场景 | 行为 |
+|---|---|
+| 空表（0 行） | 不发 LLM、不写，summary 全 0，rc 0 |
+| 目标列缺失 | 在读表后、任何 LLM/写调用前判定，rc 2 |
+| 超长字段（`资讯链接`/`相关AI原理` 等） | 输入按字符上限截断后再入提示词；模型 `reason` 超 100 字按上限截断并在六维明细处保留原值 |
+| 批上限 | 组批恒 ≤ `MAX_SCORE_BATCH=100`；配置/参数越界 rc 2，不静默放大 |
+| 模型返回缺行 / 多行 | 按 `话题名称` 与批内行对齐；缺返回的行计 `dropped`，多出的行忽略并 WARNING |
+| 已填行混入 | 默认跳过；`--force` 才重算 |
+
+### 26.9 测试策略
+
+- 全离线：`tests/test_score_*.py` 一律 mock `lark-cli` subprocess 与 `httpx`，不打真网、不写真表（延续 `test_extract_*` 形态）。
+- 覆盖点：读表/组批（含 100 行边界、`--limit`）、提示词注入横向上文、契约解析（闸门/缺失/否决/非法 JSON 重试）、幂等只补空与 `--force`、列缺失 rc2、单行失败跳过计数、全失败 rc1、分布校验 WARNING、绝不触碰其它列（断言写入 payload 仅含 2 列）。
+
+### 26.10 各功能设计
+
+- **F38 `tc-score` CLI 骨架 + `score:` 配置段 + 列缺失 rc2 + 退出码**：`score_flow.main`（argparse：`--apply/--dry-run` 默认 / `--provider` / `--limit` / `--max-calls` / `--force` / `--env/--config/--db`）；`ScoreConf` 落 `config_models.py`；读表后先 `ensure_columns` 校验目标列，缺列 rc 2；退出码语义见 26.6。
+- **F39 `prompts/score.md` + 组批（≤100）+ 横向上文注入**：提示词文件原样收录 + 注入段说明；`group_batches` 恒 ≤100；`build_prompt` 在批内追加「已打分参考（话题名, 分数）」维持全局分布（PRD §22.7）。
+- **F40 契约解析 + 重试与计数**：`score_parse`（闸门 / 六维 / 否决 / 缺失归一 / 分布校验）+ `score_llm` 单批重试 1 次、`failed_batches`/`dropped`/`empty` 计数；`score_report.print_dry_run`/`print_summary`。
+- **F41 写入与幂等**：`score_write.plan_writes`（只补空 / `--force`）+ `write_scores`（`base +record-update`，MMax/DS 列映射，`failed_writes` 统计，**绝不触碰其它列**）。
+- **F42 文档 + 全离线测试**：`docs/CLI.md` 补 `tc-score` 条目、`docs/OPS.md` 补 `score:` 配置与凭据、`AGENTS.md` 命令速查补一行、DESIGN §3 模块树与 §26、`tests/test_score_*.py`。
+
+### 26.11 清单
+
+- [ ] F38 `score_flow.py` + `score:` 配置段 + 目标列缺失 rc2 + 退出码（0/1/2）
+- [ ] F39 `prompts/score.md`（原样提示词 + 注入说明）+ 组批 ≤100 + 横向上文注入
+- [ ] F40 `score_parse.py` 契约解析（闸门/六维/否决/缺失归一/分布校验）+ 重试与计数
+- [ ] F41 `score_write.py` 写入与幂等（MMax/DS 列映射、只补空/`--force`、统计、绝不触碰其它列）
+- [ ] F42 文档（CLI.md/OPS.md/AGENTS.md/DESIGN §3/§26）+ 全离线测试
