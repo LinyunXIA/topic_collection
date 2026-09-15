@@ -1097,7 +1097,7 @@ score_source.read_rows(app_token, table_id, limit)   # 全表分页读 5 个输�
 | `score_llm.py` | provider 调用 + 提示词注入（横向上文） | `build_prompt(template, batch, prior_scores) -> str`、`call_llm(provider, prompt) -> str` | F38/F39 |
 | `score_parse.py` | 契约解析、闸门/否决/缺失归一、分布校验 | `parse_scores(raw) -> list[dict]`、`normalize(scores) -> (list[dict], DistCheck)` | F40 |
 | `score_write.py` | 目标列存在性校验、只补空/`--force` 写入、统计 | `ensure_columns(...)`、`plan_writes(scores, existing) -> (write, skip)`、`write_scores(...) -> ScoreStats` | F41 |
-| `score_report.py` | dry-run 清单与运行摘要打印 | `print_dry_run(planned, skipped)`、`print_summary(stats)` | F40/F41 |
+| `score_report.py` | dry-run 清单、运行摘要与分布校验（`DistCheck`） | `print_dry_run(planned, skipped)`、`print_summary(stats)`、`check_distribution(items)` | F40/F41 |
 | `score_flow.py` | `tc-score` 编排 + CLI | `run(cfg, *, apply, provider=None, limit=0, max_calls=0, force=False) -> int`、`main(argv) -> int` | F38–F41 |
 
 - provider 注册表**直接复用** `extract_llm.PROVIDERS` 与 `resolve_provider`（含 `_post_chat` 错误码归一、`_resolve_api_key` 缺 key/占位 key 校验），不另起一套；`minimax → MMax打分/MMax理由`、`deepseek → DS打分/DS理由`（列映射常量在本模块，PRD §22.8）。
@@ -1110,11 +1110,14 @@ score:
   enabled: true
   provider: minimax        # minimax | deepseek
   prompt_file: prompts/score.md
+  batch_size: 20           # 默认 20；上限 MAX_SCORE_BATCH=100，越界 rc 2
   max_calls: 0             # 0 = 不限
+  timeout_seconds: 300     # 单次 LLM 读超时（须 > 0，越界 rc 2）
 ```
 
-- dataclass：`ScoreConf{enabled, provider, prompt_file, max_calls}`（`config_models.py`）；provider 的 `base_url`/`model`/`api_key` **复用 `providers` 段**（`ProviderConf`），key 覆盖口径同 `extract`（env `MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`，占位 `<...>` 清空）。
+- dataclass：`ScoreConf{enabled, prompt_file, batch_size, provider, max_calls, timeout_seconds, providers}`（`config_models.py`）；provider 的 `base_url`/`model`/`api_key` **复用 `providers` 段**（`ProviderConf`），key 覆盖口径同 `extract`（env `MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`，占位 `<...>` 清空）。
 - `prompt_file` 为仓库根相对路径（`config.PROJECT_ROOT / prompt_file`），默认 `prompts/score.md`；缺失 → rc 2。
+- `batch_size` 默认 **20**（上限 `MAX_SCORE_BATCH=100`）：单批越小越不易读超时，可用 `timeout_seconds`（默认 300）进一步放宽。
 
 ### 26.4 提示词与 JSON 契约
 
@@ -1147,7 +1150,7 @@ score:
 ```
 
 - `parse_scores`：容忍 ```json 围栏；JSON 非法、顶层非对象、`scores` 非列表 → raise `ValueError`（调用方重试 1 次，两次都失败该批计 `failed_batches` 并 WARNING 跳过，不抛到运行级）。
-- 单条 `scores` 元素：`gate=zero` 时总分置 0、跳过六维；`gate=pass` 时六维必须是 0–5（含 0.5 档）或 `"缺失"`，越界 / 非数字 / 缺 `reason` 的元素丢弃并 `dropped` 计数。
+- 单条 `scores` 元素：`gate=zero` 时总分置 0、跳过六维（仅要求 `reason` 非空）；`gate=pass` 时六维必须是 0–5（含 0.5 档）或 `"缺失"`，越界 / 非数字（含 bool）/ 非法字符串 / 缺 `reason`（或全空白）的元素**丢弃该条并 `dropped` 计数 + WARNING**，不整批弃。`reason` 超 100 字 → **截断到 100 字 + `…` 并 WARNING（不丢弃该元素）**，六维明细处保留原值。
 - `normalize`：按 PRD §22.6 缺失归一（剔除该维权重、其余归一）、PRD §22.4③ 致命否决（`普适痛点强度=0` 或 `分层承载力=0` → `weighted=0`，**六维明细仍输出**）；加权结果四舍五入到 1 位小数。
 - `risk_flag`/`source_flag` 为独立 bool，序列化进理由（`｜risk=true/source=false` 形态）。
 
@@ -1155,7 +1158,7 @@ score:
 
 - `打分` 列 = 纯数字字符串（1 位小数，如 `3.5`）。
 - `理由` 列 = `理由正文 ｜risk/source 标记 ｜六维明细` 压缩为**单行**；日期可缀在理由末尾，**不新增「打分日期」列**。
-- 写调用用 `base +record-update`（按 `record_id` 定位既有行，只更新目标 2 列），**不 batch-create、不删行、不动其它列**。
+- 写调用用 `base +record-batch-update`（`--json` 体 = `{"update_records": {record_id: {列: 值}}}`，≤100 条/批，按 `record_id` 定位既有行，只更新目标 2 列）；`+record-batch-update` 不可用时回退逐条 `{"record_id": …, "fields": {列: 值}}`。**不 `batch-create`、不删行、不动其它列**。
 
 ### 26.6 错误与退出码
 
@@ -1175,9 +1178,10 @@ score:
 | 场景 | 行为 |
 |---|---|
 | 空表（0 行） | 不发 LLM、不写，summary 全 0，rc 0 |
-| 目标列缺失 | 在读表后、任何 LLM/写调用前判定，rc 2 |
+| 目标列缺失 | 在读表前（先 `+field-list`）、任何 LLM/写调用前判定，rc 2（零表数据读取） |
 | 超长字段（`资讯链接`/`相关AI原理` 等） | 输入按字符上限截断后再入提示词；模型 `reason` 超 100 字按上限截断并在六维明细处保留原值 |
-| 批上限 | 组批恒 ≤ `MAX_SCORE_BATCH=100`；配置/参数越界 rc 2，不静默放大 |
+| 批上限 | 组批恒 ≤ `MAX_SCORE_BATCH=100`；`score.batch_size` 默认 **20**（上限 100）；配置/参数越界 rc 2，不静默放大 |
+| 单批超时 | 单批条数越大输出越长、越易读超时：默认批 20 + `score.timeout_seconds=300`（实测 85 条/批约 1.7 万 token，180s 会读超时）；超时按调用异常重试 1 次后计 `failed_batches` |
 | 模型返回缺行 / 多行 | 按 `话题名称` 与批内行对齐；缺返回的行计 `dropped`，多出的行忽略并 WARNING |
 | 已填行混入 | 默认跳过（判据：`打分` 列非空）；`--force` 才重算 |
 
@@ -1191,7 +1195,7 @@ score:
 - **F38 `tc-score` CLI 骨架 + `score:` 配置段 + 列缺失 rc2 + 退出码**：`score_flow.main`（argparse：`--apply/--dry-run` 默认 / `--provider` / `--limit` / `--max-calls` / `--force` / `--env/--config/--db`）；`ScoreConf` 落 `config_models.py`；读表后先 `ensure_columns` 校验目标列，缺列 rc 2；退出码语义见 26.6。
 - **F39 `prompts/score.md` + 组批（≤100）+ 横向上文注入**：提示词文件原样收录 + 注入段说明；`group_batches` 恒 ≤100；`build_prompt` 在批内追加「已打分参考（话题名, 分数）」维持全局分布（PRD §22.7）。
 - **F40 契约解析 + 重试与计数**：`score_parse`（闸门 / 六维 / 否决 / 缺失归一 / 分布校验）+ `score_llm` 单批重试 1 次、`failed_batches`/`dropped`/`empty` 计数；`score_report.print_dry_run`/`print_summary`。
-- **F41 写入与幂等**：`score_write.plan_writes`（只补空 / `--force`）+ `write_scores`（`base +record-update`，MMax/DS 列映射，`failed_writes` 统计，**绝不触碰其它列**）。
+- **F41 写入与幂等**：`score_write.plan_writes`（只补空 / `--force`）+ `write_scores`（`base +record-batch-update`，MMax/DS 列映射，`failed_writes` 统计，**绝不触碰其它列**）。
 - **F42 文档 + 全离线测试**：`docs/CLI.md` 补 `tc-score` 条目、`docs/OPS.md` 补 `score:` 配置与凭据、`AGENTS.md` 命令速查补一行、DESIGN §3 模块树与 §26、`tests/test_score_*.py`。
 
 ### 26.11 清单

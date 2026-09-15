@@ -109,7 +109,7 @@ def _stub_lark(
 def _stub_llm_echo(monkeypatch: pytest.MonkeyPatch) -> None:
     import re
 
-    def fake(conf, prompt):
+    def fake(conf, prompt, timeout=180.0):
         names = [n.strip() for n in re.findall(r"^\d+\. 话题名称：(.+)$", prompt, re.MULTILINE)]
         results = [
             {
@@ -229,6 +229,20 @@ def test_write_scores_payload_never_touches_other_columns(monkeypatch) -> None:
     assert set(payloads[0]["recA"]) == {"MMax打分", "MMax理由"}
 
 
+def test_batch_write_argv_and_body_match_cli_help(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    payloads: list[dict] = []
+    _stub_lark(monkeypatch, field_names=_MM_FIELDS, calls=calls, payloads=payloads)
+
+    score_write.write_scores(score_write.WriteConf("appTest", "tblTest", "minimax"), [_item("A")], dry_run=False)
+
+    argv = next(c for c in calls if "+record-batch-update" in c)
+    assert "--base-token" in argv and "--table-id" in argv and "--json" in argv
+    assert "--record-id" not in argv
+    assert set(payloads[0]) == {"recA"}
+    assert set(payloads[0]["recA"]) == {"MMax打分", "MMax理由"}
+
+
 def test_write_scores_dry_run_zero_calls(monkeypatch) -> None:
     calls: list[list[str]] = []
     _stub_lark(monkeypatch, field_names=_MM_FIELDS, calls=calls)
@@ -248,16 +262,19 @@ def test_write_scores_failure_increments_failed_writes(monkeypatch) -> None:
     assert stats.written == 0 and stats.failed_writes == 2
 
 
-def test_write_scores_single_fallback_without_batch_verb(monkeypatch) -> None:
+def test_write_scores_single_fallback_body_matches_repo_convention(monkeypatch) -> None:
     calls: list[list[str]] = []
-    _stub_lark(monkeypatch, field_names=_MM_FIELDS, batch_verb="+record-update", calls=calls)
+    payloads: list[dict] = []
+    _stub_lark(monkeypatch, field_names=_MM_FIELDS, batch_verb="+record-update", calls=calls, payloads=payloads)
 
     stats = score_write.write_scores(
         score_write.WriteConf("appTest", "tblTest", "minimax"), [_item("A"), _item("B")], dry_run=False
     )
 
     assert stats.written == 2
-    assert len([c for c in calls if "+record-update" in c]) == 2
+    singles = [c for c in calls if "+record-update" in c]
+    assert len(singles) == 2 and all("--record-id" not in c for c in singles)
+    assert payloads[0]["record_id"] == "recA" and set(payloads[0]["fields"]) == {"MMax打分", "MMax理由"}
 
 
 def test_write_scores_no_verb_raises(monkeypatch) -> None:
@@ -349,7 +366,7 @@ def test_run_existing_scores_skipped_without_llm(tmp_path, monkeypatch, capsys) 
     _stub_lark(monkeypatch, pages=[_records(2, score="3.5")], field_names=_MM_FIELDS)
     prompts: list[str] = []
 
-    def fake(conf, prompt):
+    def fake(conf, prompt, timeout=180.0):
         prompts.append(prompt)
         return '{"scores": []}'
 
@@ -436,3 +453,28 @@ def test_stats_dataclass_fields() -> None:
     assert stats.rows == 0 and stats.scored == 0 and stats.skipped == 0
     assert stats.written == 0 and stats.failed_writes == 0
     assert stats.failed_batches == 0 and stats.dropped == 0 and stats.empty_batches == 0
+
+
+def test_run_dropped_item_not_in_write_plan(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    payloads: list[dict] = []
+    _stub_lark(monkeypatch, pages=[_records(2)], field_names=_MM_FIELDS, payloads=payloads)
+
+    def fake(conf, prompt, timeout=180.0):
+        return json.dumps(
+            {
+                "scores": [
+                    {"话题名称": "话题1", "gate": "pass", "dimensions": dict(_DIMS), "reason": "依据"},
+                    {"话题名称": "话题2", "gate": "pass", "dimensions": {**_DIMS, "可演示性": 9}, "reason": "依据"},
+                ]
+            },
+            ensure_ascii=False,
+        )
+
+    monkeypatch.setattr(score_llm, "call_llm", fake)
+
+    rc = score_flow.main(_args(cfg, tmp_path, "--apply"))
+
+    summary = _summary(capsys.readouterr().out)
+    assert rc == 0 and summary["written"] == 1 and summary["dropped"] >= 1
+    assert set(payloads[0]) == {"rec1"}

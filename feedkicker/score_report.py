@@ -1,16 +1,41 @@
-"""F40 dry-run 清单与运行摘要打印（自 score_flow 拆出，DESIGN §26.2/§26.6）。"""
+"""F40 dry-run 清单、分布校验与运行摘要打印（自 score_flow 拆出，DESIGN §26.2/§26.6）。"""
 
 from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass, field
 from typing import Any
-
-from feedkicker.score_parse import DistCheck, check_distribution
 
 log = logging.getLogger(__name__)
 
 _REASON_CLIP = 60
+_GE4_MAX = 0.20
+_LT2_MIN = 0.15
+
+
+@dataclass
+class DistCheck:
+    total: int
+    ge4_ratio: float
+    lt2_ratio: float
+    violations: list[str] = field(default_factory=list)
+
+
+def check_distribution(items: list[dict[str, Any]]) -> DistCheck:
+    """按 PRD §22.7 校验 `≥4.0 ≤20%` 与 `<2.0 ≥15%`；仅收集 violation，不自动调分。"""
+    scored = [i for i in items if i.get("weighted_total") is not None]
+    if not scored:
+        return DistCheck(0, 0.0, 0.0, [])
+    total = len(scored)
+    ge4 = sum(1 for i in scored if i["weighted_total"] >= 4.0) / total
+    lt2 = sum(1 for i in scored if i["weighted_total"] < 2.0) / total
+    violations: list[str] = []
+    if ge4 > _GE4_MAX:
+        violations.append(f"≥4.0 占比 {ge4:.0%} 超过 20%")
+    if lt2 < _LT2_MIN:
+        violations.append(f"<2.0 占比 {lt2:.0%} 少于 15%")
+    return DistCheck(total=total, ge4_ratio=ge4, lt2_ratio=lt2, violations=violations)
 
 
 def _display(total: Any) -> str:

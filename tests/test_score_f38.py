@@ -19,7 +19,7 @@ _DS_FIELDS = ["话题名称", "可使用工具", "相关AI原理", "资讯链接
 def _stub_llm_echo(monkeypatch: pytest.MonkeyPatch) -> None:
     from feedkicker import score_llm
 
-    def fake(conf, prompt):
+    def fake(conf, prompt, timeout=180.0):
         names = re.findall(r"^\d+\. 话题名称：(.+)$", prompt, re.MULTILINE)
         dims = {
             "普适痛点强度": 4.0, "分层承载力": 4.0, "可演示性": 4.0,
@@ -162,12 +162,16 @@ def test_apply_writes_two_columns(tmp_path, monkeypatch) -> None:
 )
 def test_missing_target_column_rc2(tmp_path, monkeypatch, caplog, provider, field_names) -> None:
     cfg = _write_cfg(tmp_path, provider=provider)
-    _patch_lark(monkeypatch, pages=[_records(2)], field_names=field_names)
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, pages=[_records(2)], field_names=field_names, calls=calls)
 
     with caplog.at_level(logging.ERROR):
         rc = score_flow.main(_args(cfg, tmp_path, "--dry-run"))
 
     assert rc == 2 and "目标列缺失" in caplog.text
+    assert any("+field-list" in c for c in calls)
+    assert not any("+record-list" in c for c in calls)
+    assert not any("+record-batch-update" in c for c in calls)
 
 
 def test_columns_present_rc0_after_read(tmp_path, monkeypatch) -> None:
@@ -213,9 +217,10 @@ def test_score_conf_defaults() -> None:
 
     assert cfg.score.enabled is False
     assert cfg.score.prompt_file == "prompts/score.md"
-    assert cfg.score.batch_size == 100
+    assert cfg.score.batch_size == 20
     assert cfg.score.provider == "minimax"
     assert cfg.score.max_calls == 0
+    assert cfg.score.timeout_seconds == 300.0
     assert cfg.score.providers == {}
 
 

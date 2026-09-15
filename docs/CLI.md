@@ -443,7 +443,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 | test | `config-test.yaml` / `data/tc-test.sqlite3` | 同上 |
 | prod | `config-prod.yaml` / `data/tc-prod.sqlite3` | 真实 prod salon 话题清单 |
 
-provider key：`score.providers.<name>.api_key`，为空或占位时按 provider 取 env（`MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`）；占位值（`<` 开头）清空。未知 provider 或所选 provider 缺 key → rc 2 且**不发起任何 lark/LLM 调用**。提示词文件默认 `prompts/score.md`（仓库根相对）；目标 provider 对应两列任一不在表内 → rc 2（**不自动建列**）。
+provider key：`score.providers.<name>.api_key`，为空或占位时按 provider 取 env（`MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`）；占位值（`<` 开头）清空。未知 provider 或所选 provider 缺 key → rc 2 且**不发起任何 lark/LLM 调用**。提示词文件默认 `prompts/score.md`（仓库根相对）；目标 provider 对应两列任一不在表内 → rc 2（先 `+field-list` 校验，**零表数据读取、不自动建列**）。
 
 ### 示例
 
@@ -524,6 +524,7 @@ tc-score dry-run 计划：总行数=85 批数=1 待打分=85 跳过=0
 - **幂等只补空**：判据**仅看 `打分` 列非空**；`理由` 有值但 `打分` 空视为未完成，重算并补齐两列（自愈部分写入失败）。重复 `--apply`（无 `--force`）写入数为 0（PRD §22.10）。
 - **列映射**：`--provider minimax` → `MMax打分`/`MMax理由`；`--provider deepseek` → `DS打分`/`DS理由`；两套列互不复用。`打分` 列写**纯数字字符串**（1 位小数，如 `3.5`；全维缺失写 `缺失`）；`理由` 列单行，含 `｜ risk=… ｜ source=… ｜ 六维：…`。
 - **绝不触碰其它列**：每批 payload **只含目标 2 个键**（`+record-batch-update`），不 `batch-create`、不删行、不动 `飞书AI打分`/`人工打分` 等其它列；不新增「打分日期」列。
+- **批大小与超时**（配置项，无 CLI flag）：`score.batch_size` 默认 **20**（上限 `MAX_SCORE_BATCH=100`），`score.timeout_seconds` 默认 **300**；单批越小越不易读超时（实测 85 条/批约 1.7 万 token，180s 会读超时），超时按调用异常重试 1 次后计 `failed_batches`。
 - 单批 LLM 调用失败（超时/429/529/业务可重试码或契约解析失败）重试 1 次（总 HTTP ≤2/批）后计 `failed_batches` 并跳过该批，不阻断其余批；模型合法返回空列表计 `empty_batches`。
 - 分布校验：按 PRD §22.7 校验「`≥4.0` ≤20%」「`<2.0` ≥15%」，违反**仅 WARNING**，不自动调分。
 - 不抓 `资讯链接` 指向的网页正文；理由必须引用表内字段。绝不调 `ensure_initialized`，不改表结构。

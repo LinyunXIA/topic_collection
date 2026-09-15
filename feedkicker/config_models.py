@@ -174,9 +174,10 @@ class ExtractConf:
 class ScoreConf:
     enabled: bool = False
     prompt_file: str = "prompts/score.md"
-    batch_size: int = 100
+    batch_size: int = 20
     provider: str = "minimax"
     max_calls: int = 0
+    timeout_seconds: float = 300.0
     providers: dict[str, ProviderConf] = field(default_factory=dict)
 
 

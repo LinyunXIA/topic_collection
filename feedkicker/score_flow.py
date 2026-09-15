@@ -95,10 +95,10 @@ def run(
         log.error("provider 配置错误: %s", e)
         return 2
     app_token, table_id = cfg.salon.app_token, cfg.salon.table_id
-    projection = (*score_source.SCORE_FIELDS, *PROVIDER_COLUMNS[provider])
-    rows = score_source.read_rows(app_token, table_id, limit, projection)
     if ensure_columns(app_token, table_id, provider) != 0:
         return 2
+    projection = (*score_source.SCORE_FIELDS, *PROVIDER_COLUMNS[provider])
+    rows = score_source.read_rows(app_token, table_id, limit, projection)
     pending, skipped = score_source.plan_pending(rows, provider, force)
     batches = score_source.group_batches(pending, cfg.score.batch_size)
     sizes = [len(b) for b in batches]
@@ -113,7 +113,9 @@ def run(
         for row in skipped
         if row.get("打分") is not None and str(row.get("打分")).strip()
     ]
-    result = score_llm.refine_batches(provider_conf, template, batches, prior_scores, max_calls)
+    result = score_llm.refine_batches(
+        provider_conf, template, batches, prior_scores, max_calls, cfg.score.timeout_seconds
+    )
     to_write, skipped_plan = score_write.plan_writes(result.scored, force=force)
     if not apply:
         score_report.print_dry_run(to_write, skipped, score_parse.check_distribution(result.scored))

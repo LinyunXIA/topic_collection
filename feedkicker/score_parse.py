@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field
 from typing import Any
 
 from feedkicker.extract_parse import _load_json_obj, topic_key
+from feedkicker.score_report import DistCheck as DistCheck
+from feedkicker.score_report import check_distribution as check_distribution
 
 log = logging.getLogger(__name__)
 
@@ -16,24 +17,15 @@ _WEIGHTS: dict[str, int] = {
 }
 _MISSING = "缺失"
 _REASON_LIMIT = 100
-_GE4_MAX = 0.20
-_LT2_MIN = 0.15
-
-
-@dataclass
-class DistCheck:
-    total: int
-    ge4_ratio: float
-    lt2_ratio: float
-    violations: list[str] = field(default_factory=list)
 
 
 def parse_results(raw: str) -> tuple[list[dict[str, Any]], int]:
     """解析 LLM 原始文本 → `(scores, dropped)`，**权威口径 `scores` 数组 / `dimensions` 六维 /
     `gate: "pass"|"zero"`（DESIGN §26.4）**；兼容回退 `results` 主键与 `scores` 维度键。
 
-    先经 `_load_json_obj` 剥离 thinking 推理块并容忍 JSON 围栏/前后说明；非法 JSON / 顶层非对象 /
-    权威键非列表 → raise ValueError（调用方重试后计失败批）；单条非对象/缺名/空名丢弃计数，不整批弃。
+    先经 `_load_json_obj` 剥离 thinking 推理块并容忍围栏；非法 JSON / 顶层非对象 / 权威键非列表 →
+    raise ValueError（调用方重试后计失败批）。单条丢弃（不整批弃）并计数：非对象 / 缺名 / 空名 /
+    缺 `reason`；`gate=pass` 时六维须为 0–5 数值（含 0.5 档）或 `"缺失"`，越界/非数字/bool/乱字符串丢弃。
     """
     obj = _load_json_obj(raw)
     if obj is None:
@@ -50,12 +42,12 @@ def parse_results(raw: str) -> tuple[list[dict[str, Any]], int]:
             dropped += 1
             continue
         name = str(item.get("话题名称") or "").strip()
-        if not topic_key(name):
+        if not topic_key(name) or not str(item.get("reason") or "").strip() or not _dims_ok(item):
             dropped += 1
             continue
         parsed.append({**item, "话题名称": name})
     if dropped:
-        log.warning("丢弃 %d 条非法 scores 元素（非对象/缺名/空名）", dropped)
+        log.warning("丢弃 %d 条非法 scores 元素（非对象/缺名/缺 reason/六维非法）", dropped)
     return parsed, dropped
 
 
@@ -109,6 +101,23 @@ def _zero_gate(gate: Any) -> bool:
     if isinstance(gate, (int, float)) and not isinstance(gate, bool):
         return gate == 0
     return str(gate).strip().lower() in ("zero", "0", "0.0")
+
+
+def _dims_ok(item: dict[str, Any]) -> bool:
+    """`gate=pass` 六维严格校验：每维须为 0–5 数值（含 0.5 档）或字面量 `"缺失"`（DESIGN §26.4）。"""
+    if _zero_gate(item.get("gate")):
+        return True
+    scores = item.get("dimensions")
+    scores = scores if isinstance(scores, dict) else item.get("scores")
+    scores = scores if isinstance(scores, dict) else {}
+    for key in _WEIGHTS:
+        raw = scores.get(key)
+        if isinstance(raw, str) and raw.strip() == _MISSING:
+            continue
+        val = _num(raw)
+        if val is None or not 0.0 <= val <= 5.0:
+            return False
+    return True
 
 
 def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
@@ -182,19 +191,3 @@ def normalize(
     """`normalize_results` 的二元视图（公开契约，dropped 由 `normalize_results` 计数）。"""
     normalized, dist, _ = normalize_results(items, rows)
     return normalized, dist
-
-
-def check_distribution(items: list[dict[str, Any]]) -> DistCheck:
-    """按 PRD §22.7 校验 `≥4.0 ≤20%` 与 `<2.0 ≥15%`；仅收集 violation，不自动调分。"""
-    scored = [i for i in items if i.get("weighted_total") is not None]
-    if not scored:
-        return DistCheck(0, 0.0, 0.0, [])
-    total = len(scored)
-    ge4 = sum(1 for i in scored if i["weighted_total"] >= 4.0) / total
-    lt2 = sum(1 for i in scored if i["weighted_total"] < 2.0) / total
-    violations: list[str] = []
-    if ge4 > _GE4_MAX:
-        violations.append(f"≥4.0 占比 {ge4:.0%} 超过 20%")
-    if lt2 < _LT2_MIN:
-        violations.append(f"<2.0 占比 {lt2:.0%} 少于 15%")
-    return DistCheck(total=total, ge4_ratio=ge4, lt2_ratio=lt2, violations=violations)

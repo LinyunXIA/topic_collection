@@ -105,7 +105,7 @@ def _results(names: list[str], **over: object) -> str:
 def _stub_llm(monkeypatch: pytest.MonkeyPatch, responder) -> list[str]:
     prompts: list[str] = []
 
-    def fake(conf, prompt):
+    def fake(conf, prompt, timeout=180.0):
         prompts.append(prompt)
         return responder(prompt)
 
@@ -121,16 +121,22 @@ def _echo_responder(prompt: str) -> str:
 
 
 def test_parse_scores_plain_and_fence_and_thinking() -> None:
+    valid = {"话题名称": "X", "gate": "pass", "dimensions": dict(_DIMS_4), "reason": "依据"}
     assert score_parse.parse_scores(_results(["A"]))[0]["话题名称"] == "A"
-    fenced = '说明\n```json\n{"scores": [{"话题名称": "B"}]}\n```\n'
+    fenced = "说明\n```json\n" + json.dumps({"scores": [{**valid, "话题名称": "B"}]}, ensure_ascii=False) + "\n```\n"
     assert score_parse.parse_scores(fenced)[0]["话题名称"] == "B"
-    thinking = '<think foo="1">推导</think>{"scores": [{"话题名称": "C"}]}'
+    thinking = '<think foo="1">推导</think>' + json.dumps({"scores": [{**valid, "话题名称": "C"}]}, ensure_ascii=False)
     assert score_parse.parse_scores(thinking)[0]["话题名称"] == "C"
 
 
 def test_parse_scores_results_fallback_compat() -> None:
     raw = json.dumps(
-        {"results": [{"话题名称": "D", "gate": "pass", "scores": dict(_DIMS_4)}]}, ensure_ascii=False
+        {
+            "results": [
+                {"话题名称": "D", "gate": "pass", "scores": dict(_DIMS_4), "reason": "依据"}
+            ]
+        },
+        ensure_ascii=False,
     )
 
     items, _ = score_parse.normalize(
@@ -162,7 +168,7 @@ def test_parse_results_drops_invalid_items() -> None:
                 "not-a-dict",
                 {"gate": "pass"},
                 {"话题名称": "  "},
-                {"话题名称": "好话题"},
+                {"话题名称": "好话题", "gate": "pass", "dimensions": dict(_DIMS_4), "reason": "依据"},
             ]
         },
         ensure_ascii=False,
@@ -172,6 +178,48 @@ def test_parse_results_drops_invalid_items() -> None:
 
     assert [i["话题名称"] for i in items] == ["好话题"]
     assert dropped == 3
+
+
+@pytest.mark.parametrize(
+    "dimensions",
+    [
+        {**_DIMS_4, "普适痛点强度": 6},
+        {**_DIMS_4, "普适痛点强度": -1},
+        {**_DIMS_4, "普适痛点强度": "abc"},
+        {**_DIMS_4, "普适痛点强度": True},
+        {**_DIMS_4, "讲解成本": None},
+    ],
+)
+def test_parse_drops_invalid_dimension(dimensions) -> None:
+    items, dropped = score_parse.parse_results(_results(["A"], dimensions=dimensions))
+
+    assert items == [] and dropped == 1
+    normalized, _ = score_parse.normalize(items, [{"record_id": "recA", "话题名称": "A"}])
+    assert normalized == []
+
+
+def test_parse_drops_missing_reason() -> None:
+    items, dropped = score_parse.parse_results(_results(["A"], reason="   "))
+
+    assert items == [] and dropped == 1
+
+
+def test_parse_accepts_half_step_and_missing_literal() -> None:
+    dimensions = {**_DIMS_4, "普适痛点强度": 0.5, "分层承载力": "缺失"}
+
+    items, dropped = score_parse.parse_results(_results(["A"], dimensions=dimensions))
+
+    assert len(items) == 1 and dropped == 0
+
+
+def test_parse_gate_zero_needs_only_reason() -> None:
+    items, dropped = score_parse.parse_results(
+        _results(["A"], gate="zero", dimensions={}, reason="无内容内核")
+    )
+
+    assert len(items) == 1 and dropped == 0
+    normalized, _ = score_parse.normalize(items, [{"record_id": "recA", "话题名称": "A"}])
+    assert normalized[0]["weighted_total"] == 0.0
 
 
 def test_weighted_total_with_all_dims() -> None:

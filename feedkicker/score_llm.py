@@ -66,9 +66,9 @@ def build_prompt(
     return "\n".join(lines)
 
 
-def call_llm(conf: ProviderConf, prompt: str) -> str:
-    """委托 `extract_llm.post_chat`（单一 HTTP 出口 + 错误码归一，不另起一套）。"""
-    return extract_llm.post_chat(conf, prompt)
+def call_llm(conf: ProviderConf, prompt: str, timeout: float = 180.0) -> str:
+    """委托 `extract_llm.post_chat`（单一 HTTP 出口 + 错误码归一，不另起一套）；`timeout` 透传。"""
+    return extract_llm.post_chat(conf, prompt, timeout)
 
 
 def resolve_for_score(score_conf: ScoreConf, provider: str | None) -> ProviderConf:
@@ -96,12 +96,14 @@ def refine_batches(
     batches: list[list[dict[str, Any]]],
     prior_scores: list[tuple[str, str]],
     max_calls: int,
+    timeout: float = 300.0,
 ) -> BatchResult:
     """逐批「调用+解析」共享重试预算（第 1 次失败重试 1 次，总 HTTP ≤2/批），返回 `BatchResult`。
 
     两次都失败计 `failed`；`max_calls` 达限时当前批（已尝试未解析）计入失败并停止剩余批
-    （对齐 `extract_llm.refine_batches` 的 #334 教训）；空 results 计 `empty`；归一后 dropped
+    （对齐 `extract_llm.refine_batches` 的 #334 教训）；空 scores 计 `empty`；归一后 dropped
     累计（解析侧 + 缺返回/多余行）；命中行回灌 `prior_scores` 作为下一批横向上文。
+    `timeout` 透传每次 LLM 调用（`score.timeout_seconds`，大批量需调大）。
     """
     scored: list[dict[str, Any]] = []
     violations: list[str] = []
@@ -121,7 +123,7 @@ def refine_batches(
             calls += 1
             tried = True
             try:
-                raw = call_llm(conf, prompt)
+                raw = call_llm(conf, prompt, timeout)
             except Exception as e:  # noqa: BLE001
                 log.warning("第 %d/%d 批第 %d/2 次尝试失败（调用异常）: %s", no, len(batches), attempt, e)
                 continue

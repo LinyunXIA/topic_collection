@@ -16,7 +16,7 @@ _MM_FIELDS = ["话题名称", "可使用工具", "相关AI原理", "资讯链接
 
 
 def _stub_llm_echo(monkeypatch: pytest.MonkeyPatch) -> None:
-    def fake(conf, prompt):
+    def fake(conf, prompt, timeout=180.0):
         names = re.findall(r"^\d+\. 话题名称：(.+)$", prompt, re.MULTILINE)
         dims = {
             "普适痛点强度": 4.0, "分层承载力": 4.0, "可演示性": 4.0,
@@ -198,6 +198,31 @@ def test_call_llm_delegates_to_post_chat(monkeypatch) -> None:
     assert seen == ["提问"]
 
 
+def test_call_llm_passes_timeout_to_post_chat(monkeypatch) -> None:
+    seen: list[float] = []
+    monkeypatch.setattr(
+        extract_llm, "post_chat", lambda conf, prompt, timeout=180.0: seen.append(timeout) or "raw"
+    )
+
+    score_llm.call_llm(ProviderConf(api_key="k"), "提问", 123.5)
+
+    assert seen == [123.5]
+
+
+def test_plan_pending_ignores_extraction_tool() -> None:
+    rows = [
+        {"话题名称": "A", "提取工具": ["MMax"]},
+        {"话题名称": "B", "提取工具": ["DS"]},
+        {"话题名称": "C", "提取工具": ["人工"]},
+        {"话题名称": "D", "提取工具": []},
+    ]
+
+    pending, skipped = score_source.plan_pending(rows, "minimax")
+
+    assert [r["话题名称"] for r in pending] == ["A", "B", "C", "D"]
+    assert skipped == []
+
+
 def test_read_rows_extra_fields_unified_keys(monkeypatch) -> None:
     calls: list[list[str]] = []
     _patch_lark(monkeypatch, pages=[_records(1, score="3.5")], calls=calls)
@@ -314,3 +339,33 @@ def test_run_existing_scores_skipped_as_context(tmp_path, monkeypatch, caplog) -
 
     assert rc == 0
     assert "待打分=1" in caplog.text and "跳过=2" in caplog.text and "横向上文=2" in caplog.text
+
+
+def test_run_passes_configured_timeout_to_call_llm(tmp_path, monkeypatch) -> None:
+    cfg = _write_cfg(tmp_path)
+    path = Path(cfg)
+    path.write_text(path.read_text(encoding="utf-8") + "  timeout_seconds: 42\n", encoding="utf-8")
+    seen: list[float] = []
+
+    def fake(conf, prompt, timeout=180.0):
+        seen.append(timeout)
+        return '{"scores": []}'
+
+    _patch_lark(monkeypatch, pages=[_records(1)], field_names=_MM_FIELDS)
+    monkeypatch.setattr(score_llm, "call_llm", fake)
+
+    assert score_flow.main(["--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")]) == 0
+    assert seen == [42.0]
+
+
+def test_invalid_timeout_rc2(tmp_path, monkeypatch, caplog) -> None:
+    cfg = _write_cfg(tmp_path)
+    path = Path(cfg)
+    path.write_text(path.read_text(encoding="utf-8") + "  timeout_seconds: 0\n", encoding="utf-8")
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, pages=[_records(1)], field_names=_MM_FIELDS, calls=calls)
+
+    with caplog.at_level(logging.ERROR):
+        rc = score_flow.main(["--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
+
+    assert rc == 2 and calls == [] and "timeout_seconds" in caplog.text

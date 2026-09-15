@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import re
+import subprocess
+import sys
 from pathlib import Path
 
 import pytest
@@ -90,7 +93,23 @@ def test_ops_md_documents_score_section() -> None:
     assert "score` 段补充" in text
     assert "prompts/score.md" in text
     assert "MiniMax_Key" in text and "DEEPSEEK_API_KEY" in text
-    assert "batch_size=100" in text and "只补空" in text
+    assert "batch_size=20" in text and "timeout_seconds=300" in text
+    assert "只补空" in text
+
+
+def test_design_reason_overlong_truncates_not_drops() -> None:
+    section = _doc("docs/DESIGN.md").split("### 26.4 提示词与 JSON 契约", 1)[1].split("### 26.5", 1)[0]
+
+    assert "截断" in section and "WARNING" in section and "不丢弃" in section
+
+
+def test_design_write_verb_matches_cli_md() -> None:
+    design = _doc("docs/DESIGN.md")
+    cli = _doc("docs/CLI.md")
+
+    assert "base +record-batch-update" in design
+    assert "+record-batch-update" in cli.split("## tc-score", 1)[1].split("\n## ", 1)[0]
+    assert "base +record-update" not in design
 
 
 def test_design_module_tree_and_table_match_score_files() -> None:
@@ -130,12 +149,26 @@ def test_agents_md_has_tc_score() -> None:
     assert "tc-score" in text and "--apply" in text
 
 
-def test_agents_md_use_count_matches(request) -> None:
-    total = len(request.session.items)
-    if total < 700:
-        pytest.skip("非全量运行，跳过用例数一致性校验")
+def _collected_count() -> int:
+    """子进程跑 `pytest --collect-only -q`（只收集、不执行，无网络）解析实际用例数。"""
+    proc = subprocess.run(
+        [sys.executable, "-m", "pytest", "--collect-only", "-q"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    match = re.search(r"(\d+) tests? collected", proc.stdout)
+    if match is None:
+        pytest.fail(f"无法解析 pytest 收集数: {proc.stdout[-300:]} / {proc.stderr[-300:]}")
+    return int(match.group(1))
 
-    assert f"{total} 用例" in _doc("AGENTS.md")
+
+def test_agents_md_use_count_matches() -> None:
+    count = _collected_count()
+
+    assert count > 0
+    assert f"{count} 用例" in _doc("AGENTS.md")
 
 
 def test_agents_md_count_is_not_stale() -> None:
@@ -178,10 +211,11 @@ def test_write_payload_only_two_columns_for_gate_and_veto(monkeypatch) -> None:
 def test_multi_batch_distribution_violations(monkeypatch) -> None:
     import re
 
-    def fake_call(conf, prompt):
+    def fake_call(conf, prompt, timeout=180.0):
         names = [n.strip() for n in re.findall(r"^\d+\. 话题名称：(.+)$", prompt, re.MULTILINE)]
         scores = [
-            {"话题名称": n, "gate": "pass", "dimensions": {k: 5.0 for k in _DIMS}} for n in names
+            {"话题名称": n, "gate": "pass", "dimensions": {k: 5.0 for k in _DIMS}, "reason": "依据"}
+            for n in names
         ]
         return json.dumps({"scores": scores}, ensure_ascii=False)
 

@@ -84,6 +84,7 @@ def _cell(item: dict[str, Any], label: str) -> dict[str, str]:
 
 
 def _batch_write(conf: WriteConf, chunk: list[dict[str, Any]], label: str) -> bool:
+    """`+record-batch-update`（`--json` 体 = help 的 `{"update_records": {record_id: fields}}`）。"""
     payload = {"update_records": {str(r.get("record_id") or ""): _cell(r, label) for r in chunk}}
     with bitable_lark._json_arg(payload) as (jflag, jval):
         proc = bitable_lark._run(
@@ -95,10 +96,11 @@ def _batch_write(conf: WriteConf, chunk: list[dict[str, Any]], label: str) -> bo
 
 
 def _single_write(conf: WriteConf, row: dict[str, Any], label: str) -> bool:
-    with bitable_lark._json_arg(_cell(row, label)) as (jflag, jval):
+    """逐条回退（老 CLI 无批量动词）：`--json` 体 = `{"record_id": …, "fields": {…}}`（对齐 `bitable_backfill`）。"""
+    payload = {"record_id": str(row.get("record_id") or ""), "fields": _cell(row, label)}
+    with bitable_lark._json_arg(payload) as (jflag, jval):
         proc = bitable_lark._run(
-            ["base", "+record-update", "--base-token", conf.app_token, "--table-id", conf.table_id,
-             "--record-id", str(row.get("record_id") or ""), jflag, jval],
+            ["base", "+record-update", "--base-token", conf.app_token, "--table-id", conf.table_id, jflag, jval],
             timeout=120,
         )
     return bitable_lark._ok(proc)

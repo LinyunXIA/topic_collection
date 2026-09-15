@@ -64,7 +64,7 @@
 | `minimax` | `api_key=""`、`model="MiniMax-M3"`、`base_url="https://api.minimaxi.com"` |
 | `wiki` | `space_id=""`、`parent_token=""`、`app_token=""`（未配置时回退 `salon.wiki_space_id`/`salon.wiki_parent_token`） |
 | `extract` | `enabled=False`、`since_days=7`、`batch_size=30`（取值 1..200，越界 rc 2）、`provider="minimax"`、`prompt_file="prompts/extract.md"`、`max_calls=0`（0=不限）、`providers=dict[str, ProviderConf]`（`base_url`/`model`/`api_key`/`tool_label`） |
-| `score` | `enabled=False`、`prompt_file="prompts/score.md"`、`batch_size=100`（取值 1..100，越界 rc 2）、`provider="minimax"`、`max_calls=0`（0=不限）、`providers=dict[str, ProviderConf]`（`base_url`/`model`/`api_key`/`tool_label`） |
+| `score` | `enabled=False`、`prompt_file="prompts/score.md"`、`batch_size=20`（取值 1..100，越界 rc 2）、`provider="minimax"`、`max_calls=0`（0=不限）、`timeout_seconds=300.0`（须 > 0）、`providers=dict[str, ProviderConf]`（`base_url`/`model`/`api_key`/`tool_label`） |
 
 以 `feedkicker/config_models.py` 与 `feedkicker/config.py` 的 `load_config` 为准；未文档化别名（`salon.wiki_space`、`wiki.wiki_space_id` 等）已移除。
 
@@ -77,8 +77,9 @@ score:
   enabled: true
   provider: minimax        # minimax | deepseek
   prompt_file: prompts/score.md   # 仓库根相对路径
-  batch_size: 100          # 1..100，越界 rc 2（单次调用 ≤100 行）
+  batch_size: 20           # 1..100，越界 rc 2（单次调用 ≤100 行；默认 20 越小越不易读超时）
   max_calls: 0             # 0 = 不限
+  timeout_seconds: 300     # 单次 LLM 读超时（须 > 0）
   providers:               # 复用 providers 段口径；留空/占位时回退 env
     minimax:
       api_key: "<MiniMax_Key>"
@@ -88,7 +89,7 @@ score:
 
 - provider 的 `base_url`/`model`/`api_key` **复用 `providers` 段**（`ProviderConf`），key 覆盖口径与 `extract` 完全一致（yaml 非空则 yaml 优先，空/占位才回退 env `MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`；占位 `<…>` 清空）；所选 provider 缺 key → rc 2 且不发起任何 lark/LLM 调用。
 - 提示词文件默认 `prompts/score.md`（用户原文 + 注入段 JSON schema）；缺失或为空 → rc 2。
-- 单次调用 ≤100 行（`MAX_SCORE_BATCH=100`），超出自动切批并注入「已打分参考」横向上文；**默认只补空**（判据=目标 `打分` 列非空），`--force` 覆盖重算。
+- 单次调用 ≤100 行（`MAX_SCORE_BATCH=100`），超出自动切批并注入「已打分参考」横向上文；**默认批大小 20、单次读超时 300s**（实测 85 条/批约 1.7 万 token，批太大或超时太短会读超时）；**默认只补空**（判据=目标 `打分` 列非空），`--force` 覆盖重算。
 - 手动跑法：dry-run 先看清单，确认后 `--apply`。建议频率：选题清单有新增/变更后按需人工跑（**不接 launchd**；`--apply` 会写线上表，须人工确认，见 §6）。
 
 ### 1.4 db 分流
