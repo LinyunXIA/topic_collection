@@ -213,3 +213,68 @@ def test_p3_reseed_same_base_guard_precedes_lark(monkeypatch: pytest.MonkeyPatch
         rc = bitable.main(["--reseed", "--env", "test"])
 
     assert rc == 2 and "与 salon 选题 Base 相同" in caplog.text
+
+
+def _T(name: str) -> str:
+    return json.dumps(
+        {
+            "topics": [
+                {
+                    "话题名称": name,
+                    "可使用工具": "T",
+                    "相关AI原理": "P",
+                    "资讯链接": ["https://e.com/1"],
+                    "出处来源": ["F"],
+                }
+            ]
+        },
+        ensure_ascii=False,
+    )
+
+
+_P1_REAL = _T("真话题")
+_P1_LONG_EXAMPLE = "\n示例：\n" + _T("示例话题") + "\n" + "（以上为格式示例，请按此输出）" * 20
+
+_P1_CASES = {
+    "A": _P1_REAL + _P1_LONG_EXAMPLE,
+    "B": "```json\n" + _T("示例话题") + "\n```\n" + "多余说明" * 50 + "\n```json\n" + _P1_REAL + "\n```",
+    "C": '{"topics": []}' + "\n" + _P1_LONG_EXAMPLE,
+    "D": _P1_REAL + '\n{"scores":[{"话题名称":"x","gate":"pass","dimensions":{"a":1},"reason":"y"}],"pad":"' + "z" * 400 + '"}',
+}
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [("A", ["真话题"]), ("B", ["真话题"]), ("C", []), ("D", ["真话题"])],
+)
+def test_p1_residue_topics_cases(case: str, expected: list[str]) -> None:
+    got, dropped = parse_topics(_P1_CASES[case])
+
+    assert [t["话题名称"] for t in got] == expected and dropped == 0
+
+
+def _S(name: str) -> str:
+    return json.dumps(
+        {"scores": [{"话题名称": name, "gate": "pass", "dimensions": dict(_DIMS), "reason": "依据"}]},
+        ensure_ascii=False,
+    )
+
+
+_SCORE_REAL = _S("真话题")
+_SCORE_LONG_EXAMPLE = "\n示例：\n" + _S("示例话题") + "\n" + "（以上为格式示例，请按此输出）" * 20
+_SCORE_CASES = {
+    "A": _SCORE_REAL + _SCORE_LONG_EXAMPLE,
+    "B": "```json\n" + _S("示例话题") + "\n```\n" + "多余说明" * 50 + "\n```json\n" + _SCORE_REAL + "\n```",
+    "C": '{"scores": []}' + "\n" + _SCORE_LONG_EXAMPLE,
+    "D": _SCORE_REAL + '\n{"topics":[{"话题名称":"x"}],"pad":"' + "z" * 400 + '"}',
+}
+
+
+@pytest.mark.parametrize(
+    ("case", "expected"),
+    [("A", ["真话题"]), ("B", ["真话题"]), ("C", []), ("D", ["真话题"])],
+)
+def test_p1_residue_score_cases(case: str, expected: list[str]) -> None:
+    items, dropped, _keys = score_parse.parse_results_full(_SCORE_CASES[case])
+
+    assert [i["话题名称"] for i in items] == expected and dropped == 0
