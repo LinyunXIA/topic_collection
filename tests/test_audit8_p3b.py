@@ -164,6 +164,9 @@ def _extract_cfg() -> Config:
 def _patch_extract(monkeypatch, write_result: tuple[int, int, int]) -> None:
     monkeypatch.setattr(extract_flow.extract_source, "select_source", lambda conn, since_days, limit=None: [{"entry_key": "k"}])
     monkeypatch.setattr(extract_flow.extract_llm, "call_llm", lambda ex, prompt: _TOPICS_JSON)
+    monkeypatch.setattr(
+        extract_flow.extract_write, "existing_index_full", lambda app, tbl: (set(), set(), [])
+    )
     monkeypatch.setattr(extract_flow.extract_write, "write_topics", lambda *a, **k: write_result)
 
 

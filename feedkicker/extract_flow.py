@@ -96,21 +96,24 @@ def run(
     template = prompt_path.read_text(encoding="utf-8")
     run_date = datetime.now(bitable_lark.SHANGHAI).strftime("%Y-%m-%d")
     items = extract_source.select_source(conn, since_days, limit)
+    names, links, existing_topics = extract_write.existing_index_full(
+        cfg.salon.app_token, cfg.salon.table_id
+    )
     log.info(
-        "近 %d 天 RSS 行 %d 条（limit=%s）→ 批大小 %d，provider=%s（提取工具=%s）",
-        since_days, len(items), limit, batch_size, ex.provider, provider_conf.tool_label,
+        "近 %d 天 RSS 行 %d 条（limit=%s）→ 批大小 %d，provider=%s（提取工具=%s），已有话题 %d 条注入",
+        since_days, len(items), limit, batch_size, ex.provider, provider_conf.tool_label, len(existing_topics),
     )
     batches = [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
     collected, calls, failed, empty, all_dropped = extract_llm.refine_batches(
-        ex, template, batches, max_calls
+        ex, template, batches, max_calls, existing_topics
     )
     merged = extract_llm.merge_topics(collected)
     if apply:
         written, skipped, failed_writes = extract_write.write_topics(
-            cfg.salon.app_token, cfg.salon.table_id, merged, provider_conf.tool_label, run_date
+            cfg.salon.app_token, cfg.salon.table_id, merged,
+            provider_conf.tool_label, run_date, index=(names, links),
         )
     else:
-        names, links = extract_write.existing_index(cfg.salon.app_token, cfg.salon.table_id)
         planned, skipped_records = extract_write.plan_writes(
             merged, provider_conf.tool_label, run_date, names, links
         )

@@ -516,3 +516,39 @@ def test_plan_writes_skips_on_link_key_hit() -> None:
     picked, skipped = plan_writes(topics, "MMax", "2026-09-14", set(), {"https://e.com/a"})
 
     assert picked == [] and [r["话题名称"] for r in skipped] == ["全新命名"]
+
+
+def test_existing_index_full_returns_raw_names_dedup_order(monkeypatch) -> None:
+    def fake_run(args, stdin_text=None, timeout=120):
+        return _records_resp(["老话题 A", " 老话题 A ", "老话题 B"])
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    from feedkicker.extract_write import existing_index_full
+
+    names, links, raw = existing_index_full("app", "tbl")
+
+    assert names == {"老话题 a", "老话题 b"}
+    assert links == set()
+    assert raw == ["老话题 A", "老话题 B"]
+
+
+def test_write_topics_reuses_prefetched_index_without_list_call(monkeypatch) -> None:
+    calls: list[list[str]] = []
+    created: list[list[dict]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        calls.append(list(args))
+        if "+record-batch-create" in args:
+            created.append(_json_from_args(args)["create_records"])
+            return FakeProc(0, "{}")
+        raise AssertionError(f"预取索引复用后不应再读表: {args}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    written, skipped, failed = write_topics(
+        "app", "tbl", [_topic("新话题")], "MMax", "2026-09-15", index=(set(), set())
+    )
+
+    assert (written, skipped, failed) == (1, 0, 0)
+    assert [r["话题名称"] for r in created[0]] == ["新话题"]
