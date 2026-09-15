@@ -9,7 +9,6 @@ import sys
 from feedkicker import (
     bitable_fields,
     score_llm,
-    score_parse,
     score_report,
     score_source,
     score_write,
@@ -24,6 +23,17 @@ PROVIDER_COLUMNS: dict[str, tuple[str, str]] = {
     "minimax": ("MMax打分", "MMax理由"),
     "deepseek": ("DS打分", "DS理由"),
 }
+
+
+def _log_global_dist(dist: score_report.DistCheck) -> None:
+    """--apply 收尾的全局分布结论（R11-15）：违规 WARNING/合规 INFO；0 打分不输出，dry-run 走 print_dry_run。"""
+    if dist.violations:
+        log.warning("全局分布校验违规（%d 行）：%s", dist.total, "；".join(dist.violations))
+    elif dist.total:
+        log.info(
+            "全局分布校验合规（%d 行：≥4.0 %.0f%%、<2.0 %.0f%%）",
+            dist.total, dist.ge4_ratio * 100, dist.lt2_ratio * 100,
+        )
 
 
 def _token_missing(value: str) -> bool:
@@ -118,9 +128,10 @@ def run(
     result = score_llm.refine_batches(
         provider_conf, template, batches, prior_scores, max_calls, cfg.score.timeout_seconds
     )
+    dist = score_report.check_distribution(result.scored)
     to_write, skipped_plan = score_write.plan_writes(result.scored, force=force)
     if not apply:
-        score_report.print_dry_run(to_write, skipped, score_parse.check_distribution(result.scored))
+        score_report.print_dry_run(to_write, skipped, dist)
     write_conf = score_write.WriteConf(app_token, table_id, provider)
     written_stats = score_write.write_scores(write_conf, to_write, dry_run=not apply)
     score_report.print_summary(
@@ -132,6 +143,8 @@ def run(
             "failed_batches": result.failed, "dropped": result.dropped, "empty_batches": result.empty,
         }
     )
+    if apply:
+        _log_global_dist(dist)
     if apply and not written_stats.written and (
         written_stats.failed_writes or result.failed or to_write
     ):
@@ -173,12 +186,8 @@ def main(argv: list[str] | None = None) -> int:
     log.info("tc-score 运行开始：环境=%s，db=%s，mode=%s", cfg.app_env, cfg.db_path, "apply" if args.apply else "dry-run")
     try:
         return run(
-            cfg,
-            apply=args.apply,
-            provider=args.provider,
-            limit=args.limit,
-            max_calls=args.max_calls,
-            force=args.force,
+            cfg, apply=args.apply, provider=args.provider,
+            limit=args.limit, max_calls=args.max_calls, force=args.force,
         )
     except Exception:  # noqa: BLE001
         log.exception("未捕获异常")

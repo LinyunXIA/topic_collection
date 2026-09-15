@@ -32,27 +32,18 @@ from feedkicker.bitable_records import (
     sync_records as sync_records,
 )
 from feedkicker.bitable_schema import (
-    BASE_TITLE as BASE_TITLE,
-    BASE_TITLE_DEFAULT as BASE_TITLE_DEFAULT,
-    BASE_TITLE_DEV_TEST as BASE_TITLE_DEV_TEST,
-    BASE_TITLES as BASE_TITLES,
-    TABLE_NAME as TABLE_NAME,
-    VIEW_NAME as VIEW_NAME,
-    _FIELDS as _FIELDS,
-    base_url as base_url,
-    create_base as create_base,
-    create_table as create_table,
-    ensure_initialized as ensure_initialized,
-    fields_for as fields_for,
-    find_base_by_title as find_base_by_title,
-    get_table_id as get_table_id,
+    BASE_TITLE as BASE_TITLE, BASE_TITLE_DEFAULT as BASE_TITLE_DEFAULT,
+    BASE_TITLE_DEV_TEST as BASE_TITLE_DEV_TEST, BASE_TITLES as BASE_TITLES,
+    TABLE_NAME as TABLE_NAME, VIEW_NAME as VIEW_NAME,
+    _FIELDS as _FIELDS, base_url as base_url,
+    create_base as create_base, create_table as create_table,
+    ensure_initialized as ensure_initialized, fields_for as fields_for,
+    find_base_by_title as find_base_by_title, get_table_id as get_table_id,
 )
 from feedkicker.bitable_views import (
-    _view_id as _view_id,
-    create_date_view as create_date_view,
+    _view_id as _view_id, create_date_view as create_date_view,
     ensure_archive_date_field as ensure_archive_date_field,
-    set_tenant_readonly as set_tenant_readonly,
-    setup_view as setup_view,
+    set_tenant_readonly as set_tenant_readonly, setup_view as setup_view,
 )
 from feedkicker.log_setup import PLAIN_FORMAT, setup_logging
 
@@ -152,46 +143,50 @@ def main(argv: list[str] | None = None) -> int:
     if args.init and not _tokens_ready(cfg.bitable):
         log.warning("--init 将创建/修复 Base：当前 app_token/table_id 为空或为占位")
 
-    info = bitable_schema.ensure_initialized(cfg.bitable, cfg.app_env)
-    log.info("Base: %s", info["url"])
-
-    if args.init:
-        bitable_views.ensure_archive_date_field(info["app_token"], info["table_id"])
-        if bitable_views.setup_view(info["app_token"], info["table_id"]):
-            log.info("「按来源」分组视图已设置")
-        if bitable_views.create_date_view(info["app_token"], info["table_id"]):
-            log.info("「按日期」分组视图已创建")
-        if bitable_views.set_tenant_readonly(info["app_token"]):
-            log.info("分享已设为组织内只读")
-        print(json.dumps(info, ensure_ascii=False))
-
-    conn = store.connect(cfg.db_path)
     try:
-        if args.reseed:
-            reset = store.reset_bitable_synced(conn)
-            log.info("已重置 %d 条同步标记（先清标记后清表，任一中断点均可自愈重灌）", reset)
-            env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
-            n, purge_ok = bitable_records.purge_all_records(
-                info["app_token"], info["table_id"], env_name=env_name
-            )
-            if not purge_ok:
-                log.error("清理未完成（已删 %d 条），中止 reseed；标记已清，下轮可自愈重灌", n)
-                return 2
-            log.info("已清空 %d 条旧记录，准备重灌", n)
-        if args.backfill or args.fix_archive_date:
-            env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
-            try:
-                n = bitable_backfill.backfill_empty_archive_dates(
-                    info["app_token"], info["table_id"], env_name=env_name, dry_run=False
+        info = bitable_schema.ensure_initialized(cfg.bitable, cfg.app_env)
+        log.info("Base: %s", info["url"])
+
+        if args.init:
+            bitable_views.ensure_archive_date_field(info["app_token"], info["table_id"])
+            if bitable_views.setup_view(info["app_token"], info["table_id"]):
+                log.info("「按来源」分组视图已设置")
+            if bitable_views.create_date_view(info["app_token"], info["table_id"]):
+                log.info("「按日期」分组视图已创建")
+            if bitable_views.set_tenant_readonly(info["app_token"]):
+                log.info("分享已设为组织内只读")
+            print(json.dumps(info, ensure_ascii=False))
+
+        conn = store.connect(cfg.db_path)
+        try:
+            if args.reseed:
+                reset = store.reset_bitable_synced(conn)
+                log.info("已重置 %d 条同步标记（先清标记后清表，任一中断点均可自愈重灌）", reset)
+                env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
+                n, purge_ok = bitable_records.purge_all_records(
+                    info["app_token"], info["table_id"], env_name=env_name
                 )
-            except Exception as e:  # noqa: BLE001
-                log.error("backfill 失败: %s", e)
-                return 2
-            log.info("归档日期回填：%d 条", n)
-        synced = bitable_records.sync_env(cfg.bitable, cfg.app_env, conn)
-        log.info("同步完成：%d 条", synced)
-    finally:
-        conn.close()
+                if not purge_ok:
+                    log.error("清理未完成（已删 %d 条），中止 reseed；标记已清，下轮可自愈重灌", n)
+                    return 2
+                log.info("已清空 %d 条旧记录，准备重灌", n)
+            if args.backfill or args.fix_archive_date:
+                env_name = cfg.app_env if cfg.app_env in ("dev", "test") else None
+                try:
+                    n = bitable_backfill.backfill_empty_archive_dates(
+                        info["app_token"], info["table_id"], env_name=env_name, dry_run=False
+                    )
+                except Exception as e:  # noqa: BLE001
+                    log.error("backfill 失败: %s", e)
+                    return 2
+                log.info("归档日期回填：%d 条", n)
+            synced = bitable_records.sync_env(cfg.bitable, cfg.app_env, conn)
+            log.info("同步完成：%d 条", synced)
+        finally:
+            conn.close()
+    except Exception:  # noqa: BLE001
+        log.exception("未捕获异常")
+        return 1
     return 0
 
 

@@ -48,24 +48,25 @@ def run(cfg, conn, dry_run: bool = False) -> int:
 
     pending = store.select_pending(conn)
     if not pending:
+        if cfg.bitable.enabled and not dry_run:
+            try:
+                bitable_records.sync_env(cfg.bitable, cfg.app_env, conn, now)
+            except Exception as e:  # noqa: BLE001
+                log.warning("空 pending 班次补归档未完成（不影响班次，保留待重试）: %s", e)
         store.update_first_run_all(conn, ok_feed_objs, now)
         log.info("运行完成：无新条目，失败源 %d 个", feed_fails)
         return 0
 
     detail_url: str | None = None
-    if cfg.bitable.enabled and (cfg.bitable.url or cfg.bitable.app_token):
-        detail_url = cfg.bitable.url or bitable_schema.base_url(cfg.bitable.app_token)
+    if cfg.bitable.enabled:
+        detail_url = bitable_schema.resolved_url(cfg.bitable) or None
 
     archived = False
     if cfg.bitable.enabled and not dry_run:
         try:
             synced_n = bitable_records.sync_env(cfg.bitable, cfg.app_env, conn, now)
             archived = True
-            detail_url = (
-                (cfg.bitable.url or bitable_schema.base_url(cfg.bitable.app_token))
-                if cfg.bitable.app_token
-                else None
-            )
+            detail_url = bitable_schema.resolved_url(cfg.bitable) or None
             if synced_n:
                 log.info("多维表格已写入 %d 条", synced_n)
         except Exception as e:  # noqa: BLE001

@@ -101,7 +101,9 @@ def run(
         since_days, len(items), limit, batch_size, ex.provider, provider_conf.tool_label,
     )
     batches = [items[i : i + batch_size] for i in range(0, len(items), batch_size)]
-    collected, calls, failed, empty = extract_llm.refine_batches(ex, template, batches, max_calls)
+    collected, calls, failed, empty, all_dropped = extract_llm.refine_batches(
+        ex, template, batches, max_calls
+    )
     merged = extract_llm.merge_topics(collected)
     if apply:
         written, skipped, failed_writes = extract_write.write_topics(
@@ -127,6 +129,7 @@ def run(
             "failed_writes": failed_writes,
             "failed_batches": failed,
             "empty_batches": empty,
+            "all_dropped_batches": all_dropped,
         }
     )
     if apply and failed_writes and not written:

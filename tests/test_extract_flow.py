@@ -213,6 +213,28 @@ def test_empty_topics_batch_counted_separately(tmp_path, monkeypatch, capsys) ->
     assert stats["llm_calls"] == 2 and stats["topics"] == 0
 
 
+def test_all_invalid_batch_counted_all_dropped(tmp_path, monkeypatch, capsys) -> None:
+    """R11-13：信封合法但整批 topic 全缺键（1 次 HTTP、未重试）单列 all_dropped_batches，
+    不混入 failed_batches（基础设施/解析失败、2 次 HTTP）与 empty_batches（合法空列表）。"""
+    cfg = _write_cfg(tmp_path)
+    calls: list[list[str]] = []
+    _patch_lark(monkeypatch, calls)
+    monkeypatch.setattr(extract_flow.extract_source, "select_source", lambda conn, since_days, limit=None: _items(2))
+    llm_calls: list[int] = []
+    monkeypatch.setattr(
+        extract_flow.extract_llm, "call_llm",
+        lambda ex, prompt: llm_calls.append(1) or '{"topics": [{"话题名称": "缺键行"}]}',
+    )
+
+    rc = extract_flow.main(["--dry-run", "--config", str(cfg), "--db", str(tmp_path / "t.sqlite3")])
+
+    stats = _last_summary(capsys.readouterr().out)
+    assert rc == 0
+    assert stats["all_dropped_batches"] == 1
+    assert stats["failed_batches"] == 0 and stats["empty_batches"] == 0
+    assert stats["llm_calls"] == 1 and len(llm_calls) == 1 and stats["topics"] == 0
+
+
 def test_bad_json_batch_counts_failed_not_empty(tmp_path, monkeypatch, capsys) -> None:
     cfg = _write_cfg(tmp_path)
     calls: list[list[str]] = []
@@ -363,11 +385,11 @@ def test_refine_batches_http_budget_two_per_batch(tmp_path, monkeypatch) -> None
 
     monkeypatch.setattr(extract_flow.extract_llm.httpx, "post", fake_post)
 
-    collected, calls, failed, empty = extract_llm.refine_batches(
+    collected, calls, failed, empty, all_dropped = extract_llm.refine_batches(
         cfg.extract, "模板", [[{"title": "标题", "url": "https://a/1"}]], 0
     )
 
-    assert collected == [] and failed == 1 and empty == 0
+    assert collected == [] and failed == 1 and empty == 0 and all_dropped == 0
     assert calls == 2 and len(posts) == 2
 
 
