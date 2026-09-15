@@ -5,7 +5,7 @@ import json
 import logging
 from typing import Any
 
-from feedkicker import bitable_lark
+from feedkicker import bitable_fields, bitable_lark
 from feedkicker.log_setup import PLAIN_FORMAT, setup_logging
 from feedkicker.topic_records import _extract_records as _extract_records
 
@@ -110,30 +110,10 @@ def fetch_topic_fields(app_token: str, table_id: str) -> list[dict[str, Any]]:
     """
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")
-    proc = bitable_lark._run(["base", "+field-list", "--base-token", app_token, "--table-id", table_id], timeout=60)
-    if proc is None:
-        raise RuntimeError("lark-cli 执行失败(无返回)")
-    if proc.returncode != 0:
-        msg = (proc.stderr or proc.stdout or "").strip()[:500]
-        log.warning("lark-cli 失败(%d): %s", proc.returncode, msg)
-        raise RuntimeError(f"lark-cli 失败({proc.returncode}): {msg}")
-    ok, data = bitable_lark._parse(proc)
-    if not ok:
-        msg = (proc.stdout or proc.stderr or "").strip()[:500]
-        log.warning("lark-cli 业务失败: %s", msg)
-        raise RuntimeError(f"lark-cli 业务失败: {msg}")
-    fields_raw = data.get("fields") or data.get("items") or []
-    if not isinstance(fields_raw, list) or not all(isinstance(f, dict) for f in fields_raw):
-        raise RuntimeError(
-            f"field-list 响应 fields 非 list[dict]: {type(fields_raw).__name__}: {str(fields_raw)[:200]}"
-        )
-    fields: list[dict[str, Any]] = fields_raw
-    found = None
-    for f in fields:
-        name = f.get("field_name") or f.get("name") or ""
-        if name == "讨论状态":
-            found = f
-            break
+    fields = bitable_fields.read_fields(app_token, table_id)
+    found = next(
+        (f for f in fields if (f.get("field_name") or f.get("name") or "") == "讨论状态"), None
+    )
     if found is None:
         log.warning("未找到 讨论状态 字段")
     else:
@@ -179,7 +159,7 @@ def main(argv: list[str] | None = None) -> int:
             log.error("加载配置失败或 token 缺失: %s（rc=2）", e)
             return 2
 
-    if not app_token or not table_id:
+    if not app_token or not table_id or "<" in app_token or "<" in table_id:
         if args.dry_run:
             return _stub_out(args.check_fields)
         log.error("app_token/table_id 缺失或为占位，无法访问多维表格（rc=2）")

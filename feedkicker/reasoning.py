@@ -71,6 +71,7 @@ def strip_reasoning(text: str) -> str:
     i = 0
     n = len(text or "")
     in_str = False
+    no_close: dict[str, int] = {}
     while i < n:
         ch = text[i]
         if in_str:
@@ -95,7 +96,13 @@ def strip_reasoning(text: str) -> str:
                 i = end
                 continue
             if not closing:
-                close = _find_close(text, end, name)
+                cutoff = no_close.get(name)
+                if cutoff is not None and i >= cutoff:
+                    close = None
+                else:
+                    close = _find_close(text, end, name)
+                    if close is None:
+                        no_close[name] = i
                 if close is not None:
                     i = close
                     continue

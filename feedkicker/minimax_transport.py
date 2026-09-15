@@ -25,10 +25,10 @@ def content_blocks_text(content: Any) -> str:
         for block in content:
             if not isinstance(block, dict):
                 continue
-            seg = block.get("text")
-            if not isinstance(seg, str):
-                seg = block.get("content")
-            if isinstance(seg, str):
+            text = block.get("text")
+            content = block.get("content")
+            seg = text if isinstance(text, str) and text else (content if isinstance(content, str) else "")
+            if seg:
                 parts.append(seg)
     return "".join(parts)
 

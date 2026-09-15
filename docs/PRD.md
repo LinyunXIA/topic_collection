@@ -509,7 +509,7 @@ tc-score [--apply | --dry-run(默认)] [--provider {minimax,deepseek}] [--force]
 | `--provider {minimax,deepseek}` | 决定调用方与目标列；缺省取配置，默认 `minimax` |
 | `--force` | 忽略既有打分，对全部命中行重算并覆盖 |
 | `--limit N` | 限制处理行数，`0` = 全部 |
-| `--max-calls N` | LLM 调用上限，`0` = 不限；缺省取 `score.max_calls` |
+| `--max-calls N` | LLM 调用上限；非 0 时覆盖 `score.max_calls`，省略/显式 0 取配置值（配置 0=不限） |
 | `--env` / `--config` / `--db` | 与既有命令同口径（覆盖顺序 `--db` > `TC_DB` > `--env` > `TC_APP_ENV` > prod） |
 
 - **单次调用 ≤100 行**（`MAX_SCORE_BATCH=100`），超出自动切批；默认批大小 `score.batch_size=20`（越小越不易读超时），单次读超时 `score.timeout_seconds=600`。

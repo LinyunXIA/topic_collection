@@ -12,6 +12,7 @@ from feedkicker.fetch import dedup_key
 _MAX_BODY_BYTES = 20000
 SIGN_RESERVE_BYTES = 128
 _MD_SPECIAL = re.compile(r"([\\`*_\[\]()#])")
+_AMP_ENTITY = re.compile(r"&(?=[#\w]+;)")
 
 
 def _dedup_by_url_key(
@@ -46,9 +47,13 @@ def _dedup_by_url_key(
 
 
 def escape_inline(text: str | None) -> str:
-    """转义 markdown 元字符并实体化尖括号，防 lark_md 标签/`@all` 注入（#337）。"""
+    """转义 markdown 元字符并实体化尖括号，防 lark_md 标签/`@all` 注入（#337/#R10-06）。
+
+    仅把「实体样式」的 `&`（`&lt;`/`&#60;`，即 `&` 后紧跟 `[#\\w]+;`）转义为 `&amp;`，
+    普通 `&`（`AI & 医疗`）保持原样——既拦 `&lt;at …&gt;` 绕过，又不污染用户可见文本。
+    """
     text = (text or "").replace("\r", "").replace("\n", " ")
-    text = text.replace("<", "&lt;").replace(">", "&gt;")
+    text = _AMP_ENTITY.sub("&amp;", text).replace("<", "&lt;").replace(">", "&gt;")
     return _MD_SPECIAL.sub(r"\\\1", text)
 
 

@@ -3,13 +3,15 @@ from __future__ import annotations
 import calendar
 import html
 import logging
-import re
 from datetime import UTC, datetime
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import feedparser
 import httpx
+
+from feedkicker.fetch_url import is_url_token as is_url_token
+from feedkicker.fetch_url import trim_url as trim_url
 
 log = logging.getLogger(__name__)
 
@@ -18,29 +20,6 @@ _ISO_FMT = "%Y-%m-%dT%H:%M:%SZ"
 _TRACKING = frozenset(("fbclid", "gclid", "igshid", "spm"))
 
 _TRACKING_PREFIXES = ("utm_", "mc_")
-
-_BARE_HOST_RE = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?::[0-9]+)?/")
-
-_URL_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/?#[]@!$&'()*+,;=%")
-
-_URL_EDGE = "()<>[]{}（）【】「」《》，。；、！？：；“”‘’\"'.,;:!?"
-
-
-def trim_url(token: str) -> str:
-    """粘连 token 截到最后一个合法 URL 字符，再去首尾包裹标点（`<url>`/`(url)`/`url，详见`，#R9-19）。
-
-    尾部 `)` 若与 token 内 `(` 配平则保留（`…/a_(b)` 是合法路径），仅剥真正多余的包裹/标点。
-    """
-    text = (token or "").strip()
-    end = max((i for i, ch in enumerate(text) if ch in _URL_CHARS), default=-1)
-    if end < 0:
-        return ""
-    text = text[: end + 1].lstrip("".join(_URL_EDGE))
-    while text and text[-1] in _URL_EDGE:
-        if text[-1] == ")" and text.count("(") >= text.count(")"):
-            break
-        text = text[:-1]
-    return text
 
 
 def utc_now_iso() -> str:
@@ -66,8 +45,10 @@ def canonicalize(url: str) -> str:
 
     netloc 重组保留 userinfo 与 IPv6 方括号，省略默认端口（http:80/https:443），
     避免非法 URL 写入卡片/归档或漏去重（#207）。urlsplit 遇非法 IPv6 等 ValueError 时
-    回退原文（不得抛出，否则单条坏链令整卡/整源崩溃，#328）。归一规则变更会让 guid-less 源
-    旧行 entry_key 与新 key 不一致，升级首轮可能重复推卡一次（一次性，#229）。
+    回退原文（不得抛出，否则单条坏链令整卡/整源崩溃，#328）。归一时凡 fragment 以 `/` 开头且
+    无 query（hash 路由 `#/post/1`）一律保留，不再限于根路径——否则 `spa/app#/post/1` 与
+    `#/post/2` 会被并成同键（#R10-19）。归一规则变更会让 guid-less 源旧行 entry_key 与新 key
+    不一致，升级首轮可能重复推卡一次（一次性，#229）。
     """
     text = (url or "").strip()
     try:
@@ -88,18 +69,8 @@ def canonicalize(url: str) -> str:
         netloc = f"{userinfo}{host}" + (f":{port}" if port and not default_port else "")
     except ValueError:
         netloc = parts.netloc.lower()
-    frag = parts.fragment if parts.path in ("", "/") and parts.fragment.startswith("/") else ""
+    frag = parts.fragment if not parts.query and parts.fragment.startswith("/") else ""
     return urlunsplit((parts.scheme, netloc, parts.path, parts.query, frag))
-
-
-def is_url_token(token: str) -> bool:
-    """token 是否 URL：含 `://`，或形如带路径的裸域名（`example.com/path`，TLD ≥2 字母）。
-
-    点分但非 URL 的 token（版本号 `v2.0.1`、文件名 `report.pdf`）不得生成去重键，否则跨话题
-    同注记会被误判重复而静默漏写（#329/#361）。
-    """
-    text = (token or "").strip()
-    return "://" in text or bool(_BARE_HOST_RE.match(text))
 
 
 def dedup_key(url: str) -> str:

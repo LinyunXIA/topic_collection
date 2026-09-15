@@ -115,10 +115,10 @@ def _run(
             check=False,
         )
     except (subprocess.TimeoutExpired, OSError) as e:
-        log.warning("lark-cli 执行异常: %s", e)
+        log.warning("lark-cli 执行异常: %s timeout=%ss args=%s", type(e).__name__, timeout, args[:1])
         return None
     if proc.returncode != 0:
-        log.warning("lark-cli 失败(%d): %s", proc.returncode, proc.stderr.strip()[:300])
+        log.warning("lark-cli 失败(%d) args=%s stderr=%s", proc.returncode, args[:1], re.sub(r"(--[\w-]*(?:token|table-id|space-id)[ =]+)\S+", r"\1***", proc.stderr.strip()[:300]))
     return proc
 
 

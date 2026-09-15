@@ -23,7 +23,12 @@ def name_text(name: Any) -> str:
 
 
 def name_key(name: Any) -> str:
-    """话题名匹配键：`name_text` 后再 `topic_key`；与注入时的展示名同口径（#377）。"""
+    """话题名匹配键：折叠空白后 `topic_key`，**不截断**（前 200 字相同、后缀不同者不得判同名，#377 补遗）。"""
+    return topic_key(" ".join(str(name or "").split()))
+
+
+def display_key(name: Any) -> str:
+    """展示名匹配键：`name_text`（折叠 + ≤200 截断）后 `topic_key`；仅作「模型回显截断名」兜底匹配。"""
     return topic_key(name_text(name))
 
 

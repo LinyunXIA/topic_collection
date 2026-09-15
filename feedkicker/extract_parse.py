@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 import unicodedata
 from typing import Any
 
 from feedkicker.fetch import is_url_token, trim_url
+from feedkicker.llm_json import load_json_obj as _load_json_obj
 from feedkicker.reasoning import strip_reasoning as strip_reasoning
 
 log = logging.getLogger(__name__)
 
 _REQUIRED_KEYS = ("话题名称", "可使用工具", "相关AI原理", "资讯链接", "出处来源")
-
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 def topic_key(name: Any) -> str:
@@ -41,14 +38,24 @@ def build_batch_prompt(template: str, items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _topic_fields_ok(item: dict[str, Any]) -> bool:
+    """字段类型门：`话题名称`/`可使用工具`/`相关AI原理` 须为 str，两个链接字段须 str 或 list。
+
+    防 `str()` 把列表/字典的 Python repr 写进 salon 表；非 str 值整条丢弃并计数（#R10-16）。
+    """
+    if any(not isinstance(item.get(k), str) for k in ("话题名称", "可使用工具", "相关AI原理")):
+        return False
+    return all(isinstance(item.get(k), (str, list)) for k in ("资讯链接", "出处来源"))
+
+
 def parse_topics(raw: str) -> tuple[list[dict[str, Any]], int]:
     """解析 LLM 原始文本，返回 `(topics, dropped)`。
 
     JSON 非法 / 顶层非对象 / `topics` 非列表 → raise ValueError（调用方计失败批）；
-    单个 topic 非对象 / 缺 5 键 / 名称 NFKC 归一后为空 → 丢弃该条、dropped 计数并 WARNING，
-    不整批弃（PRV-6）；空白名同样计 dropped，不得静默丢弃（#294）。
+    单个 topic 非对象 / 缺 5 键 / 文本字段非 str / 名称 NFKC 归一后为空 → 丢弃该条、dropped 计数
+    并 WARNING，不整批弃（PRV-6）；空白名同样计 dropped，不得静默丢弃（#294）。
     """
-    obj = _load_json_obj(raw)
+    obj = _load_json_obj(raw, ("topics",))
     if obj is None:
         raise ValueError("LLM 输出不是合法 JSON 对象")
     items = obj.get("topics")
@@ -57,7 +64,7 @@ def parse_topics(raw: str) -> tuple[list[dict[str, Any]], int]:
     parsed: list[dict[str, Any]] = []
     dropped = 0
     for item in items:
-        if not isinstance(item, dict) or any(k not in item for k in _REQUIRED_KEYS):
+        if not isinstance(item, dict) or any(k not in item for k in _REQUIRED_KEYS) or not _topic_fields_ok(item):
             dropped += 1
             continue
         name = str(item.get("话题名称") or "").strip()
@@ -106,31 +113,6 @@ def merge_topics(topics: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(merged.values())
 
 
-def _brace_candidates(text: str) -> list[str]:
-    """逐个 `{` 起点到最后一个 `}` 的候选（前置说明含花括号时仍能取到真 JSON，#R9-17）。"""
-    end = text.rfind("}")
-    if end < 0:
-        return []
-    return [text[i : end + 1] for i, ch in enumerate(text) if ch == "{"]
-
-
-def _load_json_obj(raw: str) -> dict[str, Any] | None:
-    """容忍围栏与前后说明：遍历所有 ``` 围栏候选（优先含 `topics`/`scores`），再逐个 `{` 起点兜底（#R9-17）。"""
-    text = strip_reasoning((raw or "").strip())
-    fences = [m.group(1).strip() for m in _FENCE_RE.finditer(text)]
-    fences.sort(key=lambda t: 0 if ('"topics"' in t or '"scores"' in t) else 1)
-    for cand in (*fences, text, *_brace_candidates(text)):
-        if not cand:
-            continue
-        try:
-            obj = json.loads(cand)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict):
-            return obj
-    return None
-
-
 def _str_list(value: Any) -> list[str]:
     if isinstance(value, str):
         items = [value]
@@ -149,7 +131,7 @@ def _str_list(value: Any) -> list[str]:
 
 
 def md_link_tokens(text: str) -> list[str]:
-    """把 markdown 链接目标与余文裸链拆成 token 列表（`_link_key` 归一前，供 `link_keys`）。
+    """把 markdown 链接目标与余文裸链拆成 token 列表（`dedup_key` 归一前，供 `link_keys`）。
 
     目标自 `](` 起按**括号平衡**扫描，支持任意嵌套深度（`…/a_(b_(c))`，#N4）；标签文本
     `[..]` 不参与（`[标签](url)` 不得把标签当 URL，#270）；相邻/混排链接各取各、裸链不丢

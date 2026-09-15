@@ -36,7 +36,7 @@ cd /Users/linyunxia/PycharmProjects/topic_collection
 依赖改动后重跑该命令。自检三件套：
 
 ```bash
-.venv/bin/python -m pytest -q      # 全离线用例，应 <1s（变慢=打真网了）
+.venv/bin/python -m pytest -q      # 全离线用例，应 <3s（变慢=打真网了）
 .venv/bin/ruff check .             # 0 errors
 .venv/bin/basedpyright             # 0 errors
 ```

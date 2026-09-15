@@ -6,6 +6,7 @@ import json
 import logging
 from typing import Any
 
+from feedkicker.llm_json import load_json_value
 from feedkicker.minimax_transport import _norm_code, content_blocks_text
 from feedkicker.reasoning import strip_reasoning
 
@@ -63,22 +64,11 @@ def parse_outline_from_response(data: Any) -> dict[str, Any]:
             content = fallback if isinstance(fallback, str) else ""
         if content.strip():
             content = strip_reasoning(content).strip()
-            candidates = [content]
-            if content.startswith("```"):
-                inner = content.strip().strip("`")
-                if inner.startswith("json"):
-                    inner = inner[4:].strip()
-                candidates.append(inner)
-            for cand in candidates:
-                try:
-                    parsed = json.loads(cand)
-                except json.JSONDecodeError:
-                    continue
-                if not isinstance(parsed, dict):
-                    raise RuntimeError(
-                        f"content 非对象: {type(parsed).__name__}: {str(parsed)[:200]}"
-                    )
-                return parsed
+            value = load_json_value(content)
+            if isinstance(value, dict):
+                return value
+            if value is not None:
+                raise RuntimeError(f"content 非对象: {type(value).__name__}: {str(value)[:200]}")
             raise RuntimeError(f"无法解析大纲JSON，content: {content[:500]}")
     base = data.get("base_resp")
     sc = _norm_code(base.get("status_code")) if isinstance(base, dict) else None

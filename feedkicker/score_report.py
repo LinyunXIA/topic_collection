@@ -20,6 +20,16 @@ WEIGHTS: dict[str, int] = {
 MISSING = "缺失"
 
 
+_FALSEY = frozenset(("", "false", "0", "no", "none", "null"))
+
+
+def truthy(value: Any) -> bool:
+    """字符串布尔归一：`"false"/"0"/"no"/""` 等字面假值 → False，其余按 `bool`（#R10-08）。"""
+    if isinstance(value, str):
+        return value.strip().lower() not in _FALSEY
+    return bool(value)
+
+
 def num(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None
@@ -45,7 +55,7 @@ def weighted_total(
 ) -> tuple[float | None, list[str]]:
     """缺失维剔除权重、其余按剩余权重归一后加权 round 到 1 位小数；全维缺失 → `(None, 全维)`；
     `missing_extra` 与「值为 `"缺失"`」两种缺失表达一并归一（PRD §22.6）。"""
-    extra = {str(k) for k in missing_extra}
+    extra = {str(k) for k in missing_extra} if isinstance(missing_extra, (list, tuple, set)) else set()
     present: list[tuple[str, float]] = []
     missing: list[str] = []
     for key in WEIGHTS:

@@ -48,6 +48,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     wiki_urls: list[str] = []
     failed = 0
+    persist_failed = 0
     skipped = 0
     for rec in selected:
         rid = str(rec.get("record_id") or rec.get("id") or "")
@@ -133,7 +134,9 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         try:
             store.mark_topic_archived(conn, table_id, rid, title, url, combined_md, now_iso)
         except Exception as e:  # noqa: BLE001
-            log.error("topic %s 归档落库失败: %s", rid, e)
+            log.error("topic %s 归档落库失败（Wiki 已建，状态未落库）: %s", rid, e)
+            failed += 1
+            persist_failed += 1
 
     if wiki_urls and not dry_run:
         log.info("本轮成功 %d 条，Wiki: %s", len(wiki_urls), wiki_urls)
@@ -146,10 +149,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
 
     all_failed = not dry_run and failed > 0 and not wiki_urls
     if all_failed:
-        log.warning(
-            "已选题 %d 条全部失败（失败 %d、跳过 %d），0 条成功建 Wiki，请查上方 WARNING",
-            len(selected), failed, skipped,
-        )
+        log.warning("已选题 %d 条全部失败（失败 %d、跳过 %d），0 条成功建 Wiki，请查上方 WARNING", len(selected), failed, skipped)
 
     card_ok = salon_notify.send_wiki_card(cfg, conn, wiki_urls, dry_run=dry_run)
 
@@ -159,7 +159,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         except Exception as e:  # noqa: BLE001
             log.warning("Wiki 首页更新失败（不影响主流程）: %s", e)
 
-    return 1 if (all_failed or not card_ok) else 0
+    return 1 if (all_failed or persist_failed or not card_ok) else 0
 
 
 def main(argv=None) -> int:
