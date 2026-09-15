@@ -4,6 +4,29 @@ from __future__ import annotations
 
 from typing import Any
 
+_ID_LIST_KEYS = (
+    "record_ids", "recordIds", "ids", "record_id_list", "recordId_list", "recordIdList",
+)
+
+
+def row_ids(page: Any) -> list[str]:
+    """从 record-list 响应提取行 id（统一 purge/reseed/backfill 的矩阵形态口径，#373）。
+
+    优先 `records[]/items[]` 的 `record_id|id|recordId`；无记录容器时回退顶层
+    `record_ids/recordIds/ids/record_id_list/recordId_list/recordIdList`（真实 lark-cli
+    矩阵形态的 id 在顶层 `record_id_list`，#361）。非 dict / 无 id 源返回 []。
+    """
+    if not isinstance(page, dict):
+        return []
+    records = page.get("records") or page.get("items")
+    if isinstance(records, list) and records and all(isinstance(r, dict) for r in records):
+        return [str(r.get("record_id") or r.get("id") or r.get("recordId") or "") for r in records]
+    for key in _ID_LIST_KEYS:
+        raw = page.get(key)
+        if isinstance(raw, list):
+            return [str(i) for i in raw if i]
+    return []
+
 
 def _extract_records(data: Any) -> list[dict[str, Any]]:
     """记录提取：容器异常（顶层非 dict / 无可识别容器键 / records 非空但非 list[dict] / data 非 list / fields 非 list）抛 RuntimeError。
@@ -21,19 +44,17 @@ def _extract_records(data: Any) -> list[dict[str, Any]]:
         "records" in data
         or "items" in data
         or ("fields" in data and "data" in data)
-        or any(
-            k in data
-            for k in (
-                "record_ids", "recordIds", "ids",
-                "record_id_list", "recordId_list", "recordIdList",
-            )
-        )
+        or any(k in data for k in _ID_LIST_KEYS)
     )
     if not has_container:
         raise RuntimeError(f"topic 响应无可识别容器键（无 records/items/fields+data）: {str(data)[:200]}")
+    for key in ("records", "items"):
+        raw = data.get(key)
+        if raw is not None and not isinstance(raw, list):
+            raise RuntimeError(f"topic {key} 非 list: {type(raw).__name__}")
     records = data.get("records") or data.get("items")
     if records:
-        if not isinstance(records, list) or not all(isinstance(r, dict) for r in records):
+        if not all(isinstance(r, dict) for r in records):
             raise RuntimeError(f"topic records 非 list[dict]: {type(records).__name__}")
         return list(records)
     fields_raw = data.get("fields")
@@ -47,15 +68,7 @@ def _extract_records(data: Any) -> list[dict[str, Any]]:
     if not rows:
         return []
     converted: list[dict[str, Any]] = []
-    rids: list[Any] = (
-        data.get("record_ids")
-        or data.get("recordIds")
-        or data.get("ids")
-        or data.get("record_id_list")
-        or data.get("recordId_list")
-        or data.get("recordIdList")
-        or []
-    )
+    rids: list[Any] = row_ids(data)
     for i, r in enumerate(rows):
         if isinstance(r, dict):
             if "fields" in r or "record" in r:
@@ -64,7 +77,7 @@ def _extract_records(data: Any) -> list[dict[str, Any]]:
                 converted.append(
                     {
                         "record_id": rid,
-                        "fields": fds,
+                        "fields": fds if isinstance(fds, dict) else {},
                         **{
                             k: v
                             for k, v in r.items()
@@ -73,8 +86,9 @@ def _extract_records(data: Any) -> list[dict[str, Any]]:
                     }
                 )
             else:
-                rid = r.get("record_id") or r.get("id") or (rids[i] if i < len(rids) else "")
-                converted.append({"record_id": rid, "fields": r})
+                rid = r.get("record_id") or r.get("id") or r.get("recordId") or (rids[i] if i < len(rids) else "")
+                fds = {k: v for k, v in r.items() if k not in ("record_id", "recordId", "id")}
+                converted.append({"record_id": rid, "fields": fds})
         elif isinstance(r, list) and fields:
             d = {fields[idx]: r[idx] for idx in range(min(len(fields), len(r)))}
             rid = rids[i] if i < len(rids) else ""

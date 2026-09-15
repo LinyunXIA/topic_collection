@@ -185,7 +185,7 @@ def test_salon_notify_empty_urls_warns(caplog):
     conn.close()
 
 
-def test_salon_flow_all_topics_fail_warns_rc0(monkeypatch, caplog):
+def test_salon_flow_all_topics_fail_warns_rc1(monkeypatch, caplog):
     cfg = load_config(app_env="test")
     cfg.salon.enabled = True
     cfg.salon.app_token = "appTokenTest"
@@ -205,6 +205,6 @@ def test_salon_flow_all_topics_fail_warns_rc0(monkeypatch, caplog):
         lambda *a, **k: (_ for _ in ()).throw(RuntimeError("MiniMax 429")),
     )
     with caplog.at_level(logging.WARNING):
-        assert salon_flow.run(cfg, conn, dry_run=False) == 0
-    assert any("0 条成功" in r.getMessage() for r in caplog.records), "全失败需告警但不得改返回码"
+        assert salon_flow.run(cfg, conn, dry_run=False) == 1
+    assert any("0 条成功" in r.getMessage() for r in caplog.records), "全失败需告警且 rc1（#R9-27）"
     conn.close()

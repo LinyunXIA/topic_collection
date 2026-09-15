@@ -97,11 +97,12 @@ def test_salon_flow_empty_outline_skips_without_mark(monkeypatch, caplog, bad_ou
     with caplog.at_level(logging.WARNING, logger="feedkicker.salon_flow"):
         rc = sf.run(cfg, conn, dry_run=False)
 
-    assert rc == 0
+    assert rc == 1
     assert wiki_calls == []
     assert store.get_ppt_last_status(conn, "recEmpty") == ""
     assert conn.execute("SELECT ppt_synced_at FROM articles WHERE entry_key='recEmpty'").fetchone() is None
     assert any("大纲合并失败" in r.getMessage() for r in caplog.records)
+    assert any("全部失败" in r.getMessage() for r in caplog.records)
     conn.close()
 
 

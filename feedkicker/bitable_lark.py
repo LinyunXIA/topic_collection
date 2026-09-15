@@ -9,6 +9,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterator
 from datetime import timedelta, timezone
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -35,10 +36,7 @@ _LARK_CANDIDATES = ("/opt/homebrew/bin/lark-cli", "/usr/local/bin/lark-cli")
 
 
 def _guard_offset(offset: int) -> None:
-    """绝对兜底（页指纹为主检测，#232）：上限 = `_CHUNK × _MAX_PAGES` = 20 万 offset（1000 页）。
-
-    取飞书单表量级（十万行）之上、远离现实归档规模，仅防指纹失效；合法大表不误杀（#245）。
-    """
+    """绝对兜底：上限 = `_CHUNK × _MAX_PAGES` = 20 万 offset，仅防指纹失效，合法大表不误杀（#232/#245）。"""
     if offset > MAX_OFFSET_LAST:
         raise RuntimeError(
             f"分页 offset 超过绝对兜底 {MAX_OFFSET_LAST}，疑似未按 --offset 翻页，中止以避免死循环"
@@ -57,9 +55,8 @@ _TOP_ID_KEYS = ("record_ids", "recordIds", "ids", "record_id_list", "recordId_li
 
 
 def _page_fingerprint(page: Any) -> str:
-    """本页指纹：有 id 用排序 sha1（无序化，打乱行序也熔断，#243）；真实 lark-cli 的 id 在顶层
-    `record_id_list`（#361）。无任何 id 源时才退回 fields+data 的**有界**内容 sha1（前 20 行、
-    保序，属最后手段，此形态真实响应不出现，#355）。
+    """本页指纹：有 id 用排序 sha1（无序化，打乱行序也熔断，#243；真实 id 在顶层 `record_id_list`，#361）；
+    无 id 源才退回 fields+data 的**有界**内容 sha1（前 20 行、保序，最后手段，#355）。
     """
     if not isinstance(page, dict):
         return ""
@@ -79,7 +76,7 @@ def _page_fingerprint(page: Any) -> str:
 
 
 def _page_guard(prev_fp: str, page: Any) -> str:
-    """本页指纹与上页相同即判定 lark-cli 忽略 --offset，raise 而非靠 offset 天花板（#232）。"""
+    """本页指纹与上页相同即判定 lark-cli 忽略 --offset，raise（#232）。"""
     fp = _page_fingerprint(page)
     if prev_fp and fp and fp == prev_fp:
         raise RuntimeError("分页未前进（疑似 lark-cli 忽略 --offset），中止以避免死循环")
@@ -99,11 +96,8 @@ def lark_bin() -> str:
 def _run(
     args: list[str], stdin_text: str | None = None, timeout: float = 120
 ) -> subprocess.CompletedProcess[str] | None:
-    """执行 lark-cli 子进程。
-
-    launchd 的 PATH 只有 /usr/bin:/bin，lark-cli 是 env node 脚本会以 rc=127 失败；
-    显式增补 homebrew 与二进制所在目录（#123）。lark_bin 缺失一并返回 None，
-    由调用方按其「无返回」语义降级（#237）。
+    """执行 lark-cli 子进程。launchd 的 PATH 只有 /usr/bin:/bin，显式增补 homebrew 与二进制目录（#123）；
+    lark_bin 缺失返回 None，由调用方按其「无返回」语义降级（#237）。
     """
     try:
         bin_path = lark_bin()
@@ -151,6 +145,24 @@ def _parse(proc: subprocess.CompletedProcess[str] | None) -> tuple[bool, dict[st
     return True, (obj.get("data") or {})
 
 
+def iter_record_pages(fetch) -> Iterator[tuple[Any, dict[str, Any]]]:
+    """按 `_CHUNK` 翻页 + offset/页数/页指纹三重兜底，逐页 yield `(proc, data)`。
+
+    `fetch(offset) -> CompletedProcess|None`；`_ok` 判定与「不足一页即末页」由调用方处理（口径单一，
+    `existing_links` 与 `read_rows` 共用，#R9-34）。
+    """
+    offset = 0
+    prev_fp = ""
+    while True:
+        _guard_offset(offset)
+        guard_pages(offset // _CHUNK + 1)
+        proc = fetch(offset)
+        data = _data(proc)
+        prev_fp = _page_guard(prev_fp, data)
+        yield proc, data
+        offset += _CHUNK
+
+
 def _ok(proc) -> bool:
     return _parse(proc)[0]
 
@@ -161,10 +173,7 @@ def _data(proc: subprocess.CompletedProcess[str] | None) -> dict[str, Any]:
 
 @contextlib.contextmanager
 def _json_arg(payload: dict[str, Any]):
-    """lark-cli 的 --json 不支持 stdin、@文件只接受 cwd 内相对路径；
-
-    大批记录走 argv 会超 ARG_MAX（Errno 7 Argument list too long），落临时文件传引用。
-    """
+    """lark-cli 的 --json 不支持 stdin、@文件只接受 cwd 内相对路径；大批记录走 argv 会超 ARG_MAX，落临时文件传引用。"""
     fd, tmp_path = tempfile.mkstemp(prefix=".lark-json-", suffix=".json", dir=".")
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
@@ -176,13 +185,10 @@ def _json_arg(payload: dict[str, Any]):
 
 
 def _has_batch_verb() -> str | None:
+    """探测写动词：真实 CLI 只提供 `+record-batch-update`（`+record-update` 不存在，不再探测，#R9-15）。"""
     proc = _run(["base", "--help"])
     txt = proc.stdout if proc and proc.stdout else ""
-    if "+record-batch-update" in txt:
-        return "+record-batch-update"
-    if "+record-update" in txt:
-        return "+record-update"
-    return None
+    return "+record-batch-update" if "+record-batch-update" in txt else None
 
 
 def _markdown_record_ids(stdout: str) -> list[str]:

@@ -173,18 +173,21 @@ def main(argv: list[str] | None = None) -> int:
                 app_token = cfg.salon.app_token
             if not table_id:
                 table_id = cfg.salon.table_id
-            if (not app_token or not table_id) and args.dry_run:
-                return _stub_out(args.check_fields)
-        except Exception:  # noqa: BLE001
+        except Exception as e:  # noqa: BLE001
             if args.dry_run:
                 return _stub_out(args.check_fields)
-            raise
+            log.error("加载配置失败或 token 缺失: %s（rc=2）", e)
+            return 2
+
+    if not app_token or not table_id:
+        if args.dry_run:
+            return _stub_out(args.check_fields)
+        log.error("app_token/table_id 缺失或为占位，无法访问多维表格（rc=2）")
+        return 2
 
     if args.check_fields:
         fields = fetch_topic_fields(app_token, table_id)
         print(json.dumps(fields, ensure_ascii=False, indent=2))
-    elif args.dry_run and (not app_token or not table_id):
-        _stub_out(args.check_fields)
     else:
         records = fetch_selected_topics(app_token, table_id, limit=args.limit)
         print(json.dumps(records, ensure_ascii=False, indent=2))

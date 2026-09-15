@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from feedkicker import minimax
+from feedkicker.minimax_transport import content_blocks_text
 from feedkicker.config_models import ExtractConf, ProviderConf, env_key_for
 from feedkicker.extract_parse import (
     build_batch_prompt as build_batch_prompt,
@@ -26,23 +27,28 @@ PROVIDERS: dict[str, ProviderConf] = {
     ),
     "deepseek": ProviderConf(
         base_url="https://api.deepseek.com/v1",
-        model="deepseek-chat",
+        model="deepseek-flash",
         tool_label="DS",
     ),
 }
 
 
-def resolve_provider(cfg: ExtractConf, name: str | None = None) -> ProviderConf:
-    """按 provider 名合并注册表默认与 yaml 覆盖；缺 key/占位 key 抛 RuntimeError（不发起调用）。"""
-    provider = (name or cfg.provider or "minimax").strip()
-    spec = PROVIDERS.get(provider)
+def resolve_provider_conf(
+    providers: dict[str, ProviderConf], provider: str | None, default: str = "minimax"
+) -> ProviderConf:
+    """按 provider 名合并注册表默认与 yaml 覆盖；缺 key/占位 key 抛 RuntimeError（不发起调用）。
+
+    供 extract 与 score 共用同一套 key 覆盖口径（`providers` 为各自配置段的 providers 子段）。
+    """
+    name = (provider or default or "minimax").strip()
+    spec = PROVIDERS.get(name)
     if spec is None:
-        raise RuntimeError(f"未知 extract provider: {provider}（可用 {sorted(PROVIDERS)}）")
-    got = cfg.providers.get(provider) or ProviderConf()
-    api_key = got.api_key or env_key_for(provider)
+        raise RuntimeError(f"未知 extract provider: {name}（可用 {sorted(PROVIDERS)}）")
+    got = providers.get(name) or ProviderConf()
+    api_key = got.api_key or env_key_for(name)
     if not api_key or api_key.strip().startswith("<"):
         raise RuntimeError(
-            f"extract provider {provider} 缺少 api_key（配置 providers.{provider}.api_key 或设置环境变量）"
+            f"extract provider {name} 缺少 api_key（配置 providers.{name}.api_key 或设置环境变量）"
         )
     return ProviderConf(
         base_url=got.base_url or spec.base_url,
@@ -50,6 +56,11 @@ def resolve_provider(cfg: ExtractConf, name: str | None = None) -> ProviderConf:
         api_key=api_key,
         tool_label=got.tool_label or spec.tool_label,
     )
+
+
+def resolve_provider(cfg: ExtractConf, name: str | None = None) -> ProviderConf:
+    """按 provider 名合并注册表默认与 yaml 覆盖；缺 key/占位 key 抛 RuntimeError（不发起调用）。"""
+    return resolve_provider_conf(cfg.providers, name or cfg.provider)
 
 
 def call_llm(cfg: ExtractConf, prompt: str) -> str:
@@ -119,6 +130,11 @@ def refine_batches(
     return collected, calls, failed, empty
 
 
+def post_chat(conf: ProviderConf, prompt: str, timeout: float = 180.0) -> str:
+    """公开包装 `_post_chat`：score_llm 复用同一 HTTP 出口与错误码归一，避免另起一套（DESIGN §26.2）。"""
+    return _post_chat(conf, prompt, timeout)
+
+
 def _post_chat(conf: ProviderConf, prompt: str, timeout: float = 180.0) -> str:
     """POST {base_url}/chat/completions，单次尝试（PRV-8）。
 
@@ -166,6 +182,9 @@ def _content_of(data: Any) -> str:
         content = msg.get("content")
         if isinstance(content, str) and content.strip():
             return content
+        blocks = content_blocks_text(content)
+        if blocks.strip():
+            return blocks
         reasoning = msg.get("reasoning_content")
         if isinstance(reasoning, str) and reasoning.strip():
             log.warning("LLM content 为空，回退 reasoning_content（thinking 模型）")

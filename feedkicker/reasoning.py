@@ -1,8 +1,8 @@
 """thinking 模型内联推理块剥离（#321/#323/#331）。
 
-`_tag_at` 识别 think/thinking/reasoning 标签（含属性、自闭合），`_find_close` 以开标签栈
-扫描配对闭标签（支持嵌套，且跳过 JSON 字符串字面量）；顶层 `strip_reasoning` 只剥离字符串
-字面量之外的成对块，避免破坏 JSON 字段值里的标签文本（#331）。
+`_tag_at` 识别 think/thinking/reasoning 标签（含属性、自闭合），`_find_close` 以同名开标签栈
+扫描配对闭标签（支持嵌套；不把引号当字符串语义，未配平时回退最近同名闭标签，#376）；顶层
+`strip_reasoning` 只剥离字符串字面量之外的成对块，避免破坏 JSON 字段值里的标签文本（#331）。
 """
 
 from __future__ import annotations
@@ -18,9 +18,9 @@ def _tag_at(text: str, i: int) -> tuple[str, str, bool, int] | None:
     closing = j < len(text) and text[j] == "/"
     if closing:
         j += 1
-    low = text.lower()
     for name in _NAMES:
-        if not low.startswith(name, j):
+        seg = text[j : j + len(name)]
+        if len(seg) < len(name) or seg.lower() != name:
             continue
         k = j + len(name)
         if k < len(text) and (text[k].isalnum() or text[k] == "_"):
@@ -33,38 +33,32 @@ def _tag_at(text: str, i: int) -> tuple[str, str, bool, int] | None:
 
 
 def _find_close(text: str, start: int, name: str) -> int | None:
-    """自 start 扫描 start 对应的配对闭标签，返回闭标签后的下标；未配对返回 None。"""
+    """自 start 扫描 start 对应的配对闭标签，返回闭标签后的下标；未配对返回最近同名闭标签（#376）。
+
+    推理块是散文，引号（含奇数个/转义）无 JSON 字符串语义，不参与配对——否则一个未配对引号会
+    吞掉其后闭标签，令整批 JSON 被当未闭合截断（R8 #323 / R9-16 家族）。嵌套仅同名开标签计入深度，
+    异名标签（如 `<thinking>` 嵌在 `<think>` 内）不影响外层配对；同名多开导致无法配平时回退到
+    最近一个同名闭标签，尽量保留其后 JSON。
+    """
     depth = 1
+    last: int | None = None
     i = start
-    in_str = False
     while i < len(text):
-        ch = text[i]
-        if in_str:
-            if ch == "\\":
-                i += 2
-                continue
-            if ch == '"':
-                in_str = False
-            i += 1
-            continue
-        if ch == '"':
-            in_str = True
-            i += 1
-            continue
         tag = _tag_at(text, i)
         if tag is not None:
             tname, attrs, closing, end = tag
-            if closing:
-                if tname == name:
+            if tname == name:
+                if closing:
                     depth -= 1
+                    last = end
                     if depth == 0:
                         return end
-            elif not attrs.endswith("/"):
-                depth += 1
+                elif not attrs.endswith("/"):
+                    depth += 1
             i = end
             continue
         i += 1
-    return None
+    return last
 
 
 def strip_reasoning(text: str) -> str:

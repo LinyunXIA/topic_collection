@@ -36,7 +36,7 @@
 
 ### 1.3 字段面（对齐 `config_models.py` dataclass）
 
-顶层 `Config`（13 字段）：
+顶层 `Config`（14 字段）：
 
 | 字段 | 类型 | 默认 | 说明 |
 |---|---|---|---|
@@ -53,6 +53,7 @@
 | `minimax` | MinimaxConf | 见下 | 大纲生成 |
 | `wiki` | WikiConf | 见下 | Wiki 归档 |
 | `extract` | ExtractConf | 见下 | 资讯→选题 LLM 提炼（`tc-extract`） |
+| `score` | ScoreConf | 见下 | 沙龙话题清单自动打分（`tc-score`） |
 
 嵌套段：
 
@@ -63,10 +64,34 @@
 | `minimax` | `api_key=""`、`model="MiniMax-M3"`、`base_url="https://api.minimaxi.com"` |
 | `wiki` | `space_id=""`、`parent_token=""`、`app_token=""`（未配置时回退 `salon.wiki_space_id`/`salon.wiki_parent_token`） |
 | `extract` | `enabled=False`、`since_days=7`、`batch_size=30`（取值 1..200，越界 rc 2）、`provider="minimax"`、`prompt_file="prompts/extract.md"`、`max_calls=0`（0=不限）、`providers=dict[str, ProviderConf]`（`base_url`/`model`/`api_key`/`tool_label`） |
+| `score` | `enabled=False`、`prompt_file="prompts/score.md"`、`batch_size=20`（取值 1..100，越界 rc 2）、`provider="minimax"`、`max_calls=0`（0=不限）、`timeout_seconds=600.0`（须 > 0）、`providers=dict[str, ProviderConf]`（`base_url`/`model`/`api_key`/`tool_label`） |
 
 以 `feedkicker/config_models.py` 与 `feedkicker/config.py` 的 `load_config` 为准；未文档化别名（`salon.wiki_space`、`wiki.wiki_space_id` 等）已移除。
 
-`extract` 段补充：提示词文件默认 `prompts/extract.md`（仓库根相对路径，可配 `extract.prompt_file`）；provider 注册表默认值在 `feedkicker/extract_llm.py`（minimax：`https://api.minimaxi.com/v1` / `MiniMax-M3` / `MMax`；deepseek：`https://api.deepseek.com/v1` / `deepseek-chat` / `DS`），yaml `providers.<name>` 非空字段覆盖默认；`providers.<name>.base_url` **须含 `/v1`**（endpoint 按 `{base_url}/chat/completions` 拼接，缺 `/v1` 会 404）。`tc-extract --provider {minimax,deepseek}` 可单次切换 provider（缺省取 `extract.provider`，默认 minimax），`提取工具` 随之为 `MMax`/`DS`；DeepSeek 的 key 走 `DEEPSEEK_API_KEY`（或 `extract.providers.deepseek.api_key`），所选 provider 缺 key/占位 → rc 2 且不发请求。
+`extract` 段补充：提示词文件默认 `prompts/extract.md`（仓库根相对路径，可配 `extract.prompt_file`）；provider 注册表默认值在 `feedkicker/extract_llm.py`（minimax：`https://api.minimaxi.com/v1` / `MiniMax-M3` / `MMax`；deepseek：`https://api.deepseek.com/v1` / `deepseek-flash` / `DS`），yaml `providers.<name>` 非空字段覆盖默认；`providers.<name>.base_url` **须含 `/v1`**（endpoint 按 `{base_url}/chat/completions` 拼接，缺 `/v1` 会 404）。`tc-extract --provider {minimax,deepseek}` 可单次切换 provider（缺省取 `extract.provider`，默认 minimax），`提取工具` 随之为 `MMax`/`DS`；DeepSeek 的 key 走 `DEEPSEEK_API_KEY`（或 `extract.providers.deepseek.api_key`），所选 provider 缺 key/占位 → rc 2 且不发请求。
+
+`score` 段补充：`tc-score`（DESIGN §26，PRD §22）对 salon「沙龙话题清单」全表逐条打分，写回 2 列。配置示例：
+
+```yaml
+score:
+  enabled: true
+  provider: minimax        # minimax | deepseek
+  prompt_file: prompts/score.md   # 仓库根相对路径
+  batch_size: 20           # 1..100，越界 rc 2（单次调用 ≤100 行；默认 20 越小越不易读超时）
+  max_calls: 0             # 0 = 不限
+  timeout_seconds: 600     # 单次 LLM 读超时（须 > 0）
+  providers:               # 复用 providers 段口径；留空/占位时回退 env
+    minimax:
+      api_key: "<MiniMax_Key>"
+    deepseek:
+      api_key: ""          # 回退 DEEPSEEK_API_KEY
+```
+
+- provider 的 `base_url`/`model`/`api_key` **复用 `providers` 段**（`ProviderConf`），key 覆盖口径与 `extract` 完全一致（yaml 非空则 yaml 优先，空/占位才回退 env `MiniMax_Key`/`MINIMAX_API_KEY`、`DEEPSEEK_API_KEY`；占位 `<…>` 清空）；所选 provider 缺 key → rc 2 且不发起任何 lark/LLM 调用。
+- 提示词文件默认 `prompts/score.md`（用户原文 + 注入段 JSON schema）；缺失或为空 → rc 2。
+- 单次调用 ≤100 行（`MAX_SCORE_BATCH=100`），超出自动切批并注入「已打分参考」横向上文；**默认批大小 20、单次读超时 600s**；**默认只补空**（判据=目标 `打分` 列非空），`--force` 覆盖重算。
+- **MiniMax M3 约 10–15s/行**（批 20 约 4–5 分钟），故默认 `timeout_seconds=600`；若仍读超时，把 `score.batch_size` 调至 10。
+- 手动跑法：dry-run 先看清单，确认后 `--apply`。建议频率：选题清单有新增/变更后按需人工跑（**不接 launchd**；`--apply` 会写线上表，须人工确认，见 §6）。
 
 ### 1.4 db 分流
 
@@ -86,8 +111,8 @@
 |---|---|---|
 | `FEISHU_WEBHOOK` | `feishu_webhook` | 凭据可不落文件 |
 | `FEISHU_SECRET` | `feishu_secret` | 签名密钥 |
-| `MiniMax_Key`（或 `MINIMAX_API_KEY`） | `minimax.api_key`（**env 优先覆盖 yaml**）；`extract.providers.minimax.api_key`（**yaml 非空则 yaml 优先**，仅 yaml 空/占位时回退 env） | 大纲生成 / 选题提炼；占位值（以 `<` 开头）会被清空 |
-| `DEEPSEEK_API_KEY` | `extract.providers.deepseek.api_key`（同 extract 优先级：**yaml 非空则 yaml 优先**） | 选题提炼（DeepSeek provider）；占位值清空 |
+| `MiniMax_Key`（或 `MINIMAX_API_KEY`） | `minimax.api_key`（**env 优先覆盖 yaml**）；`extract.providers.minimax.api_key`（**yaml 非空则 yaml 优先**，仅 yaml 空/占位时回退 env）；`score.providers.minimax.api_key`（同口径） | 大纲生成 / 选题提炼 / 话题打分；占位值（以 `<` 开头）会被清空 |
+| `DEEPSEEK_API_KEY` | `extract.providers.deepseek.api_key`（同 extract 优先级：**yaml 非空则 yaml 优先**）；`score.providers.deepseek.api_key`（同口径） | 选题提炼 / 话题打分（DeepSeek provider）；占位值清空 |
 | `TC_SALON_TOKEN` | `salon.app_token` | 沙龙选题 Base |
 | `TC_FEISHU_HOST` | —（`feishu_host.feishu_host()`） | 飞书租户域名，默认 `web91vfvm7.feishu.cn`；换租户/测试注入 |
 | `TC_APP_ENV` | 运行环境 | `dev\|test\|prod`，默认 `prod` |
@@ -141,6 +166,10 @@ launchctl print gui/$UID/com.feedkicker.purge | grep -i calendar   # 应含 day 
 
 - ProgramArguments **不带 `--apply`**：调度只做 dry-run 巡检，`PurgeStats` 落 `logs/purge.log`。
 - 真删由人工看过日志后执行（见 §6）。
+
+### 3.3 tc-score 不接 launchd
+
+`tc-score --apply` 会**写线上沙龙话题清单**，且依赖 LLM 调用，故**不纳入 launchd**：由人工在选题清单变更后按需运行（先 `--env prod` dry-run 看清单，确认后 `--apply`，见 §6）。
 
 ### 3.3 日志轮转（newsyslog）与凭据轮换
 

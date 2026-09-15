@@ -15,7 +15,6 @@ log = logging.getLogger(__name__)
 
 
 def _token_missing(value: str) -> bool:
-    """空值或 `<...>` 占位均视为缺失（与 bitable._tokens_ready 同口径，#204）。"""
     return not value or "<" in value
 
 
@@ -25,13 +24,11 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         if not dry_run:
             return 0
     app_token, table_id = cfg.salon.app_token, cfg.salon.table_id
-    if (_token_missing(app_token) or _token_missing(table_id)) and dry_run:
-        selected = [
-            {"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}
-        ]
-    elif _token_missing(app_token) or _token_missing(table_id):
-        log.warning("salon 未配置 app_token/table_id，跳过")
-        return 0
+    if _token_missing(app_token) or _token_missing(table_id):
+        if not dry_run:
+            log.warning("salon 未配置 app_token/table_id，跳过")
+            return 0
+        selected = [{"record_id": "recStub000", "fields": {"讨论状态": ["已选题"], "话题名称": "示例已选题话题"}}]
     else:
         try:
             selected = fetch_selected_topics(app_token, table_id)
@@ -42,20 +39,16 @@ def run(cfg, conn, dry_run: bool = False) -> int:
     if not selected:
         log.info("无已选题，跳过")
         return 0
-
     wiki_space = cfg.wiki.space_id or cfg.salon.wiki_space_id
     wiki_parent = cfg.wiki.parent_token or cfg.salon.wiki_parent_token
     wiki_app = cfg.wiki.app_token or cfg.salon.app_token
     if not dry_run and (_token_missing(wiki_space) or _token_missing(wiki_parent)):
         log.warning("wiki space/parent 为空或占位，跳过建 Wiki 与标记（不产生孤儿文档）")
         return 0
-
     now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ")
     wiki_urls: list[str] = []
-    success_count = 0
-    attempted = 0
+    failed = 0
     skipped = 0
-
     for rec in selected:
         rid = str(rec.get("record_id") or rec.get("id") or "")
         if not rid:
@@ -70,6 +63,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             skip = store.is_ppt_synced(conn, rid) or store.get_ppt_last_status(conn, rid) == "已选题"
         except Exception as e:  # noqa: BLE001
             log.error("topic %s 跳过判据查询失败: %s", rid, e)
+            failed += 1
             continue
         if skip:
             skipped += 1
@@ -80,7 +74,6 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         if dry_run:
             tool_outline, principle_outline = salon_md.stub_outlines(title)
         else:
-            attempted += 1
             try:
                 tool_outline = minimax.gen_outline(
                     title,
@@ -91,6 +84,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
                 )
             except Exception as e:  # noqa: BLE001
                 log.warning("topic %s 工具类大纲生成失败: %s", rid, e)
+                failed += 1
                 continue
 
             try:
@@ -103,12 +97,14 @@ def run(cfg, conn, dry_run: bool = False) -> int:
                 )
             except Exception as e:  # noqa: BLE001
                 log.warning("topic %s 原理类大纲生成失败: %s", rid, e)
+                failed += 1
                 continue
 
         try:
             combined_md = salon_md.build_combined_md(title, tool_outline, principle_outline)
         except Exception as e:  # noqa: BLE001
             log.warning("topic %s 大纲合并失败: %s", rid, e)
+            failed += 1
             continue
         if dry_run:
             print(json.dumps({"tool_outline": tool_outline, "principle_outline": principle_outline}, ensure_ascii=False, indent=2))
@@ -125,6 +121,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             )
         except Exception as e:  # noqa: BLE001
             log.warning("topic %s Wiki 写入失败: %s", rid, e)
+            failed += 1
             continue
 
         wiki_urls.append(url)
@@ -137,19 +134,22 @@ def run(cfg, conn, dry_run: bool = False) -> int:
             store.mark_topic_archived(conn, table_id, rid, title, url, combined_md, now_iso)
         except Exception as e:  # noqa: BLE001
             log.error("topic %s 归档落库失败: %s", rid, e)
-        success_count += 1
 
     if wiki_urls and not dry_run:
-        log.info("本轮成功 %d 条，Wiki: %s", success_count, wiki_urls)
+        log.info("本轮成功 %d 条，Wiki: %s", len(wiki_urls), wiki_urls)
     elif dry_run:
-        log.info("dry-run 完成，待处理 %d 条，Wiki 预览 %d 个", len(wiki_urls), len(wiki_urls))
+        log.info("dry-run 完成，Wiki 预览 %d 个", len(wiki_urls))
         if wiki_urls:
             print(json.dumps({"wiki_urls": wiki_urls}, ensure_ascii=False, indent=2))
     else:
         log.info("本轮无新增 Wiki")
 
-    if not dry_run and attempted and not wiki_urls:
-        log.warning("已选题 %d 条，尝试 %d 条但 0 条成功建 Wiki（全部失败；另 %d 条跳过），请查上方 WARNING", len(selected), attempted, skipped)
+    all_failed = not dry_run and failed > 0 and not wiki_urls
+    if all_failed:
+        log.warning(
+            "已选题 %d 条全部失败（失败 %d、跳过 %d），0 条成功建 Wiki，请查上方 WARNING",
+            len(selected), failed, skipped,
+        )
 
     card_ok = salon_notify.send_wiki_card(cfg, conn, wiki_urls, dry_run=dry_run)
 
@@ -159,7 +159,7 @@ def run(cfg, conn, dry_run: bool = False) -> int:
         except Exception as e:  # noqa: BLE001
             log.warning("Wiki 首页更新失败（不影响主流程）: %s", e)
 
-    return 0 if card_ok else 1
+    return 1 if (all_failed or not card_ok) else 0
 
 
 def main(argv=None) -> int:

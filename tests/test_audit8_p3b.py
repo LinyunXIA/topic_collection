@@ -63,7 +63,7 @@ def _doc(name: str) -> str:
 
 
 def test_prd_f25_enumerates_tc_extract() -> None:
-    row = next(ln for ln in _doc("PRD.md").splitlines() if "命令行详解（8 命令）" in ln)
+    row = next(ln for ln in _doc("PRD.md").splitlines() if "命令行详解（9 命令）" in ln)
     assert "`tc-extract`" in row
 
 

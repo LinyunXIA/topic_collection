@@ -48,7 +48,7 @@ def _slides_of(outline: Any) -> list[dict[str, Any]]:
     for s in valid:
         bullets = s.get("bullets")
         if not isinstance(bullets, list) or not any(
-            isinstance(b, (str, int, float)) for b in bullets
+            (isinstance(b, str) and b.strip()) or isinstance(b, (int, float)) for b in bullets
         ):
             raise ValueError(f"大纲页缺有效 bullets（需 ≥1 个 str/int/float）: {str(s)[:200]}")
     return valid

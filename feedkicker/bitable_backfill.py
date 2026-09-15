@@ -5,7 +5,7 @@ import logging
 from datetime import UTC, datetime
 from typing import Any
 
-from feedkicker import bitable_lark
+from feedkicker import bitable_lark, topic_records
 
 log = logging.getLogger(__name__)
 
@@ -37,6 +37,13 @@ def _shanghai_date(s: str) -> str | None:
         return None
     s = s.strip()
     if s.isdigit():
+        for fmt, width in (("%Y%m%d", 8), ("%Y%m%d%H%M%S", 14)):
+            if len(s) == width:
+                try:
+                    dt = datetime.strptime(s, fmt).replace(tzinfo=bitable_lark.SHANGHAI)
+                    return dt.strftime("%Y-%m-%d")
+                except ValueError:
+                    break
         try:
             iv = int(s)
             if iv > 1_000_000_000_000:
@@ -125,17 +132,24 @@ def backfill_empty_archive_dates(
             raise RuntimeError(f"backfill 第 {offset // 200 + 1} 页拉取失败，中止")
         data = bitable_lark._data(proc)
         prev_fp = bitable_lark._page_guard(prev_fp, data)
+        if not (
+            isinstance(data.get("records"), list) or isinstance(data.get("items"), list)
+            or isinstance(data.get("fields"), list) or topic_records.row_ids(data)
+        ):
+            raise RuntimeError(
+                f"backfill：record-list 响应无法识别（无 records/fields+data），中止以免不完整回填: {str(data)[:200]}"
+            )
         records: list[Any] = data.get("records") or []
         fields: list[str] = data.get("fields") or []
         rows: list[Any] = data.get("data") or []
-        rids: list[Any] = data.get("record_ids") or data.get("recordIds") or data.get("ids") or []
+        rids: list[Any] = topic_records.row_ids(data)
         pairs: list[tuple[str, dict[str, Any]]] = []
         if records and not all(isinstance(rec, dict) for rec in records):
             raise RuntimeError(f"backfill：records 子项非 dict，中止以免误判: {str(records)[:200]}")
         if records:
-            for rec in records:
+            for i, rec in enumerate(records):
                 fds = rec.get("fields") or rec.get("record") or {}
-                rid = rec.get("record_id") or rec.get("id") or rec.get("recordId") or ""
+                rid = rids[i] if i < len(rids) else ""
                 pairs.append((str(rid or ""), fds if isinstance(fds, dict) else {}))
             page_size = len(records)
         elif fields and rows:
@@ -166,28 +180,20 @@ def backfill_empty_archive_dates(
         log.info("backfill dry-run：扫描 %d 条，待修复 %d 条（未写入）", total_scanned, len(to_fix))
         return len(to_fix)
     fixed = 0
+    failed = 0
     for i in range(0, len(to_fix), bitable_lark._CHUNK):
         chunk = to_fix[i : i + bitable_lark._CHUNK]
-        if verb == "+record-batch-update":
-            payload = json.dumps({"update_records": {rid: {"归档日期": d} for rid, d in chunk}}, ensure_ascii=False)
-            proc = bitable_lark._run(
-                ["base", verb, "--base-token", app_token, "--table-id", table_id, "--json", payload],
-                timeout=300,
-            )
-            if bitable_lark._ok(proc):
-                fixed += len(chunk)
-            else:
-                log.warning("Bitable 批量回填失败（第 %d 批 %d 条）", i // bitable_lark._CHUNK + 1, len(chunk))
+        payload = json.dumps({"update_records": {rid: {"归档日期": d} for rid, d in chunk}}, ensure_ascii=False)
+        proc = bitable_lark._run(
+            ["base", verb, "--base-token", app_token, "--table-id", table_id, "--json", payload],
+            timeout=300,
+        )
+        if bitable_lark._ok(proc):
+            fixed += len(chunk)
         else:
-            for rid, d in chunk:
-                payload = json.dumps({"record_id": rid, "fields": {"归档日期": d}}, ensure_ascii=False)
-                proc = bitable_lark._run(
-                    ["base", verb, "--base-token", app_token, "--table-id", table_id, "--json", payload],
-                    timeout=60,
-                )
-                if bitable_lark._ok(proc):
-                    fixed += 1
-                else:
-                    log.warning("Bitable 单条回填失败 %s", rid)
-    log.info("backfill 完成：扫描 %d 条，修复 %d 条", total_scanned, fixed)
+            failed += len(chunk)
+            log.warning("Bitable 批量回填失败（第 %d 批 %d 条）", i // bitable_lark._CHUNK + 1, len(chunk))
+    log.info("backfill 完成：扫描 %d 条，修复 %d 条，失败 %d 条", total_scanned, fixed, failed)
+    if failed and not fixed:
+        raise RuntimeError(f"backfill 全部写入失败（failed={failed}），中止（调用方 rc2）")
     return fixed

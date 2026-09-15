@@ -239,3 +239,21 @@ def test_strip_reasoning_no_tags_unchanged() -> None:
     text = '前置 {"topics": []}'
 
     assert strip_reasoning(text) == text
+
+
+def test_strip_reasoning_odd_quote_keeps_json() -> None:
+    raw = '<think>He said "hi and left</think>{"topics": []}'
+
+    assert strip_reasoning(raw) == '{"topics": []}'
+
+
+def test_strip_reasoning_escaped_quote_keeps_json() -> None:
+    raw = '<think>a \\"b</think>{"topics": []}'
+
+    assert strip_reasoning(raw) == '{"topics": []}'
+
+
+def test_strip_reasoning_mixed_nested_tags_keeps_json() -> None:
+    raw = '<think>a<thinking>b</thinking>c</think>{"topics": []}'
+
+    assert strip_reasoning(raw) == '{"topics": []}'

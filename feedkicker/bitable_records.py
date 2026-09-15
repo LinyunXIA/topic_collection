@@ -46,29 +46,21 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
     不按「环境」过滤：dev/test 共享 Base 下跨环境 URL 也去重，test 视图可能缺行（非丢失，#229）。
     """
     links: set[str] = set()
-    offset = 0
-    prev_fp = ""
-    while True:
-        bitable_lark._guard_offset(offset)
-        bitable_lark.guard_pages(offset // bitable_lark._CHUNK + 1)
-        proc = bitable_lark._run(
+
+    def fetch(offset: int):
+        return bitable_lark._run(
             [
-                "base", "+record-list",
-                "--base-token", app_token,
-                "--table-id", table_id,
-                "--field-id", "链接",
-                "--limit", "200",
-                "--offset", str(offset),
-                "--json",
+                "base", "+record-list", "--base-token", app_token, "--table-id", table_id,
+                "--field-id", "链接", "--limit", "200", "--offset", str(offset), "--json",
             ],
             timeout=120,
         )
+
+    for proc, data in bitable_lark.iter_record_pages(fetch):
         if not bitable_lark._ok(proc):
             raise RuntimeError("拉取多维表格已有链接失败，中止本次同步以避免重复写入")
-        data = bitable_lark._data(proc)
-        if not isinstance(data, dict):  # pyright: ignore[reportUnnecessaryIsInstance]
+        if not isinstance(data, dict):
             raise RuntimeError(f"多维表格已有链接响应不是 JSON 对象，中止本次同步: {str(data)[:200]}")
-        prev_fp = bitable_lark._page_guard(prev_fp, data)
         records = data.get("records")
         if isinstance(records, list):
             if not all(isinstance(rec, dict) for rec in records):
@@ -84,7 +76,6 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
                     links.add(key)
             if len(records) < bitable_lark._CHUNK:
                 break
-            offset += bitable_lark._CHUNK
             continue
         fields = data.get("fields")
         rows = data.get("data")
@@ -109,7 +100,6 @@ def existing_links(app_token: str, table_id: str) -> set[str]:
                 links.add(key)
         if len(rows) < 200:
             break
-        offset += 200
     return links
 
 

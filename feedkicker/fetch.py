@@ -21,6 +21,27 @@ _TRACKING_PREFIXES = ("utm_", "mc_")
 
 _BARE_HOST_RE = re.compile(r"^[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?::[0-9]+)?/")
 
+_URL_CHARS = set("abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~:/?#[]@!$&'()*+,;=%")
+
+_URL_EDGE = "()<>[]{}（）【】「」《》，。；、！？：；“”‘’\"'.,;:!?"
+
+
+def trim_url(token: str) -> str:
+    """粘连 token 截到最后一个合法 URL 字符，再去首尾包裹标点（`<url>`/`(url)`/`url，详见`，#R9-19）。
+
+    尾部 `)` 若与 token 内 `(` 配平则保留（`…/a_(b)` 是合法路径），仅剥真正多余的包裹/标点。
+    """
+    text = (token or "").strip()
+    end = max((i for i, ch in enumerate(text) if ch in _URL_CHARS), default=-1)
+    if end < 0:
+        return ""
+    text = text[: end + 1].lstrip("".join(_URL_EDGE))
+    while text and text[-1] in _URL_EDGE:
+        if text[-1] == ")" and text.count("(") >= text.count(")"):
+            break
+        text = text[:-1]
+    return text
+
 
 def utc_now_iso() -> str:
     return datetime.now(UTC).strftime(_ISO_FMT)
@@ -67,7 +88,8 @@ def canonicalize(url: str) -> str:
         netloc = f"{userinfo}{host}" + (f":{port}" if port and not default_port else "")
     except ValueError:
         netloc = parts.netloc.lower()
-    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, ""))
+    frag = parts.fragment if parts.path in ("", "/") and parts.fragment.startswith("/") else ""
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, frag))
 
 
 def is_url_token(token: str) -> bool:
@@ -89,7 +111,7 @@ def dedup_key(url: str) -> str:
     白名单（`utm_*`/`mc_*`/`fbclid`/`gclid`/`igshid`/`spm`），`source`/`from`/`ref` 承载内容
     差异不得剥离（#333）。非 URL token 返回 ""（调用方须过滤空键，#329）。
     """
-    text = html.unescape((url or "").strip())
+    text = trim_url(html.unescape((url or "").strip()))
     if not is_url_token(text):
         return ""
     canon = canonicalize(text)
@@ -99,19 +121,20 @@ def dedup_key(url: str) -> str:
         parts = urlsplit(canon)
     except ValueError:
         return canon
-    path = parts.path.rstrip("/") if len(parts.path) > 1 else parts.path
+    path = parts.path.rstrip("/")
+    frag = parts.fragment
     if not parts.query:
-        return urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+        return urlunsplit((parts.scheme, parts.netloc, path, "", frag))
     try:
         pairs = parse_qsl(parts.query, keep_blank_values=True)
     except ValueError:
-        return urlunsplit((parts.scheme, parts.netloc, path, parts.query, ""))
+        return urlunsplit((parts.scheme, parts.netloc, path, parts.query, frag))
     kept = sorted(
         (k, v)
         for k, v in pairs
         if not k.lower().startswith(_TRACKING_PREFIXES) and k.lower() not in _TRACKING
     )
-    return urlunsplit((parts.scheme, parts.netloc, path, urlencode(kept), ""))
+    return urlunsplit((parts.scheme, parts.netloc, path, urlencode(kept), frag))
 
 
 def entry_key_of(entry) -> str:

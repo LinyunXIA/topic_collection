@@ -493,7 +493,7 @@ def test_provider_cli_deepseek_uses_endpoint_and_ds_label(tmp_path, monkeypatch,
     out = capsys.readouterr().out
     assert rc == 0 and len(posts) == 1
     assert posts[0]["url"] == "https://api.deepseek.com/v1/chat/completions"
-    assert posts[0]["json"]["model"] == "deepseek-chat"
+    assert posts[0]["json"]["model"] == "deepseek-flash"
     assert posts[0]["headers"]["Authorization"] == "Bearer sk-ds"
     assert '"提取工具": ["DS"]' in out
     assert _last_summary(out)["topics"] == 1

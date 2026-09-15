@@ -5,10 +5,11 @@ from __future__ import annotations
 import json
 
 import pytest
+import yaml
 
 from feedkicker import extract_llm
 from feedkicker.config import load_config
-from feedkicker.config_models import ExtractConf, ProviderConf
+from feedkicker.config_models import PROJECT_ROOT, ExtractConf, ProviderConf
 
 
 @pytest.fixture(autouse=True)
@@ -92,6 +93,21 @@ def test_provider_key_env_fills_placeholder(monkeypatch, tmp_path) -> None:
     assert cfg.extract.providers["minimax"].api_key == "sk-env-mm"
 
 
+def test_provider_registry_default_models() -> None:
+    assert extract_llm.PROVIDERS["deepseek"].model == "deepseek-flash"
+    assert extract_llm.PROVIDERS["minimax"].model == "MiniMax-M3"
+
+
+@pytest.mark.parametrize(
+    "name", ["config-dev.yaml.example", "config-test.yaml.example", "config-prod.yaml.example"]
+)
+def test_example_deepseek_model_matches_registry(name: str) -> None:
+    raw = yaml.safe_load((PROJECT_ROOT / name).read_text(encoding="utf-8"))
+
+    model = raw["extract"]["providers"]["deepseek"]["model"]
+    assert model == extract_llm.PROVIDERS["deepseek"].model
+
+
 def test_resolve_provider_registry_defaults_and_overrides() -> None:
     cfg = ExtractConf(provider="minimax", providers={"minimax": ProviderConf(api_key="sk-1", model="M-custom")})
 
@@ -147,11 +163,11 @@ def test_call_llm_payload_and_headers(monkeypatch) -> None:
         return _ok_resp()
 
     monkeypatch.setattr(extract_llm.httpx, "post", fake_post)
-    cfg = ExtractConf(provider="deepseek", providers={"deepseek": ProviderConf(api_key="sk-x", model="deepseek-chat")})
+    cfg = ExtractConf(provider="deepseek", providers={"deepseek": ProviderConf(api_key="sk-x", model="deepseek-v4-pro")})
 
     extract_llm.call_llm(cfg, "提示词")
 
-    assert captured["json"]["model"] == "deepseek-chat"
+    assert captured["json"]["model"] == "deepseek-v4-pro"
     assert captured["json"]["messages"] == [{"role": "user", "content": "提示词"}]
     assert captured["headers"]["Authorization"] == "Bearer sk-x"
 
