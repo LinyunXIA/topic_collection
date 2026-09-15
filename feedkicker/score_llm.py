@@ -58,7 +58,7 @@ def build_prompt(
     if prior_scores:
         lines.append("### 已打分参考（供横向对比，不要重复打分）")
         for name, score in prior_scores[-_PRIOR_LIMIT:]:
-            lines.append(f"- {name}：{score}")
+            lines.append(f"- {name_text(name)}：{score}")
     lines.append("### 本批话题")
     for i, row in enumerate(batch, 1):
         lines.append(f"{i}. 话题名称：{name_text(row.get('话题名称')) or '（空）'}")
@@ -144,7 +144,12 @@ def refine_batches(
             log.warning("第 %d/%d 批两次尝试后仍失败，跳过", no, len(batches))
             continue
         if not items:
-            empty += 1
+            dropped += parsed_dropped
+            if parsed_dropped:
+                failed += 1
+                log.warning("第 %d/%d 批 %d 条 scores 全部非法，计失败批", no, len(batches), parsed_dropped)
+            else:
+                empty += 1
             continue
         normalized, dist, norm_dropped = score_parse.normalize_results(items, batch, dropped_keys)
         dropped += parsed_dropped + norm_dropped
@@ -152,7 +157,7 @@ def refine_batches(
             log.warning("第 %d/%d 批分布校验违规：%s", no, len(batches), "；".join(dist.violations))
         violations.extend(dist.violations)
         scored.extend(normalized)
-        prior.extend((n["话题名称"], _score_text(n["weighted_total"])) for n in normalized)
+        prior.extend((name_text(n["话题名称"]), _score_text(n["weighted_total"])) for n in normalized)
     return BatchResult(
         scored=scored, violations=violations, calls=calls, failed=failed, empty=empty, dropped=dropped
     )

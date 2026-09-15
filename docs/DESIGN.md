@@ -77,6 +77,7 @@ topic_collection/
 │   ├── minimax_parse.py      # MiniMax 大纲响应解析：tool_calls/content 回退 + think 剥离（#346）
 │   ├── minimax_schema.py     # prompt 与 function-calling schema
 │   ├── reasoning.py          # thinking 内联推理块剥离 strip_reasoning（#321/#323/#331）
+│   ├── llm_json.py           # LLM 文本 → JSON 候选选择（围栏/平衡括号/目标键排序，§25.4/#382）
 │   ├── wiki.py / wiki_lark.py          # Wiki 归档编排 / lark-cli 调用层
 │   ├── wiki_home.py          # Wiki「首页」自动索引：node-list → 月块表格 → overwrite（§22）
 │   ├── topic.py              # 已选题分页拉取（facade）

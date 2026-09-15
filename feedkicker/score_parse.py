@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from feedkicker.extract_parse import _load_json_obj
+from feedkicker.llm_json import load_json_obj as _load_json_obj
 from feedkicker.score_report import WEIGHTS as _WEIGHTS
 from feedkicker.score_report import DistCheck as DistCheck
 from feedkicker.score_report import check_distribution as check_distribution
@@ -83,6 +83,19 @@ def parse_scores(raw: str) -> list[dict[str, Any]]:
     return parse_results(raw)[0]
 
 
+def _missing_list(value: Any) -> list[str]:
+    """`missing` 归一为 list：仅 list/tuple/set 采信；标量/字典等不可迭代值忽略并 WARNING（#R10-03）。
+
+    防单条坏元素（`missing: 5`/`true`/`{}`）在 parse try 之外抛 TypeError 中止整轮。
+    """
+    if value is None:
+        return []
+    if isinstance(value, (list, tuple, set)):
+        return [str(v) for v in value]
+    log.warning("missing 字段非可迭代（%s），按无缺失处理", type(value).__name__)
+    return []
+
+
 def _zero_gate(gate: Any) -> bool:
     if isinstance(gate, (int, float)) and not isinstance(gate, bool):
         return gate == 0
@@ -94,7 +107,7 @@ def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]
     if not isinstance(scores, dict):
         scores = item.get("scores")
     scores = scores if isinstance(scores, dict) else {}
-    total, missing = weighted_total(scores, item.get("missing") or ())
+    total, missing = weighted_total(scores, _missing_list(item.get("missing")))
     pain, pain_missing = _dim(scores, "普适痛点强度")
     layer, layer_missing = _dim(scores, "分层承载力")
     veto = (not pain_missing and pain == 0) or (not layer_missing and layer == 0)

@@ -69,16 +69,23 @@ def _dim_text(value: Any) -> str:
         return _MISSING
 
 
-def _dedupe(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    """按 `record_id` 去重（空 id 丢弃），避免同名/重复返回值把 `written` 虚高（#374）。"""
+def _dedupe(rows: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], int]:
+    """按 `record_id` 去重，返回 `(去重后行, 空 id 行数)`；重复 id 去重避免 `written` 虚高（#374）。
+
+    空 `record_id` 行不再静默剔除，而是返回计数由调用方计入 `failed_writes`（#R10-04）：
+    读层 schema 漂移致全表空 id 时必须非零退出，不得假成功。
+    """
     seen: set[str] = set()
     out: list[dict[str, Any]] = []
+    empty = 0
     for row in rows:
         rid = str(row.get("record_id") or "")
-        if rid and rid not in seen:
+        if not rid:
+            empty += 1
+        elif rid not in seen:
             seen.add(rid)
             out.append(row)
-    return out
+    return out, empty
 
 
 def _cell(item: dict[str, Any], label: str) -> dict[str, str]:
@@ -124,8 +131,11 @@ def write_scores(conf: WriteConf, rows: list[dict[str, Any]], *, dry_run: bool) 
     通用），缺少该动词即 raise（旧 `+record-update` 不存在，死分支已删除，#R9-15）。
     """
     stats = ScoreStats()
-    rows = _dedupe(rows)
+    rows, empty_ids = _dedupe(rows)
     stats.scored = len(rows)
+    if empty_ids:
+        stats.failed_writes += empty_ids
+        log.warning("打分写入：%d 行缺 record_id，无法定位行，计入写入失败", empty_ids)
     if dry_run or not rows:
         return stats
     if bitable_lark._has_batch_verb() is None:

@@ -122,7 +122,9 @@ def run(
         len(rows), len(batches), sizes, len(pending), len(skipped), len(skipped), max_calls, force,
     )
     prior_scores = [
-        (str(r.get("话题名称") or ""), str(r.get("打分"))) for r in skipped if r.get("打分") and str(r.get("打分")).strip()
+        (score_source.name_text(r.get("话题名称")), str(r.get("打分")))
+        for r in skipped
+        if r.get("打分") and str(r.get("打分")).strip()
     ]
     result = score_llm.refine_batches(
         provider_conf, template, batches, prior_scores, max_calls, cfg.score.timeout_seconds
@@ -141,12 +143,12 @@ def run(
             "failed_batches": result.failed, "dropped": result.dropped, "empty_batches": result.empty,
         }
     )
-    if apply and pending and not written_stats.written and (
-        written_stats.failed_writes or result.failed
+    if apply and not written_stats.written and (
+        written_stats.failed_writes or result.failed or to_write
     ):
         log.error(
-            "写入全部失败/整批 LLM 失败：pending=%d written=0 failed_writes=%d failed_batches=%d（rc=1）",
-            len(pending), written_stats.failed_writes, result.failed,
+            "写入全部失败/整批 LLM 失败：待写=%d written=0 failed_writes=%d failed_batches=%d（rc=1）",
+            len(to_write), written_stats.failed_writes, result.failed,
         )
         return 1
     return 0

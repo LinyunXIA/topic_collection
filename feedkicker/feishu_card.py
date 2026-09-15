@@ -48,7 +48,7 @@ def _dedup_by_url_key(
 def escape_inline(text: str | None) -> str:
     """转义 markdown 元字符并实体化尖括号，防 lark_md 标签/`@all` 注入（#337）。"""
     text = (text or "").replace("\r", "").replace("\n", " ")
-    text = text.replace("<", "&lt;").replace(">", "&gt;")
+    text = text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
     return _MD_SPECIAL.sub(r"\\\1", text)
 
 

@@ -2,20 +2,17 @@
 
 from __future__ import annotations
 
-import json
 import logging
-import re
 import unicodedata
 from typing import Any
 
 from feedkicker.fetch import is_url_token, trim_url
+from feedkicker.llm_json import load_json_obj as _load_json_obj
 from feedkicker.reasoning import strip_reasoning as strip_reasoning
 
 log = logging.getLogger(__name__)
 
 _REQUIRED_KEYS = ("话题名称", "可使用工具", "相关AI原理", "资讯链接", "出处来源")
-
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
 
 
 def topic_key(name: Any) -> str:
@@ -104,31 +101,6 @@ def merge_topics(topics: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 if v not in cur[field]:
                     cur[field].append(v)
     return list(merged.values())
-
-
-def _brace_candidates(text: str) -> list[str]:
-    """逐个 `{` 起点到最后一个 `}` 的候选（前置说明含花括号时仍能取到真 JSON，#R9-17）。"""
-    end = text.rfind("}")
-    if end < 0:
-        return []
-    return [text[i : end + 1] for i, ch in enumerate(text) if ch == "{"]
-
-
-def _load_json_obj(raw: str) -> dict[str, Any] | None:
-    """容忍围栏与前后说明：遍历所有 ``` 围栏候选（优先含 `topics`/`scores`），再逐个 `{` 起点兜底（#R9-17）。"""
-    text = strip_reasoning((raw or "").strip())
-    fences = [m.group(1).strip() for m in _FENCE_RE.finditer(text)]
-    fences.sort(key=lambda t: 0 if ('"topics"' in t or '"scores"' in t) else 1)
-    for cand in (*fences, text, *_brace_candidates(text)):
-        if not cand:
-            continue
-        try:
-            obj = json.loads(cand)
-        except json.JSONDecodeError:
-            continue
-        if isinstance(obj, dict):
-            return obj
-    return None
 
 
 def _str_list(value: Any) -> list[str]:

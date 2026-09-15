@@ -45,7 +45,7 @@ def weighted_total(
 ) -> tuple[float | None, list[str]]:
     """缺失维剔除权重、其余按剩余权重归一后加权 round 到 1 位小数；全维缺失 → `(None, 全维)`；
     `missing_extra` 与「值为 `"缺失"`」两种缺失表达一并归一（PRD §22.6）。"""
-    extra = {str(k) for k in missing_extra}
+    extra = {str(k) for k in missing_extra} if isinstance(missing_extra, (list, tuple, set)) else set()
     present: list[tuple[str, float]] = []
     missing: list[str] = []
     for key in WEIGHTS:
