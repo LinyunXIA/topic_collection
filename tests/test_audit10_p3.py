@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import time
 from datetime import UTC, datetime
 from pathlib import Path
@@ -263,8 +264,10 @@ def test_r10_26_purge_same_base_guard() -> None:
     conn.close()
 
 
-def test_r10_26_reseed_same_base_rc2(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> None:
-    from feedkicker import bitable
+def test_r10_26_reseed_same_base_rc2(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    from feedkicker import bitable, bitable_schema
 
     cfg = Config(app_env="test", db_path=tmp_path / "t.db")
     cfg.bitable.enabled = True
@@ -272,8 +275,15 @@ def test_r10_26_reseed_same_base_rc2(monkeypatch: pytest.MonkeyPatch, tmp_path: 
     cfg.bitable.table_id = cfg.salon.table_id = "tblSame"
     monkeypatch.setattr("feedkicker.config.load_config", lambda *a, **k: cfg)
     monkeypatch.setattr(bitable_lark, "lark_bin", lambda: "/fake/lark-cli")
+    monkeypatch.setattr(
+        bitable_schema, "ensure_initialized",
+        lambda *a, **k: (_ for _ in ()).throw(AssertionError("护栏前不得建/查 Base")),
+    )
 
-    assert bitable.main(["--reseed", "--env", "test"]) == 2
+    with caplog.at_level(logging.ERROR):
+        rc = bitable.main(["--reseed", "--env", "test"])
+
+    assert rc == 2 and "与 salon 选题 Base 相同" in caplog.text
 
 
 def test_r10_27_create_date_view_missing_id_no_default_override(monkeypatch: pytest.MonkeyPatch) -> None:

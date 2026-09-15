@@ -73,8 +73,12 @@ def _list_records(
             return out, True, False
         first = False
         data = bitable_lark._data(proc)
+        if not isinstance(data, dict):
+            raise RuntimeError(
+                f"purge：record-list 响应无法识别（非对象），中止以免误判空表: {str(data)[:200]}"
+            )
         has_rec = isinstance(data.get("records"), list) or isinstance(data.get("items"), list)
-        if not isinstance(data, dict) or not (has_rec or isinstance(data.get("fields"), list)):
+        if not (has_rec or isinstance(data.get("fields"), list)):
             raise RuntimeError(
                 f"purge：record-list 响应无法识别（无 records/fields 容器），中止以免误判空表: {str(data)[:200]}"
             )

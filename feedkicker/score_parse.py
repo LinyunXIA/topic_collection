@@ -13,7 +13,7 @@ from feedkicker.score_report import dim as _dim
 from feedkicker.score_report import num as _num
 from feedkicker.score_report import truthy
 from feedkicker.score_report import weighted_total as weighted_total
-from feedkicker.score_source import name_key
+from feedkicker.score_source import display_key, name_key
 
 log = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ def parse_results_full(raw: str) -> tuple[list[dict[str, Any]], int, set[str]]:
     丢弃并计数：非对象 / 缺名 / 缺 `reason` / `gate=pass` 六维非 0–5 数值（含 0.5 档）或非 `"缺失"`。
     `dropped_keys` 供 `normalize_results` 避免把同一行二次计为「缺返回行」。
     """
-    obj = _load_json_obj(raw)
+    obj = _load_json_obj(raw, ("scores", "results"))
     if obj is None:
         raise ValueError("LLM 输出不是合法 JSON 对象")
     items = obj.get("scores")
@@ -136,28 +136,45 @@ def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]
     }
 
 
+def _unique_unused_by_id(rid: str, rows: list[dict[str, Any]], used: set[int]) -> dict[str, Any] | None:
+    """名桶为空时：`record_id` 唯一命中「尚未被使用」行才接受（防已占行被他条 id 复用，#R10-09 补遗）。"""
+    hits = [c for c in rows if str(c.get("record_id") or "") == rid and id(c) not in used]
+    return hits[0] if len(hits) == 1 else None
+
+
 def normalize_results(
     items: list[dict[str, Any]], rows: list[dict[str, Any]], dropped_keys: Any = ()
 ) -> tuple[list[dict[str, Any]], DistCheck, int]:
     """回填 `record_id` 并归类 → `(归一列表, 分布校验, dropped)`：**以名匹配为主**，`record_id` 仅在同一
-    `name_key` 命中集合内消歧（防模型乱填 id 命中他行）；同名多行消费式匹配（#374）；未匹配/未返回均计 dropped。
+    `name_key` 命中集合内消歧（防模型乱填 id 命中他行）；名桶为空时 `record_id` 唯一命中未用行亦可接受；
+    同名多行消费式匹配（#374）；未匹配/未返回均计 dropped。
     """
     by_name: dict[str, list[dict[str, Any]]] = {}
+    by_display: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
         key = name_key(row.get("话题名称"))
         if key:
             by_name.setdefault(key, []).append(row)
+        disp = display_key(row.get("话题名称"))
+        if disp:
+            by_display.setdefault(disp, []).append(row)
     normalized: list[dict[str, Any]] = []
     dropped = 0
     used: set[int] = set()
     for item in items:
         rid = str(item.get("record_id") or "")
         bucket = by_name.get(name_key(item.get("话题名称")), [])
+        if not bucket:
+            bucket = by_display.get(display_key(item.get("话题名称")), [])
         row = next((c for c in bucket if rid and str(c.get("record_id") or "") == rid and id(c) not in used), None)
         if row is None and rid and bucket:
             log.warning("scores record_id=%s 与话题名不匹配，降级按名匹配", rid)
         if row is None:
             row = next((c for c in bucket if id(c) not in used), None)
+        if row is None and rid and not bucket:
+            row = _unique_unused_by_id(rid, rows, used)
+            if row is not None:
+                log.warning("scores 名不匹配但 record_id=%s 唯一命中未用行，按 id 接受", rid)
         if row is None:
             dropped += 1
             log.warning("scores 多余项（表内无匹配行，忽略）：%s", item.get("话题名称"))

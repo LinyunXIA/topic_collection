@@ -1,8 +1,10 @@
 """LLM 文本 → JSON 候选选择（自 extract_parse 下沉以守住 ≤200 行，DESIGN §3）。
 
-容错口径：剥推理块后，从 ``` 围栏与「最内层平衡括号」配对候选中，优先取「含目标键
-（`topics`/`scores`/`results`）且其值为非空 list」者，同质量取更长、更靠后者，避免模型
-先回显 schema/示例（`{"topics": []}`）遮蔽其后的真结果（#R9-17 → #R10-01）。
+容错口径：剥推理块后，从 ``` 围栏与「最内层平衡括号」配对候选中排序取最优：
+① 含**调用方期望键**（extract→`topics`；score→`scores`/`results`；缺省用全部目标键）且其值为
+list 优先（非空 > 空 > 无键）；② 围栏候选优先于裸 prose 括号候选；③ 同级取最后出现者。
+不再「取最长」——更长示例/说明块或真答案为空时不得压过真答案；空答案须是干净的 `[]`
+（#R9-17 → #R10-01 → 验证补遗）。
 """
 
 from __future__ import annotations
@@ -45,31 +47,36 @@ def _brace_candidates(text: str) -> list[str]:
     return out
 
 
-def _has_target_list(obj: dict[str, Any]) -> bool:
-    return any(isinstance(obj.get(k), list) and bool(obj[k]) for k in _TARGET_KEYS)
+def _tier(value: Any, keys: tuple[str, ...]) -> int:
+    """候选分层：0=含期望键且任一为非空 list；1=含期望键但均为空 list；2=非 dict/无期望键。"""
+    if not isinstance(value, dict):
+        return 2
+    lists = [value[k] for k in keys if isinstance(value.get(k), list)]
+    if not lists:
+        return 2
+    return 0 if any(lists) else 1
 
 
-def load_json_value(raw: str) -> Any | None:
-    """容忍围栏与前后说明：候选按「目标键值为非空 list」优先、同级取最长排序，返回首个可解析 JSON 值。"""
+def load_json_value(raw: str, expected_keys: tuple[str, ...] = ()) -> Any | None:
+    """容忍围栏与前后说明：按期望键分层 + 围栏优先 + 同级最后出现排序，返回最优可解析 JSON 值。"""
+    keys = expected_keys or _TARGET_KEYS
     text = strip_reasoning((raw or "").strip())
-    candidates = [m.group(1).strip() for m in _FENCE_RE.finditer(text)]
-    candidates += [text, *_brace_candidates(text)]
+    candidates = [(c, 0) for c in (m.group(1).strip() for m in _FENCE_RE.finditer(text)) if c]
+    candidates += [(c, 1) for c in (text, *_brace_candidates(text)) if c]
     best: Any = None
     rank: tuple[int, int, int] | None = None
-    for idx, cand in enumerate(candidates):
-        if not cand:
-            continue
+    for idx, (cand, prov) in enumerate(candidates):
         try:
             value = json.loads(cand)
         except json.JSONDecodeError:
             continue
-        cur = (0 if isinstance(value, dict) and _has_target_list(value) else 1, -len(cand), -idx)
+        cur = (_tier(value, keys), prov, -idx)
         if rank is None or cur < rank:
             rank, best = cur, value
     return best
 
 
-def load_json_obj(raw: str) -> dict[str, Any] | None:
+def load_json_obj(raw: str, expected_keys: tuple[str, ...] = ()) -> dict[str, Any] | None:
     """`load_json_value` 的对象视图：非 dict 值视为无对象（extract/score 共用口径，#R10-01）。"""
-    value = load_json_value(raw)
+    value = load_json_value(raw, expected_keys)
     return value if isinstance(value, dict) else None

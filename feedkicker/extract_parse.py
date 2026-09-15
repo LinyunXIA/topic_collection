@@ -55,7 +55,7 @@ def parse_topics(raw: str) -> tuple[list[dict[str, Any]], int]:
     单个 topic 非对象 / 缺 5 键 / 文本字段非 str / 名称 NFKC 归一后为空 → 丢弃该条、dropped 计数
     并 WARNING，不整批弃（PRV-6）；空白名同样计 dropped，不得静默丢弃（#294）。
     """
-    obj = _load_json_obj(raw)
+    obj = _load_json_obj(raw, ("topics",))
     if obj is None:
         raise ValueError("LLM 输出不是合法 JSON 对象")
     items = obj.get("topics")
