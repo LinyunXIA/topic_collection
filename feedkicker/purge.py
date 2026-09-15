@@ -88,6 +88,8 @@ def _bitable_guard(cfg: Config) -> str:
         return "app_token/table_id 缺失"
     if "<" in bt.app_token or "<" in bt.table_id:
         return "占位 token 未替换"
+    if bitable_purge.same_target_base(cfg):
+        return "目标 Base 与 salon 选题 Base 相同"
     return ""
 
 

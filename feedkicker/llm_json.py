@@ -13,7 +13,7 @@ from typing import Any
 
 from feedkicker.reasoning import strip_reasoning
 
-_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL)
+_FENCE_RE = re.compile(r"```(?:json)?\s*(.*?)```", re.DOTALL | re.IGNORECASE)
 
 _TARGET_KEYS = ("topics", "scores", "results")
 

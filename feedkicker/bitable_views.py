@@ -3,20 +3,21 @@ from __future__ import annotations
 import json
 import logging
 
-from feedkicker import bitable_lark, bitable_schema
+from feedkicker import bitable_fields, bitable_lark, bitable_schema
 
 log = logging.getLogger(__name__)
 
 
 def _view_id(app_token: str, table_id: str) -> str | None:
+    """按名字解析默认「表格」视图 id；解析不到返回 None，**不回落 `views[0]`**（#R10-27）。"""
     proc = bitable_lark._run(["base", "+view-list", "--base-token", app_token, "--table-id", table_id])
     if not bitable_lark._ok(proc):
         return None
-    views = bitable_lark._data(proc).get("views") or []
-    for v in views:
+    for v in bitable_lark._data(proc).get("views") or []:
         if v.get("view_name") == bitable_schema.VIEW_NAME or v.get("name") == bitable_schema.VIEW_NAME:
-            return v.get("id")
-    return views[0].get("id") if views else None
+            virt = v.get("id") or v.get("view_id")
+            return virt if isinstance(virt, str) and virt else None
+    return None
 
 
 def _find_view(app_token: str, table_id: str, name: str) -> str | None:
@@ -70,15 +71,10 @@ def set_tenant_readonly(app_token: str) -> bool:
 
 
 def ensure_archive_date_field(app_token: str, table_id: str) -> bool:
-    proc = bitable_lark._run(["base", "+field-list", "--base-token", app_token, "--table-id", table_id])
-    names = set()
-    if bitable_lark._ok(proc):
-        d = bitable_lark._data(proc)
-        items = d.get("fields") or d.get("items") or []
-        if not isinstance(items, list) or not all(isinstance(f, dict) for f in items):
-            raise RuntimeError(f"field-list 响应 fields 非 list[dict]: {str(items)[:200]}")
-        for f in items:
-            names.add(f.get("field_name") or f.get("name"))
+    names = {
+        str(f.get("field_name") or f.get("name") or "")
+        for f in bitable_fields.read_fields(app_token, table_id, tolerant=True)
+    }
     if "归档日期" in names:
         return True
     return bitable_lark._ok(bitable_lark._run(
@@ -102,7 +98,7 @@ def create_date_view(app_token: str, table_id: str) -> bool:
             return False
         view = bitable_lark._data(proc).get("view") or {}
         raw = (view.get("view_id") or view.get("id")) if isinstance(view, dict) else None
-        vid = raw if isinstance(raw, str) and raw else _view_id(app_token, table_id)
+        vid = raw if isinstance(raw, str) and raw else None
     if not vid:
         return False
     g = bitable_lark._run(

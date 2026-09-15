@@ -2,79 +2,13 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
 from typing import Any
 
 from feedkicker import bitable_lark, topic_records
+from feedkicker.bitable_dates import _cell_str as _cell_str
+from feedkicker.bitable_dates import _shanghai_date as _shanghai_date
 
 log = logging.getLogger(__name__)
-
-
-def _cell_str(v) -> str:
-    if v is None:
-        return ""
-    if isinstance(v, dict):
-        for k in ("link", "text", "value", "title"):
-            if k in v and isinstance(v[k], str):
-                return v[k]
-            if k in v and v[k] is not None:
-                return str(v[k])
-        vals = [str(x) for x in v.values() if isinstance(x, str) and x]
-        return vals[0] if vals else ""
-    if isinstance(v, list):
-        if v and isinstance(v[0], str):
-            return v[0]
-        if v and isinstance(v[0], dict):
-            for k in ("link", "text", "value"):
-                if k in v[0]:
-                    return str(v[0][k])
-        return ""
-    return str(v)
-
-
-def _shanghai_date(s: str) -> str | None:
-    if not s or not s.strip():
-        return None
-    s = s.strip()
-    if s.isdigit():
-        for fmt, width in (("%Y%m%d", 8), ("%Y%m%d%H%M%S", 14)):
-            if len(s) == width:
-                try:
-                    dt = datetime.strptime(s, fmt).replace(tzinfo=bitable_lark.SHANGHAI)
-                    return dt.strftime("%Y-%m-%d")
-                except ValueError:
-                    break
-        try:
-            iv = int(s)
-            if iv > 1_000_000_000_000:
-                iv = iv // 1000
-            dt = datetime.fromtimestamp(iv, tz=UTC).astimezone(bitable_lark.SHANGHAI)
-            return dt.strftime("%Y-%m-%d")
-        except (ValueError, OSError, OverflowError):
-            return None
-    try:
-        if "T" in s or s.endswith("Z") or "+" in s[10:]:
-            dt = datetime.fromisoformat(s)
-            if dt.tzinfo is None:
-                dt = dt.replace(tzinfo=bitable_lark.SHANGHAI)
-            else:
-                dt = dt.astimezone(bitable_lark.SHANGHAI)
-            return dt.strftime("%Y-%m-%d")
-        for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M", "%Y-%m-%d"):
-            try:
-                dt = datetime.strptime(s, fmt)  # noqa: DTZ007
-                dt = dt.replace(tzinfo=bitable_lark.SHANGHAI)
-                return dt.strftime("%Y-%m-%d")
-            except ValueError:
-                continue
-        dt = datetime.fromisoformat(s)
-        if dt.tzinfo is None:
-            dt = dt.replace(tzinfo=bitable_lark.SHANGHAI)
-        else:
-            dt = dt.astimezone(bitable_lark.SHANGHAI)
-        return dt.strftime("%Y-%m-%d")
-    except (ValueError, OSError, OverflowError):
-        return None
 
 
 def _env_ok(vals: dict[str, Any], env_name: str | None) -> bool:
@@ -132,27 +66,27 @@ def backfill_empty_archive_dates(
             raise RuntimeError(f"backfill 第 {offset // 200 + 1} 页拉取失败，中止")
         data = bitable_lark._data(proc)
         prev_fp = bitable_lark._page_guard(prev_fp, data)
-        if not (
-            isinstance(data.get("records"), list) or isinstance(data.get("items"), list)
-            or isinstance(data.get("fields"), list) or topic_records.row_ids(data)
-        ):
+        has_rec = isinstance(data.get("records"), list) or isinstance(data.get("items"), list)
+        fields_ok = isinstance(data.get("fields"), list)
+        rows_ok = isinstance(data.get("data"), list)
+        if not (has_rec or fields_ok or topic_records.row_ids(data)):
             raise RuntimeError(
                 f"backfill：record-list 响应无法识别（无 records/fields+data），中止以免不完整回填: {str(data)[:200]}"
             )
-        records: list[Any] = data.get("records") or []
+        records: list[Any] = data.get("records") or data.get("items") or []
         fields: list[str] = data.get("fields") or []
         rows: list[Any] = data.get("data") or []
         rids: list[Any] = topic_records.row_ids(data)
         pairs: list[tuple[str, dict[str, Any]]] = []
-        if records and not all(isinstance(rec, dict) for rec in records):
-            raise RuntimeError(f"backfill：records 子项非 dict，中止以免误判: {str(records)[:200]}")
-        if records:
+        if has_rec:
+            if records and not all(isinstance(rec, dict) for rec in records):
+                raise RuntimeError(f"backfill：records 子项非 dict，中止以免误判: {str(records)[:200]}")
             for i, rec in enumerate(records):
                 fds = rec.get("fields") or rec.get("record") or {}
                 rid = rids[i] if i < len(rids) else ""
                 pairs.append((str(rid or ""), fds if isinstance(fds, dict) else {}))
             page_size = len(records)
-        elif fields and rows:
+        elif fields_ok and rows_ok and fields and rows:
             for i, r in enumerate(rows):
                 rid = (
                     r.get("record_id") or r.get("id") or (rids[i] if i < len(rids) else "")
@@ -161,6 +95,8 @@ def backfill_empty_archive_dates(
                 )
                 pairs.append((str(rid or ""), _row_vals(fields, r)))
             page_size = len(rows)
+        elif topic_records.row_ids(data):
+            raise RuntimeError("backfill：响应仅含 record_id_list 而无 fields/data 行，无法解析，中止以免不完整回填")
         else:
             break
         for rid, vals in pairs:
@@ -196,4 +132,6 @@ def backfill_empty_archive_dates(
     log.info("backfill 完成：扫描 %d 条，修复 %d 条，失败 %d 条", total_scanned, fixed, failed)
     if failed and not fixed:
         raise RuntimeError(f"backfill 全部写入失败（failed={failed}），中止（调用方 rc2）")
+    if failed:
+        raise RuntimeError(f"backfill 部分写入失败（fixed={fixed}, failed={failed}），中止（调用方 rc2）")
     return fixed

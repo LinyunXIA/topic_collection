@@ -38,12 +38,22 @@ def build_batch_prompt(template: str, items: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
+def _topic_fields_ok(item: dict[str, Any]) -> bool:
+    """字段类型门：`话题名称`/`可使用工具`/`相关AI原理` 须为 str，两个链接字段须 str 或 list。
+
+    防 `str()` 把列表/字典的 Python repr 写进 salon 表；非 str 值整条丢弃并计数（#R10-16）。
+    """
+    if any(not isinstance(item.get(k), str) for k in ("话题名称", "可使用工具", "相关AI原理")):
+        return False
+    return all(isinstance(item.get(k), (str, list)) for k in ("资讯链接", "出处来源"))
+
+
 def parse_topics(raw: str) -> tuple[list[dict[str, Any]], int]:
     """解析 LLM 原始文本，返回 `(topics, dropped)`。
 
     JSON 非法 / 顶层非对象 / `topics` 非列表 → raise ValueError（调用方计失败批）；
-    单个 topic 非对象 / 缺 5 键 / 名称 NFKC 归一后为空 → 丢弃该条、dropped 计数并 WARNING，
-    不整批弃（PRV-6）；空白名同样计 dropped，不得静默丢弃（#294）。
+    单个 topic 非对象 / 缺 5 键 / 文本字段非 str / 名称 NFKC 归一后为空 → 丢弃该条、dropped 计数
+    并 WARNING，不整批弃（PRV-6）；空白名同样计 dropped，不得静默丢弃（#294）。
     """
     obj = _load_json_obj(raw)
     if obj is None:
@@ -54,7 +64,7 @@ def parse_topics(raw: str) -> tuple[list[dict[str, Any]], int]:
     parsed: list[dict[str, Any]] = []
     dropped = 0
     for item in items:
-        if not isinstance(item, dict) or any(k not in item for k in _REQUIRED_KEYS):
+        if not isinstance(item, dict) or any(k not in item for k in _REQUIRED_KEYS) or not _topic_fields_ok(item):
             dropped += 1
             continue
         name = str(item.get("话题名称") or "").strip()
@@ -121,7 +131,7 @@ def _str_list(value: Any) -> list[str]:
 
 
 def md_link_tokens(text: str) -> list[str]:
-    """把 markdown 链接目标与余文裸链拆成 token 列表（`_link_key` 归一前，供 `link_keys`）。
+    """把 markdown 链接目标与余文裸链拆成 token 列表（`dedup_key` 归一前，供 `link_keys`）。
 
     目标自 `](` 起按**括号平衡**扫描，支持任意嵌套深度（`…/a_(b_(c))`，#N4）；标签文本
     `[..]` 不参与（`[标签](url)` 不得把标签当 URL，#270）；相邻/混排链接各取各、裸链不丢

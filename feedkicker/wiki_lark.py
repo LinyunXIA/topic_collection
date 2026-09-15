@@ -112,7 +112,7 @@ def parse_node(
 def lark_node_list(
     space_id: str, parent_node_token: str
 ) -> subprocess.CompletedProcess[str] | None:
-    """wiki +node-list：列父节点下直属子节点（--page-all 自动翻页）。
+    """wiki +node-list：列父节点下直属子节点（--page-all 自动翻页，`--page-limit 0` 解除默认 10 页上限）。
 
     实测响应为 data.nodes[]（不是 items）；node-list 即时可靠，
     规避 node-get 对新建节点的 131005 传播延迟。
@@ -122,6 +122,7 @@ def lark_node_list(
         "--space-id", space_id,
         "--parent-node-token", parent_node_token,
         "--page-all",
+        "--page-limit", "0",
         "--json",
     ]
     return bitable_lark._run(args, timeout=120)

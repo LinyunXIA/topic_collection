@@ -203,13 +203,13 @@ https://<host>/wiki/wiki_dry_示例已选题话题
 
 ### 退出码
 
-`0` = 无已选题 / dry-run / 通知成功；`1` = 未捕获异常或通知卡发送失败（`return 0 if card_ok else 1`）；`2` = 配置加载失败。
+`0` = 无已选题 / dry-run / 通知成功；`1` = 未捕获异常、通知卡发送失败、或全部话题失败（0 条成功建 Wiki，或 Wiki 建成而归档状态未落库）；`2` = 配置加载失败。
 
 ### 注意 / 坑
 
 - 无 salon `app_token`/`table_id` 且**非** dry-run 时会 WARNING 后跳过（返回 `0`）。
 - wiki space/parent（`wiki.space_id`/`parent_token`，回退 `salon.wiki_*`）为空或含 `<` 占位时，**非 dry-run 直接 WARNING 跳过建 Wiki 与标记、rc `0`**（不产生孤儿 docx；dry-run 仍走 stub 预览）。
-- 单条话题大纲生成 / Wiki 写入失败只 WARNING，不阻断其余话题；全部失败也仅 WARNING，rc 不变。
+- 单条话题大纲生成 / Wiki 写入失败只 WARNING，不阻断其余话题；全部失败（0 条成功建 Wiki）或 Wiki 建成但归档状态未落库时 rc `1`（#R9-27/#R10-30）。
 - Wiki 首页重建失败只 WARNING，不影响返回码、不触发 SOS。
 - 去重靠 `ppt_synced_at` + `ppt_last_status_{rid}` 翻转检测，已是「已选题」且已同步的会被跳过。
 - dry-run 也调用首页更新（传入 `dry_run=True`，只打印预览）。
@@ -429,7 +429,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 | `--dry-run` | store_true | 关（默认行为） | 与 `--apply` 互斥 | 仅打印待写清单与统计，零写调用 |
 | `--provider` | choice `{deepseek,minimax}`（由列映射表键生成） | `None`（取 `score.provider`，默认 `minimax`） | 覆盖配置 | 调用方与目标列：minimax→`MMax打分`/`MMax理由`，deepseek→`DS打分`/`DS理由` |
 | `--limit` | 非负整数 | `0`（全部） | — | 最多处理行数；`0`=全表（无对应配置项，直接生效） |
-| `--max-calls` | 非负整数 | `0`（不限） | 覆盖配置 | LLM 调用上限；达限停止剩余批并 WARNING |
+| `--max-calls` | 非负整数 | `None`（取配置） | 非 0 时覆盖配置 | LLM 调用上限；省略/显式 0 → 取 `score.max_calls`（配置 0=不限），达限停止剩余批并 WARNING |
 | `--force` | store_true | 关 | — | 忽略既有打分，对全部命中行重算并覆盖 |
 | `--config` | str | `None` | 覆盖 `--env` 推导 | 指定 `config-{env}.yaml` 路径 |
 | `--db` | str | `None` | 覆盖 `TC_DB` 与 `--env` 推导 | sqlite 路径 |
@@ -516,7 +516,7 @@ tc-score dry-run 计划：总行数=85 批数=5 待打分=85 跳过=0
 
 ### 退出码
 
-`2` = 配置/参数非法（config 加载失败 / `prompts/score.md` 缺失或为空 / `score.batch_size>100` / `--provider` 未知（argparse choices 拒绝）/ provider 未注册 / 所选 provider 缺 key / salon token 缺失或占位 / 目标 provider 两列缺失 / 同时给 `--apply` 与 `--dry-run`）；`1` = 未捕获异常，或 `--apply` 全部写入失败（`failed_writes>0 且 written==0`）；`0` = 正常（含单行/单批失败跳过并计数）。
+`2` = 配置/参数非法（config 加载失败 / `prompts/score.md` 缺失或为空 / `score.batch_size>100` / `--provider` 未知（argparse choices 拒绝）/ provider 未注册 / 所选 provider 缺 key / salon token 缺失或占位 / 目标 provider 两列缺失 / 同时给 `--apply` 与 `--dry-run`）；`1` = 未捕获异常，或 `--apply` 全部写入失败，或全部 LLM 批失败（`written==0` 且 `failed_writes>0`/`failed_batches>0`/待写非空）；`0` = 正常（含单行/单批失败跳过并计数）。
 
 ### 注意 / 坑
 
@@ -691,7 +691,7 @@ dry-run：跳过 sync_env（不写记录）
 
 ### 退出码
 
-`0` = 正常 / 未启用 / dry-run；`2` = `--reseed` 但 Base 未配置或为占位 token（拒绝执行，防「先建后清」），或 `--init` 时 `app_token`/`table_id` 仍为 `<...>` 占位（#262），或**非 `--init`/`--reseed`（含无 flag 与仅 `--backfill`/`--fix-archive-date`）且 `app_token`/`table_id` 未就绪/占位**（log.error，不自动建 Base），或互斥 flag 同时给出（argparse usage 错误）；配置加载异常未捕获，进程以 Python 异常非 0 结束。
+`0` = 正常 / 未启用 / dry-run；`2` = `--reseed` 但 Base 未配置或为占位 token（拒绝执行，防「先建后清」），或 `--init` 时 `app_token`/`table_id` 仍为 `<...>` 占位（#262），或**非 `--init`/`--reseed`（含无 flag 与仅 `--backfill`/`--fix-archive-date`）且 `app_token`/`table_id` 未就绪/占位**（log.error，不自动建 Base），或互斥 flag 同时给出（argparse usage 错误）；配置加载失败（`FileNotFoundError`/`ValueError`）→ `log.error` + rc 2。
 
 ### 注意 / 坑
 
@@ -849,7 +849,7 @@ https://<host>/wiki/wiki_dry_示例话题
 
 ### 退出码
 
-`0` = 正常 / stub；token 或表读取失败抛异常（`RuntimeError`），进程非 0；token 缺失且非 dry-run 时也会抛错。
+`0` = 正常 / stub；`2` = `app_token`/`table_id` 缺失或为占位 `<...>`（非 dry-run 时 `log.error` + rc 2，不再裸 traceback）；其余 token/表读取失败抛 `RuntimeError`，`main` 顶层兜底非 0。
 
 ### 注意 / 坑
 

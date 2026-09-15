@@ -32,6 +32,7 @@ def test_lark_node_list_builds_page_all_argv(monkeypatch) -> None:
                 "--space-id", "spc1",
                 "--parent-node-token", "parent1",
                 "--page-all",
+                "--page-limit", "0",
                 "--json",
             ],
             120,

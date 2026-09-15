@@ -4,7 +4,7 @@ import json
 import logging
 from typing import Any
 
-from feedkicker import bitable_backfill, bitable_lark, bitable_records, bitable_schema, bitable_views
+from feedkicker import bitable_backfill, bitable_lark, bitable_purge, bitable_records, bitable_schema, bitable_views
 from feedkicker.bitable_backfill import (
     _cell_str as _cell_str,
     _shanghai_date as _shanghai_date,
@@ -144,9 +144,9 @@ def main(argv: list[str] | None = None) -> int:
     if not (args.init or args.reseed) and not _tokens_ready(cfg.bitable):
         log.error("拒绝执行：Base 未配置或为占位 token（仅 --init/--reseed 可创建/修复 Base，其余动作需既有 Base）")
         return 2
-    if args.reseed and not _tokens_ready(cfg.bitable):
+    if args.reseed and (not _tokens_ready(cfg.bitable) or bitable_purge.same_target_base(cfg)):
         log.error(
-            "拒绝 --reseed：Base 未配置或为占位 token（需既有且非占位 app_token/table_id），不执行先建后清"
+            "拒绝 --reseed：Base 未配置/占位，或与 salon 选题 Base 相同（不执行先建后清，防误删选题行）"
         )
         return 2
     if args.init and not _tokens_ready(cfg.bitable):

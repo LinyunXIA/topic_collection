@@ -11,6 +11,7 @@ from feedkicker.score_report import DistCheck as DistCheck
 from feedkicker.score_report import check_distribution as check_distribution
 from feedkicker.score_report import dim as _dim
 from feedkicker.score_report import num as _num
+from feedkicker.score_report import truthy
 from feedkicker.score_report import weighted_total as weighted_total
 from feedkicker.score_source import name_key
 
@@ -117,15 +118,9 @@ def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]
     if total is not None and model_total is not None and abs(total - model_total) > 0.1:
         log.warning("话题 %s 总分重算=%s 与模型值=%s 偏差 >0.1", item.get("话题名称"), total, model_total)
     reason = str(item.get("reason") or "").strip()
-    flags = ""
-    if item.get("risk_flag") and "risk" not in reason:
-        flags += "｜risk"
-    if item.get("source_flag") and "source" not in reason:
-        flags += "｜source"
-    if len(reason) + len(flags) > _REASON_LIMIT:
+    if len(reason) > _REASON_LIMIT:
         log.warning("话题 %s 理由超 %d 字，截断", item.get("话题名称"), _REASON_LIMIT)
-        reason = reason[: max(0, _REASON_LIMIT - len(flags) - 1)] + "…"
-    reason += flags
+        reason = reason[: _REASON_LIMIT - 1] + "…"
     return {
         "record_id": row.get("record_id") or "",
         "话题名称": str(item.get("话题名称") or "").strip(),
@@ -134,8 +129,8 @@ def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]
         "weighted_total": total,
         "missing": missing,
         "打分": row.get("打分"),
-        "risk_flag": bool(item.get("risk_flag")),
-        "source_flag": bool(item.get("source_flag")),
+        "risk_flag": truthy(item.get("risk_flag")),
+        "source_flag": truthy(item.get("source_flag")),
         "reason": reason,
         "rescue": str(item.get("rescue") or "").strip(),
     }
@@ -144,15 +139,11 @@ def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]
 def normalize_results(
     items: list[dict[str, Any]], rows: list[dict[str, Any]], dropped_keys: Any = ()
 ) -> tuple[list[dict[str, Any]], DistCheck, int]:
-    """回填 `record_id` 并归类 → `(归一列表, 分布校验, dropped)`：优先用返回值 `record_id`，否则按
-    `name_key` 消费式匹配所有同名未匹配行（使表内多行同名都能写到，#374）；未匹配/未返回均计 dropped。
+    """回填 `record_id` 并归类 → `(归一列表, 分布校验, dropped)`：**以名匹配为主**，`record_id` 仅在同一
+    `name_key` 命中集合内消歧（防模型乱填 id 命中他行）；同名多行消费式匹配（#374）；未匹配/未返回均计 dropped。
     """
-    by_id: dict[str, dict[str, Any]] = {}
     by_name: dict[str, list[dict[str, Any]]] = {}
     for row in rows:
-        rid = str(row.get("record_id") or "")
-        if rid and rid not in by_id:
-            by_id[rid] = row
         key = name_key(row.get("话题名称"))
         if key:
             by_name.setdefault(key, []).append(row)
@@ -161,9 +152,11 @@ def normalize_results(
     used: set[int] = set()
     for item in items:
         rid = str(item.get("record_id") or "")
-        row = by_id.get(rid) if rid else None
-        if row is None or id(row) in used:
-            bucket = by_name.get(name_key(item.get("话题名称")), [])
+        bucket = by_name.get(name_key(item.get("话题名称")), [])
+        row = next((c for c in bucket if rid and str(c.get("record_id") or "") == rid and id(c) not in used), None)
+        if row is None and rid and bucket:
+            log.warning("scores record_id=%s 与话题名不匹配，降级按名匹配", rid)
+        if row is None:
             row = next((c for c in bucket if id(c) not in used), None)
         if row is None:
             dropped += 1

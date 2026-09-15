@@ -7,6 +7,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from feedkicker import bitable_lark
+from feedkicker.score_report import truthy
 
 log = logging.getLogger(__name__)
 
@@ -96,14 +97,15 @@ def _cell(item: dict[str, Any], label: str) -> dict[str, str]:
     """
     scores = item.get("scores")
     scores = scores if isinstance(scores, dict) else {}
-    missing = {str(k) for k in (item.get("missing") or [])}
+    missing_raw = item.get("missing")
+    missing = {str(k) for k in missing_raw} if isinstance(missing_raw, (list, tuple, set)) else set()
     dims = "/".join(
         f"{_SHORT_DIM[k]}{_MISSING if k in missing else _dim_text(scores.get(k))}" for k in _SHORT_DIM
     )
     total = item.get("weighted_total")
     score = _MISSING if total is None else f"{float(total):.1f}"
-    risk = "true" if item.get("risk_flag") else "false"
-    source = "true" if item.get("source_flag") else "false"
+    risk = "true" if truthy(item.get("risk_flag")) else "false"
+    source = "true" if truthy(item.get("source_flag")) else "false"
     reason = str(item.get("reason") or "").strip()
     detail = f"{reason} ｜ risk={risk} ｜ source={source} ｜ 六维：{dims}"
     return {f"{label}打分": score, f"{label}理由": detail}

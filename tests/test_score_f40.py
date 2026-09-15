@@ -323,13 +323,14 @@ def test_reason_truncated_over_100_chars(caplog) -> None:
     assert "截断" in caplog.text
 
 
-def test_flags_appended_when_absent() -> None:
+def test_flags_not_in_reason_serialized_by_cell() -> None:
+    """#R10-10：risk/source 统一由 `_cell` 序列化，`_normalize_item` 不再追加裸标记。"""
     items, _ = score_parse.normalize(
         [_result("A", risk_flag=True, source_flag=True)],
         [{"record_id": "rec1", "话题名称": "A"}],
     )
 
-    assert items[0]["reason"].endswith("｜risk｜source")
+    assert "｜risk" not in items[0]["reason"] and "｜source" not in items[0]["reason"]
 
 
 def test_flags_not_duplicated_when_present() -> None:
@@ -515,12 +516,13 @@ def test_normalize_duplicate_return_dropped() -> None:
     assert len(normalized) == 1 and normalized[0]["record_id"] == "rec1" and dropped == 1
 
 
-def test_normalize_prefers_item_record_id() -> None:
+def test_normalize_record_id_mismatch_falls_back_to_name() -> None:
+    """#R10-09：名匹配为主，record_id 仅在同一名内消歧；名不符的 id 降级按名（WARNING）。"""
     rows = [{"record_id": "rec1", "话题名称": "A"}, {"record_id": "rec2", "话题名称": "B"}]
 
     normalized, _dist, dropped = score_parse.normalize_results([_result("A", record_id="rec2")], rows)
 
-    assert dropped == 1 and len(normalized) == 1 and normalized[0]["record_id"] == "rec2"
+    assert dropped == 1 and len(normalized) == 1 and normalized[0]["record_id"] == "rec1"
 
 
 def test_dropped_not_double_counted() -> None:
@@ -542,4 +544,4 @@ def test_reason_with_flags_stays_within_100() -> None:
         [{"record_id": "rA", "话题名称": "A"}],
     )
 
-    assert len(items[0]["reason"]) == 100 and items[0]["reason"].endswith("｜source")
+    assert len(items[0]["reason"]) == 100 and items[0]["reason"].endswith("…")

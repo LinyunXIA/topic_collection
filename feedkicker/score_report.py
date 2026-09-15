@@ -20,6 +20,16 @@ WEIGHTS: dict[str, int] = {
 MISSING = "缺失"
 
 
+_FALSEY = frozenset(("", "false", "0", "no", "none", "null"))
+
+
+def truthy(value: Any) -> bool:
+    """字符串布尔归一：`"false"/"0"/"no"/""` 等字面假值 → False，其余按 `bool`（#R10-08）。"""
+    if isinstance(value, str):
+        return value.strip().lower() not in _FALSEY
+    return bool(value)
+
+
 def num(value: Any) -> float | None:
     if isinstance(value, bool) or value is None:
         return None

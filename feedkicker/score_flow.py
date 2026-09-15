@@ -6,7 +6,14 @@ import argparse
 import logging
 import sys
 
-from feedkicker import bitable_lark, score_llm, score_parse, score_report, score_source, score_write
+from feedkicker import (
+    bitable_fields,
+    score_llm,
+    score_parse,
+    score_report,
+    score_source,
+    score_write,
+)
 from feedkicker.config import load_config
 from feedkicker.config_models import Config
 from feedkicker.log_setup import setup_logging
@@ -34,28 +41,10 @@ def _non_negative_int(value: str) -> int:
 
 
 def _field_names(app_token: str, table_id: str) -> set[str]:
-    names: set[str] = set()
-    offset = 0
-    prev_fp = ""
-    while True:
-        bitable_lark._guard_offset(offset)
-        bitable_lark.guard_pages(offset // bitable_lark._CHUNK + 1)
-        proc = bitable_lark._run(
-            ["base", "+field-list", "--base-token", app_token, "--table-id", table_id,
-             "--limit", str(bitable_lark._CHUNK), "--offset", str(offset)],
-            timeout=60,
-        )
-        if not bitable_lark._ok(proc):
-            raise RuntimeError("读取目标表字段列表失败，无法校验打分列")
-        data = bitable_lark._data(proc)
-        prev_fp = bitable_lark._page_guard(prev_fp, data)
-        items = data.get("fields") or data.get("items") or []
-        if not isinstance(items, list) or not all(isinstance(f, dict) for f in items):
-            raise RuntimeError(f"field-list 响应 fields 非 list[dict]: {str(items)[:200]}")
-        names |= {str(f.get("field_name") or f.get("name") or "") for f in items}
-        if len(items) < bitable_lark._CHUNK:
-            return names
-        offset += bitable_lark._CHUNK
+    return {
+        str(f.get("field_name") or f.get("name") or "")
+        for f in bitable_fields.read_fields(app_token, table_id)
+    }
 
 
 def ensure_columns(app_token: str, table_id: str, provider: str) -> int:

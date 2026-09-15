@@ -13,35 +13,22 @@ from __future__ import annotations
 import json
 import logging
 from dataclasses import dataclass
-from datetime import datetime, timedelta
 from typing import Any
 
-from feedkicker import bitable_backfill, bitable_lark, topic_records
+from feedkicker import bitable_lark, topic_records
+from feedkicker.bitable_dates import _cell_str
+from feedkicker.bitable_dates import cutoff_date_shanghai as cutoff_date_shanghai
+from feedkicker.bitable_dates import pushed_date as _pushed_date
 
 log = logging.getLogger(__name__)
 
 _CHUNK = 200
 
 
-def cutoff_date_shanghai(days: int, now: datetime | None = None) -> str:
-    """上海时区下 now-days 的 %Y-%m-%d 日期串（字典序即时间序）。"""
-    ref = now if now is not None else datetime.now(bitable_lark.SHANGHAI)
-    return (ref - timedelta(days=days)).astimezone(bitable_lark.SHANGHAI).strftime("%Y-%m-%d")
-
-
-def _pushed_date(fields: dict[str, Any]) -> str | None:
-    """fields 「推送时间」→ 上海 %Y-%m-%d；为空回退「归档日期」（#198 存量行）。
-
-    兼容 epoch 毫秒/ISO/纯日期；归档早于 mark_pushed 时推送时间为空，
-    无回退则这些行永不进入保留窗口（F22 契约失效）。
-    """
-    raw = bitable_backfill._cell_str(fields.get("推送时间"))
-    if raw:
-        d = bitable_backfill._shanghai_date(raw)
-        if d:
-            return d
-    arch = bitable_backfill._cell_str(fields.get("归档日期"))
-    return bitable_backfill._shanghai_date(arch) if arch else None
+def same_target_base(cfg: Any) -> bool:
+    """目标 Base 与 salon 选题 Base 完全相同（配置误填）→ 拒绝 purge/reseed，防误删选题行（#R10-26）。"""
+    bt, sal = cfg.bitable, cfg.salon
+    return bool(bt.app_token and bt.table_id and bt.app_token == sal.app_token and bt.table_id == sal.table_id)
 
 
 def _list_records(
@@ -86,18 +73,17 @@ def _list_records(
             return out, True, False
         first = False
         data = bitable_lark._data(proc)
-        if not isinstance(data, dict) or not (
-            isinstance(data.get("records"), list) or isinstance(data.get("fields"), list)
-        ):
+        has_rec = isinstance(data.get("records"), list) or isinstance(data.get("items"), list)
+        if not isinstance(data, dict) or not (has_rec or isinstance(data.get("fields"), list)):
             raise RuntimeError(
                 f"purge：record-list 响应无法识别（无 records/fields 容器），中止以免误判空表: {str(data)[:200]}"
             )
         prev_fp = bitable_lark._page_guard(prev_fp, data)
         ids = topic_records.row_ids(data)
-        records: list[Any] = data.get("records") or []
-        if records and not all(isinstance(rec, dict) for rec in records):
-            raise RuntimeError(f"purge：records 子项非 dict，中止以免误判空表: {str(records)[:200]}")
-        if records:
+        records: list[Any] = data.get("records") or data.get("items") or []
+        if has_rec:
+            if records and not all(isinstance(rec, dict) for rec in records):
+                raise RuntimeError(f"purge：records 子项非 dict，中止以免误判空表: {str(records)[:200]}")
             for i, rec in enumerate(records):
                 fds = rec.get("fields") or rec.get("record") or {}
                 out.append((ids[i] if i < len(ids) else "", fds if isinstance(fds, dict) else {}))
@@ -106,7 +92,11 @@ def _list_records(
             offset += _CHUNK
             continue
         fields: list[Any] = data.get("fields") or []
-        rows: list[Any] = data.get("data") or []
+        if not isinstance(data.get("data"), list):
+            raise RuntimeError(
+                f"purge：record-list fields 容器缺 data 行列表，中止以免误判空表: {str(data)[:200]}"
+            )
+        rows: list[Any] = data["data"]
         if not fields or not rows:
             return out, True, True
         idx_push = fields.index("推送时间") if "推送时间" in fields else -1
@@ -163,7 +153,7 @@ def purge_expired_records_outcome(
     for rid, fds in pairs:
         if not rid:
             continue
-        if env_name is not None and bitable_backfill._cell_str(fds.get("环境")) != env_name:
+        if env_name is not None and _cell_str(fds.get("环境")) != env_name:
             continue
         d = _pushed_date(fds)
         if d and d < cutoff_date:

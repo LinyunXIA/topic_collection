@@ -12,8 +12,6 @@ from feedkicker.topic_records import _extract_records
 
 log = logging.getLogger(__name__)
 
-_link_key = dedup_key
-
 
 def link_keys(raw: Any) -> set[str]:
     """把表内/候选的 `资讯链接` 原值归一为去重键集合（`existing_index`/`plan_writes` 共用）。

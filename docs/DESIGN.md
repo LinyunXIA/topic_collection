@@ -57,6 +57,7 @@ topic_collection/
 │   ├── config_models.py      # 路径常量与全部配置 dataclass（叶子模块，§21.2）
 │   ├── log_setup.py          # 共享日志初始化：basicConfig + 静音 httpx/httpcore（#287）
 │   ├── fetch.py              # feedparser 抓取 + 归一化
+│   ├── fetch_url.py          # URL token 归一 trim_url/is_url_token（自 fetch 下沉，§3/#R10-20）
 │   ├── store.py              # sqlite 主表 + facade re-export（§21.2）
 │   ├── store_conn.py         # sqlite 连接/schema 迁移：WAL + busy_timeout（§21.2/#239）
 │   ├── store_meta.py         # meta 键值表（叶子模块）
@@ -65,11 +66,13 @@ topic_collection/
 │   ├── feishu_card_body.py   # 卡片 body 组装与截断提示（自 feishu_card 抽出，§21.2）
 │   ├── feishu_host.py        # 飞书租户域名单点（TC_FEISHU_HOST 覆盖）
 │   ├── bitable.py            # 多维表格 CLI + facade re-export（§21.2/§21.4）
-│   ├── bitable_lark.py       # lark-cli 进程层：_run/_parse/_json_arg/SHANGHAI（§21.4）
+│   ├── bitable_lark.py       # lark-cli 进程层：_run/_parse/_json_arg/SHANGHAI/iter_record_pages/guard_pages（§21.4）
+│   ├── bitable_dates.py      # 归档日期/推送时间归一与保留窗口 cutoff（自 bitable_backfill 下沉，§3/#R10-22）
+│   ├── bitable_fields.py     # field-list 分页读取（score_flow/bitable_views/topic 共用，§3/#R10-28）
 │   ├── bitable_schema.py     # Base/数据表初始化：字段、建库、ensure_initialized（§21.4）
 │   ├── bitable_views.py      # 视图/字段/分享设置：setup_view/按日期视图/组织内只读（§21.4）
 │   ├── bitable_records.py    # 记录读写：去重建链、批量写、清空重灌、sync_env（§21.4）
-│   ├── bitable_backfill.py   # 归档日期解析与存量回填 backfill_empty_archive_dates（§21.4）
+│   ├── bitable_backfill.py   # 存量归档日期回填 backfill_empty_archive_dates（日期归一在 bitable_dates，§21.4）
 │   ├── bitable_purge.py      # 滚动保留的 bitable 侧删除（§20）
 │   ├── bitable_reseed.py     # --reseed 前置清空 purge_all_records（bitable_records re-export，§21.4）
 │   ├── minimax.py            # MiniMax 大纲 facade：gen_outline + re-export patch 点（#346）
@@ -402,7 +405,7 @@ v0.2 起 macOS 用 **launchd** 取代 cron：`StartCalendarInterval` 在机器�
 ### fetch.py
 - [x] httpx 抓 bytes（UA/超时/2xx 判定）+ `feedparser.parse`
 - [x] 归一化 entry：entry_key(guid→canonicalize(link)→title 兜底)、title、url、description（原样）、published_at(iso_utc)
-- [x] `canonicalize()`：去 fragment、host 小写、保留 query
+- [x] `canonicalize()`：去 fragment、host 小写、保留 query；fragment 以 `/` 开头且无 query（hash 路由 `#/post/1`，含非根 path）一律保留，#R10-19
 - [x] 每源异常捕获由 push.py 层做（fetch 只抛）
 
 ### feishu.py
@@ -820,7 +823,8 @@ bitable（CLI + facade re-export，§21.2）
 ### 21.4 拆分记录
 
 - **bitable.py 拆分完成**（#135，2026-09-14）：原 830 行单文件按边界拆为 6 个 ≤200 行模块，行为逐字节保留（240 用例全绿，<1s 全离线），`bitable.py` 收敛为 CLI + facade re-export。边界与函数归属：
-  - `bitable_lark.py`（进程层）：`SHANGHAI`/`_shanghai_tz`、`lark_bin`、`_run`、`_parse`、`_ok`、`_data`、`_json_arg`、`_has_batch_verb`、`_markdown_record_ids`、`_guard_offset`/`_page_fingerprint`/`_page_guard`（页指纹防误杀，#232）、`_CHUNK`。
+  - `bitable_lark.py`（进程层）：`SHANGHAI`/`_shanghai_tz`、`lark_bin`、`_run`、`_parse`、`_ok`、`_data`、`_json_arg`、`_has_batch_verb`、`_markdown_record_ids`、`_guard_offset`/`_page_fingerprint`/`_page_guard`（页指纹防误杀，#232）、`iter_record_pages`（通用 record-list 分页，`existing_links`/`read_rows` 共用）/`guard_pages`（页数上限 #290）、`_CHUNK`。
+  - 后续下沉登记（#R10-01/#R10-20/#R10-22/#R10-28）：`llm_json.py`（LLM 文本 → JSON 候选选择，extract/score/minimax 共用）、`fetch_url.py`（`trim_url`/`is_url_token`）、`bitable_dates.py`（`_cell_str`/`_shanghai_date`/`cutoff_date_shanghai`/`_pushed_date`）、`bitable_fields.py`（`read_fields` 分页）。
   - `bitable_schema.py`（Base/表初始化）：`BASE_TITLES`/`TABLE_NAME`/`VIEW_NAME` 等常量、`fields_for`、`base_url`、`find_base_by_title`、`create_base`、`get_table_id`、`create_table`、`ensure_initialized`。
   - `bitable_views.py`（视图/字段/分享）：`_view_id`、`setup_view`、`set_tenant_readonly`、`ensure_archive_date_field`、`create_date_view`。
   - `bitable_reseed.py`（reseed 前置清空）：`_delete_batches`、`_markdown_has_data_row`（#242）、`_env_record_ids`、`purge_all_records`（#197/#218；`bitable_records` 以 `from … import … as …` re-export）。
@@ -941,7 +945,7 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 - **`existing_links` 跨环境去重**：共享 Base 下不按「环境」过滤链接 → 另一环境已归档的同一 URL 不在本环境重复写（test 视图缺行，非数据丢失）；按环境 `--reseed` 后收敛。
 - **`canonicalize` 键规则漂移**：省略默认端口/保留 userinfo 等归一变更会让 guid-less 源旧行 `entry_key` 与新 key 不一致，升级首轮可能重复推卡一次（一次性影响）。
 - **`is_ppt_synced` 无 feed 过滤**：仅按 `entry_key` 判定，理论碰撞才误伤；实际 `entry_key` 为 URL/guid，不会跨源碰撞。
-- **salon 全失败返回码不变**：`selected` 非空且**有尝试**但 0 条成功时仅 `log.warning`（salon_flow），rc 仍 0，不触发 SOS；稳态全跳过（去重命中）不再误报（#237）。
+- **salon 全失败返回码**：`selected` 非空且有尝试但 0 条成功建 Wiki、或全部 Wiki 建成而归档状态未落库（`persist_failed`）时 rc 1（salon_flow，R9-27 / #R10-30）；稳态全跳过（去重命中）rc 0，不误报。
 - **接受项（记录不修）**：① 超大 `detail_url` 时 `build_card` 不保证 ≤20KB（`detail_url` 由 config 控制、现实值远小于预算；本轮只保证常规条目路径 ≤20KB，#239）；② `is_ppt_synced` 无 feed 过滤（理论碰撞，见上）；③ `select_pending` 无 lease + `mark_pushed` 无条件（数据流见 §1）→ 并发/人工重叠可能重复推送，需运行级锁方免，本机单进程运维下视为取舍；④ `#265/#274` 对「rc0 非 JSON / `data=={}`」硬 raise（安全方向：宁可中止也不误删/误写）。
 
 ### 24.2 第五轮审计修复语义补充（#231–#239，2026-09-14）
@@ -1159,12 +1163,12 @@ score:
 
 - `打分` 列 = 纯数字字符串（1 位小数，如 `3.5`）。
 - `理由` 列 = `理由正文 ｜risk/source 标记 ｜六维明细` 压缩为**单行**；日期可缀在理由末尾，**不新增「打分日期」列**。
-- 写调用用 `base +record-batch-update`（`--json` 体 = `{"update_records": {record_id: {列: 值}}}`，≤100 条/批，按 `record_id` 定位既有行，只更新目标 2 列）；`+record-batch-update` 不可用时回退逐条 `{"record_id": …, "fields": {列: 值}}`。**不 `batch-create`、不删行、不动其它列**。
+- 写调用用 `base +record-batch-update`（`--json` 体 = `{"update_records": {record_id: {列: 值}}}`，≤100 条/批，按 `record_id` 定位既有行，只更新目标 2 列）；缺 `+record-batch-update` 即 raise（旧 `+record-update` 不存在，无逐条回退死分支，R9-15 / #R10-11）。**不 `batch-create`、不删行、不动其它列**。
 
 ### 26.6 错误与退出码
 
 - **rc 2（配置/参数非法，且不发任何 LLM/写调用）**：config 加载失败 / prompt 文件缺失 / `--provider` 未知或未注册 / 所选 provider 缺 key（配置与 env 均无）/ salon token 占位或缺失 / **目标 provider 对应列缺失**（`MMax打分`/`MMax理由` 或 `DS打分`/`DS理由` 任一不在表内）。
-- **rc 1（未捕获异常，或 `--apply` 全部写入失败）**：`failed_writes > 0 且 written == 0`。
+- **rc 1（未捕获异常，或 `--apply` 全部写入失败，或全部 LLM 批失败）**：`written == 0` 且（`failed_writes > 0` 或 `failed_batches > 0` 或待写非空，R9-27 / #R10-12）。
 - **rc 0（正常，含部分行/批失败跳过）**：单行解析失败或写入失败只跳过并计数，不阻断其余行。
 - 解析失败单批重试 1 次（调用 + 解析共享同一重试预算，总 HTTP ≤2/批）；`max_calls > 0` 时每次调用前检查，达限停止剩余批并 WARNING。
 
