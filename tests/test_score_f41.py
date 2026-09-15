@@ -96,11 +96,6 @@ def _stub_lark(
                         rec["fields"].update(payload[rec["record_id"]])
             ok = batch_ok and counter["batch"] != fail_on
             return FakeProc(0, "{}" if ok else '{"ok": false, "error": {"message": "boom"}}')
-        if "+record-update" in args:
-            counter["batch"] += 1
-            if payloads is not None:
-                payloads.append(_json_from_args(args))
-            return FakeProc(0, "{}")
         return FakeProc(0, "{}")
 
     monkeypatch.setattr(bitable_lark, "_run", fake_run)
@@ -262,19 +257,17 @@ def test_write_scores_failure_increments_failed_writes(monkeypatch) -> None:
     assert stats.written == 0 and stats.failed_writes == 2
 
 
-def test_write_scores_single_fallback_body_matches_repo_convention(monkeypatch) -> None:
+def test_write_scores_uses_only_existing_batch_verb(monkeypatch) -> None:
     calls: list[list[str]] = []
-    payloads: list[dict] = []
-    _stub_lark(monkeypatch, field_names=_MM_FIELDS, batch_verb="+record-update", calls=calls, payloads=payloads)
+    _stub_lark(monkeypatch, field_names=_MM_FIELDS, calls=calls)
 
     stats = score_write.write_scores(
         score_write.WriteConf("appTest", "tblTest", "minimax"), [_item("A"), _item("B")], dry_run=False
     )
 
+    verbs = {c[1] for c in calls if c and c[0] == "base"}
     assert stats.written == 2
-    singles = [c for c in calls if "+record-update" in c]
-    assert len(singles) == 2 and all("--record-id" not in c for c in singles)
-    assert payloads[0]["record_id"] == "recA" and set(payloads[0]["fields"]) == {"MMax打分", "MMax理由"}
+    assert "+record-batch-update" in verbs and "+record-update" not in verbs
 
 
 def test_write_scores_no_verb_raises(monkeypatch) -> None:
@@ -559,3 +552,20 @@ def test_run_same_name_rows_both_written(tmp_path, monkeypatch, capsys) -> None:
 
     summary = _summary(capsys.readouterr().out)
     assert rc == 0 and summary["written"] == 2 and summary["dropped"] == 0
+
+
+def test_has_batch_verb_ignores_nonexistent_record_update(monkeypatch) -> None:
+    monkeypatch.setattr(bitable_lark, "_run", lambda *a, **k: FakeProc(0, "+record-update Legacy\n"))
+
+    assert bitable_lark._has_batch_verb() is None
+
+
+def test_run_apply_output_has_no_dry_run_wording(tmp_path, monkeypatch, capsys) -> None:
+    cfg = _write_cfg(tmp_path)
+    _stub_lark(monkeypatch, pages=[_records(1)], field_names=_MM_FIELDS)
+    _stub_llm_echo(monkeypatch)
+
+    rc = score_flow.main(_args(cfg, tmp_path, "--apply"))
+
+    out = capsys.readouterr().out
+    assert rc == 0 and "dry-run" not in out

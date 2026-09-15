@@ -131,8 +131,8 @@ feeds:
 数据库按环境分流：默认 `data/tc-{env}.sqlite3`（dev/test/prod 各一库，互不污染；
 launchd 生产任务显式注入 `TC_APP_ENV=prod`）。CLI `--env` / `--db` 可覆盖。
 
-`config.py` 用 `dataclass` 类型化（以 `feedkicker/config.py` 为准，共 13 个顶层字段）：
-`Config{app_env, feishu_webhook, feishu_secret, bootstrap_days, http: HttpConf{timeout_seconds, user_agent}, feeds: list[Feed{name, url}], db_path, site: SiteConf{top_n}, bitable: BitableConf{enabled, app_token, table_id, url, retention_days}, salon: SalonConf{enabled, app_token, table_id, wiki_space_id, wiki_parent_token, trigger_weekday, trigger_hour, trigger_minute}, minimax: MinimaxConf{api_key, model, base_url}, wiki: WikiConf{space_id, parent_token, app_token}, extract: ExtractConf{enabled, since_days, batch_size, provider, prompt_file, max_calls, providers: dict[str, ProviderConf{base_url, model, api_key, tool_label}]}}`。
+`config.py` 用 `dataclass` 类型化（以 `feedkicker/config.py` 为准，共 14 个顶层字段）：
+`Config{app_env, feishu_webhook, feishu_secret, bootstrap_days, http: HttpConf{timeout_seconds, user_agent}, feeds: list[Feed{name, url}], db_path, site: SiteConf{top_n}, bitable: BitableConf{enabled, app_token, table_id, url, retention_days}, salon: SalonConf{enabled, app_token, table_id, wiki_space_id, wiki_parent_token, trigger_weekday, trigger_hour, trigger_minute}, minimax: MinimaxConf{api_key, model, base_url}, wiki: WikiConf{space_id, parent_token, app_token}, extract: ExtractConf{enabled, since_days, batch_size, provider, prompt_file, max_calls, providers: dict[str, ProviderConf{base_url, model, api_key, tool_label}]}, score: ScoreConf{enabled, prompt_file, batch_size, provider, max_calls, timeout_seconds, providers}}`。
 
 配置键权威面（canonical）：`salon.wiki_space_id`/`salon.wiki_parent_token`、`minimax.api_key`/`model`/`base_url`、`wiki.space_id`/`parent_token`/`app_token`、`bitable.*`（`enabled`/`app_token`/`table_id`/`url`/`retention_days`）、`site.top_n`。
 **未文档化别名已移除**（#162）：`salon.wiki_space`、`salon.minimax_api_key`、`minimax.minimax_api_key`、`wiki.wiki_space_id`、`wiki.wiki_parent_token`；`wiki.space_id`/`parent_token` 未配置时回退 `salon.wiki_space_id`/`salon.wiki_parent_token`（§22.2）。
@@ -908,19 +908,19 @@ salon 周五 launchd 班有新文档时自动重建，无需新 plist。
 | 交付物 | 路径 | 定位 | 对应功能 | PRD |
 |---|---|---|---|---|
 | 项目总览 | `README.md`（根） | 新读者入口：定位/环境/安装/配置概览/快速上手/命令总览/导航 | F24 | §20 |
-| 命令行详解 | `docs/CLI.md` | 8 命令 × dev/test/prod，参数/退出码/副作用/dry-run/错误码 | F25 | §20 |
+| 命令行详解 | `docs/CLI.md` | 9 命令 × dev/test/prod，参数/退出码/副作用/dry-run/错误码 | F25 | §20 |
 | 运维手册 | `docs/OPS.md` | 配置与凭据、launchd 定时、飞书三坑、排障、环境纪律 | F26 | §20 |
 
 ### 23.2 各文档定位与结构
 
-- **README（F24）**：一句话定位 → 架构一句话（链 §1）→ 运行环境（Python ≥3.12 / 仓库内 `.venv` / 外部 `lark-cli` 已登录）→ 安装（`pip install -e .[dev]`）→ 配置与凭据概览（三份 `config-{env}.yaml` + 覆盖顺序一行 + 细节链 OPS）→ 快速上手（dev `--dry-run` 跑通 `tc-push`）→ 8 命令总览表（锚点链 `docs/CLI.md`）→ 目录导航（README/CLI/OPS/PRD/DESIGN/AGENTS）。保持入口性，不铺开逐命令细节。
+- **README（F24）**：一句话定位 → 架构一句话（链 §1）→ 运行环境（Python ≥3.12 / 仓库内 `.venv` / 外部 `lark-cli` 已登录）→ 安装（`pip install -e .[dev]`）→ 配置与凭据概览（三份 `config-{env}.yaml` + 覆盖顺序一行 + 细节链 OPS）→ 快速上手（dev `--dry-run` 跑通 `tc-push`）→ 9 命令总览表（锚点链 `docs/CLI.md`）→ 目录导航（README/CLI/OPS/PRD/DESIGN/AGENTS）。保持入口性，不铺开逐命令细节。
 - **CLI（F25，核心）**：顶部「通用约定」（env 覆盖顺序 `--db` > `TC_DB` > `--env` > `TC_APP_ENV` > prod；`--env dev|test|prod`；`--config`/`--db`；**prod 示例一律 `--dry-run`**、真跑单列标 ⚠️；脱敏规则）。每命令一节：① 用途 + DESIGN 章节号；② 参数表（flag / 类型 / 默认 / 覆盖关系 / 说明，取自 argparse）；③ 环境差异（config / `data/tc-{env}.sqlite3` / 凭据）；④ dev/test/prod 三示例（示意输出 + 退出码 + 副作用）；⑤ `--dry-run` 示意输出；⑥ 注意/坑。附录：错误码对照表（11246 / 131005 / >20KB，取自代码与 AGENTS.md，不臆造）。
 - **OPS（F26）**：① 配置（三份 yaml 字段对齐 `config_models.py` dataclass + `.example` 引用 + 覆盖顺序 + db 分流）；② 凭据（`FEISHU_WEBHOOK`/`FEISHU_SECRET`/`MiniMax_Key`/`TC_SALON_TOKEN`；yaml gitignored；prod 与 dev-test 双 Base，dev/test 共享文件用「环境」列区分）；③ launchd 三 plist（push 8:30/16:00、salon 周五 10:00、purge 每月 1 号 10:30 仅 dry-run）+ `launchctl bootout && bootstrap`；④ 飞书三坑；⑤ 排障（症状→排查→处置）；⑥ 环境分级纪律（prod 默认禁写；purge `--apply` 必须人工）。引用 §4/§8/§9/§16/§20 + AGENTS.md。
 
 ### 23.3 清单
 
 - [x] F24 `README.md`：定位/环境/安装/配置概览/快速上手/命令总览表/目录导航
-- [x] F25 `docs/CLI.md`：8 命令详解 + dev/test/prod 示例 + 错误码附录（参数/默认/退出码经 `--help`+源码核对）
+- [x] F25 `docs/CLI.md`：9 命令详解 + dev/test/prod 示例 + 错误码附录（参数/默认/退出码经 `--help`+源码核对）
 - [x] F26 `docs/OPS.md`：配置/凭据/launchd/飞书三坑/排障/环境纪律
 - [x] F27 三件套一致性自检（独立后续任务，2026-09-14 完成）
 
@@ -1094,11 +1094,11 @@ score_source.read_rows(app_token, table_id, limit)   # 全表分页读 5 个输�
 |---|---|---|---|
 | `score_source.py` | 读目标表全表行、组批（≤100）、行字段归一 | `read_rows(app_token, table_id, limit=0) -> list[dict]`、`group_batches(rows, size=MAX_SCORE_BATCH) -> list[list[dict]]` | F38/F39 |
 | `score_config.py` | `score:` 配置段解析（batch_size 上界校验、providers 占位/env 回退） | `parse_score(raw, base, providers) -> ScoreConf` | F38 |
-| `score_llm.py` | provider 调用 + 提示词注入（横向上文） | `build_prompt(template, batch, prior_scores) -> str`、`call_llm(provider, prompt) -> str` | F38/F39 |
-| `score_parse.py` | 契约解析、闸门/否决/缺失归一、分布校验 | `parse_scores(raw) -> list[dict]`、`normalize(scores) -> (list[dict], DistCheck)` | F40 |
-| `score_write.py` | 目标列存在性校验、只补空/`--force` 写入、统计 | `ensure_columns(...)`、`plan_writes(scores, existing) -> (write, skip)`、`write_scores(...) -> ScoreStats` | F41 |
-| `score_report.py` | dry-run 清单、运行摘要与分布校验（`DistCheck`） | `print_dry_run(planned, skipped)`、`print_summary(stats)`、`check_distribution(items)` | F40/F41 |
-| `score_flow.py` | `tc-score` 编排 + CLI | `run(cfg, *, apply, provider=None, limit=0, max_calls=0, force=False) -> int`、`main(argv) -> int` | F38–F41 |
+| `score_llm.py` | provider 调用 + 提示词注入（横向上文） | `build_prompt(template, batch, prior_scores) -> str`、`call_llm(conf, prompt, timeout=600.0) -> str`、`refine_batches(conf, template, batches, prior_scores, max_calls, timeout=600.0) -> BatchResult` | F38/F39 |
+| `score_parse.py` | 契约解析、闸门/否决/缺失归一、按 `record_id`/同名对齐 | `parse_results(raw) -> (list[dict], int)`、`parse_results_full(raw) -> (list[dict], int, set[str])`、`normalize(items, rows) -> (list[dict], DistCheck)` | F40 |
+| `score_write.py` | 只补空/`--force` 写入、`record_id` 去重与统计 | `plan_writes(scored, *, force) -> (write, skip)`、`write_scores(conf, rows, *, dry_run) -> ScoreStats` | F41 |
+| `score_report.py` | 权重/缺失归一、`DistCheck` 分布校验、dry-run 清单与运行摘要 | `weighted_total(scores, missing_extra=()) -> (float|None, list[str])`、`check_distribution(items) -> DistCheck`、`print_dry_run(planned, skipped, dist=None)`、`print_summary(stats)` | F40/F41 |
+| `score_flow.py` | `tc-score` 编排 + CLI；目标列校验（`+field-list` 分页） | `ensure_columns(app_token, table_id, provider) -> int`、`run(cfg, *, apply, provider=None, limit=0, max_calls=0, force=False) -> int`、`main(argv) -> int` | F38–F41 |
 
 - provider 注册表**直接复用** `extract_llm.PROVIDERS` 与 `resolve_provider`（含 `_post_chat` 错误码归一、`_resolve_api_key` 缺 key/占位 key 校验），不另起一套；`minimax → MMax打分/MMax理由`、`deepseek → DS打分/DS理由`（列映射常量在本模块，PRD §22.8）。
 - **约束**：`feedkicker/score_*.py` 每个 ≤200 行（`wc -l`），新逻辑进对应子模块，不堆进 `score_flow.py`。

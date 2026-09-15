@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 from feedkicker import bitable_lark, score_llm, score_write
 from feedkicker.config_models import PROJECT_ROOT, ProviderConf
@@ -227,3 +228,51 @@ def test_multi_batch_distribution_violations(monkeypatch) -> None:
     assert len(result.scored) == 2
     assert len(result.violations) >= 2
     assert any("≥4.0" in v for v in result.violations)
+
+
+def test_design_config_field_count_is_14() -> None:
+    design = _doc("docs/DESIGN.md")
+
+    assert "共 14 个顶层字段" in design and "共 13 个顶层字段" not in design
+    assert "score: ScoreConf{" in design
+
+
+def test_no_stale_eight_command_count() -> None:
+    for name in ("docs/CLI.md", "docs/PRD.md", "docs/DESIGN.md", "README.md", "AGENTS.md"):
+        assert "8 命令" not in _doc(name), name
+
+
+def test_examples_have_score_section_with_placeholders() -> None:
+    for name in ("config-dev.yaml.example", "config-test.yaml.example", "config-prod.yaml.example"):
+        data = yaml.safe_load(_doc(name))
+        sc = data["score"]
+        assert sc["batch_size"] == 20 and sc["timeout_seconds"] == 600
+        assert sc["providers"]["minimax"]["api_key"].startswith("<")
+
+
+def test_prd_and_cli_force_and_limit_alignment() -> None:
+    prd = _doc("docs/PRD.md")
+    section = _doc("docs/CLI.md").split("## tc-score", 1)[1].split("\n## ", 1)[0]
+
+    assert "[--force]" in prd and "| `--force` |" in prd
+    assert "| `--limit` |" in section and "无对应配置项" in section
+
+
+def test_cli_md_batch_numbers_match_group_batches() -> None:
+    from feedkicker import score_source
+
+    sizes = [len(b) for b in score_source.group_batches([{} for _ in range(85)], 20)]
+    section = _doc("docs/CLI.md").split("## tc-score", 1)[1].split("\n## ", 1)[0]
+
+    assert sizes == [20, 20, 20, 20, 5]
+    assert "批数=5" in section and "[20, 20, 20, 20, 5]" in section and '"batches": 5' in section
+    assert "85 行按默认批大小 20 = 5 批" in _doc("docs/PRD.md")
+
+
+def test_design_module_table_matches_implementation() -> None:
+    section = _doc("docs/DESIGN.md").split("### 26.2 模块划分", 1)[1].split("### 26.3", 1)[0]
+
+    assert "ensure_columns(app_token, table_id, provider) -> int" in section
+    assert "call_llm(conf, prompt, timeout=600.0) -> str" in section
+    assert "normalize(items, rows) -> (list[dict], DistCheck)" in section
+    assert "`ensure_columns(...)`" not in section

@@ -176,13 +176,10 @@ def _json_arg(payload: dict[str, Any]):
 
 
 def _has_batch_verb() -> str | None:
+    """探测写动词：真实 CLI 只提供 `+record-batch-update`（`+record-update` 不存在，不再探测，#R9-15）。"""
     proc = _run(["base", "--help"])
     txt = proc.stdout if proc and proc.stdout else ""
-    if "+record-batch-update" in txt:
-        return "+record-batch-update"
-    if "+record-update" in txt:
-        return "+record-update"
-    return None
+    return "+record-batch-update" if "+record-batch-update" in txt else None
 
 
 def _markdown_record_ids(stdout: str) -> list[str]:

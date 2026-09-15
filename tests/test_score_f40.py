@@ -319,7 +319,7 @@ def test_reason_truncated_over_100_chars(caplog) -> None:
             [_result("A", reason="字" * 120)], [{"record_id": "rec1", "话题名称": "A"}]
         )
 
-    assert len(items[0]["reason"]) == 101 and items[0]["reason"].endswith("…")
+    assert len(items[0]["reason"]) == 100 and items[0]["reason"].endswith("…")
     assert "截断" in caplog.text
 
 
@@ -521,3 +521,25 @@ def test_normalize_prefers_item_record_id() -> None:
     normalized, _dist, dropped = score_parse.normalize_results([_result("A", record_id="rec2")], rows)
 
     assert dropped == 1 and len(normalized) == 1 and normalized[0]["record_id"] == "rec2"
+
+
+def test_dropped_not_double_counted() -> None:
+    rows = [{"record_id": "rec1", "话题名称": "A"}]
+    raw = json.dumps(
+        {"scores": [{"话题名称": "A", "gate": "pass", "dimensions": {**_DIMS_4, "可演示性": 9}, "reason": "x"}]},
+        ensure_ascii=False,
+    )
+
+    items, parsed_dropped, dropped_keys = score_parse.parse_results_full(raw)
+    _norm, _dist, norm_dropped = score_parse.normalize_results(items, rows, dropped_keys)
+
+    assert parsed_dropped == 1 and norm_dropped == 0 and parsed_dropped + norm_dropped == 1
+
+
+def test_reason_with_flags_stays_within_100() -> None:
+    items, _ = score_parse.normalize(
+        [_result("A", reason="字" * 120, risk_flag=True, source_flag=True)],
+        [{"record_id": "rA", "话题名称": "A"}],
+    )
+
+    assert len(items[0]["reason"]) == 100 and items[0]["reason"].endswith("｜source")

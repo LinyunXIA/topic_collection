@@ -13,6 +13,53 @@ _REASON_CLIP = 60
 _GE4_MAX = 0.20
 _LT2_MIN = 0.15
 
+WEIGHTS: dict[str, int] = {
+    "普适痛点强度": 28, "分层承载力": 22, "可演示性": 20,
+    "时效与稀缺": 12, "内容复用价值": 10, "讲解成本": 8,
+}
+MISSING = "缺失"
+
+
+def num(value: Any) -> float | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    try:
+        return float(str(value).strip())
+    except ValueError:
+        return None
+
+
+def dim(scores: dict[str, Any], key: str) -> tuple[float | None, bool]:
+    """返回 `(值, 是否缺失)`；`"缺失"`/缺键/非数字一律按缺失（不填 0，PRD §22.6）。"""
+    raw = scores.get(key)
+    if raw is None or (isinstance(raw, str) and raw.strip() == MISSING):
+        return None, True
+    val = num(raw)
+    return (val, False) if val is not None else (None, True)
+
+
+def weighted_total(
+    scores: dict[str, Any], missing_extra: Any = ()
+) -> tuple[float | None, list[str]]:
+    """缺失维剔除权重、其余按剩余权重归一后加权 round 到 1 位小数；全维缺失 → `(None, 全维)`；
+    `missing_extra` 与「值为 `"缺失"`」两种缺失表达一并归一（PRD §22.6）。"""
+    extra = {str(k) for k in missing_extra}
+    present: list[tuple[str, float]] = []
+    missing: list[str] = []
+    for key in WEIGHTS:
+        val, is_missing = dim(scores, key)
+        if is_missing or val is None or key in extra:
+            missing.append(key)
+        else:
+            present.append((key, val))
+    if not present:
+        return None, missing
+    total_w = sum(WEIGHTS[k] for k, _ in present)
+    acc = sum(WEIGHTS[k] * v for k, v in present)
+    return round(acc / total_w, 1), missing
+
 
 @dataclass
 class DistCheck:

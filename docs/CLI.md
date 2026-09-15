@@ -428,7 +428,7 @@ provider key：`extract.providers.<name>.api_key`，为空或占位时按 provid
 | `--apply` | store_true | 关（即默认 dry-run） | 与 `--dry-run` 互斥 | 写回目标 provider 的 `打分`/`理由` 两列 |
 | `--dry-run` | store_true | 关（默认行为） | 与 `--apply` 互斥 | 仅打印待写清单与统计，零写调用 |
 | `--provider` | choice `{deepseek,minimax}`（由列映射表键生成） | `None`（取 `score.provider`，默认 `minimax`） | 覆盖配置 | 调用方与目标列：minimax→`MMax打分`/`MMax理由`，deepseek→`DS打分`/`DS理由` |
-| `--limit` | 非负整数 | `0`（全部） | 覆盖配置 | 最多处理行数；`0`=全表 |
+| `--limit` | 非负整数 | `0`（全部） | — | 最多处理行数；`0`=全表（无对应配置项，直接生效） |
 | `--max-calls` | 非负整数 | `0`（不限） | 覆盖配置 | LLM 调用上限；达限停止剩余批并 WARNING |
 | `--force` | store_true | 关 | — | 忽略既有打分，对全部命中行重算并覆盖 |
 | `--config` | str | `None` | 覆盖 `--env` 推导 | 指定 `config-{env}.yaml` 路径 |
@@ -463,11 +463,11 @@ provider key：`score.providers.<name>.api_key`，为空或占位时按 provider
 
 ```
 2026-09-15 ... feedkicker.score_flow tc-score 运行开始：环境=dev，db=/.../data/tc-dev.sqlite3，mode=dry-run
-2026-09-15 ... feedkicker.score_flow tc-score 运行计划：环境=dev db=... 目标表=tbl… 模板=prompts/score.md provider=minimax（MMax）总行数=85 批数=1 每批行数=[85] 待打分=85 跳过=0 横向上文=0 max_calls=0 force=False
-tc-score dry-run 计划：总行数=85 批数=1 待打分=85 跳过=0
+2026-09-15 ... feedkicker.score_flow tc-score 运行计划：环境=dev db=... 目标表=tbl… 模板=prompts/score.md provider=minimax（MMax）总行数=85 批数=5 每批行数=[20, 20, 20, 20, 5] 待打分=85 跳过=0 横向上文=0 max_calls=0 force=False
+tc-score dry-run 计划：总行数=85 批数=5 待打分=85 跳过=0
 [将写入] 1. 话题名A → 3.5 ｜ 依据 可使用工具… ｜ risk=false ｜ source=false ｜ 六维：…
 待写 85 / 跳过 0 / 分布校验 ok
-{"mode": "dry-run", "batches": 1, "llm_calls": 1, "rows": 85, "scored": 85, "skipped": 0, "written": 0, "failed_writes": 0, "failed_batches": 0, "dropped": 0, "empty_batches": 0}
+{"mode": "dry-run", "batches": 5, "llm_calls": 5, "rows": 85, "scored": 85, "skipped": 0, "written": 0, "failed_writes": 0, "failed_batches": 0, "dropped": 0, "empty_batches": 0}
 ```
 
 退出码 `0`。副作用：只读 salon 表（`+record-list`/`+field-list`）并调用 LLM，**零写调用**。
@@ -480,7 +480,7 @@ tc-score dry-run 计划：总行数=85 批数=1 待打分=85 跳过=0
 
 如需覆盖既有分：`.venv/bin/tc-score --env test --apply --force`。
 
-示意输出：`打分完成：模式=apply 批=1 调用=1 行=85 打分=85 跳过=0 写入=85 写入失败=0 失败批=0 丢弃=0 空批=0` 与统计 JSON（`"mode": "apply"`）。退出码 `0`（部分行/批失败仅汇总 WARNING）；`--apply` **全部写入失败**（`failed_writes>0 且 written==0`）→ `1`；配置错 `2`。副作用：写目标 provider 的 2 列（`base +record-batch-update`，≤100/批）。
+示意输出：`打分完成：模式=apply 批=5 调用=5 行=85 打分=85 跳过=0 写入=85 写入失败=0 失败批=0 丢弃=0 空批=0` 与统计 JSON（`"mode": "apply"`）。退出码 `0`（部分行/批失败仅汇总 WARNING）；`--apply` **全部写入失败**（`failed_writes>0 且 written==0`）→ `1`；配置错 `2`。副作用：写目标 provider 的 2 列（`base +record-batch-update`，≤100/批）。
 
 **prod（仅 dry-run）**：
 

@@ -354,3 +354,23 @@ def test_entrypoint_silences_httpx_logger(tmp_path, monkeypatch) -> None:
 
     assert score_flow.main(_args(cfg, tmp_path)) == 0
     assert logging.getLogger("httpx").getEffectiveLevel() >= logging.WARNING
+
+
+def test_field_list_paginates_beyond_first_page(monkeypatch) -> None:
+    pages = [
+        [{"field_name": f"f{i}"} for i in range(200)],
+        [{"field_name": "MMax打分"}, {"field_name": "MMax理由"}],
+    ]
+    calls: list[list[str]] = []
+
+    def fake_run(args, stdin_text=None, timeout=120):
+        calls.append(list(args))
+        if "+field-list" in args:
+            off = int(args[args.index("--offset") + 1])
+            return FakeProc(0, json.dumps({"data": {"fields": pages[off // 200]}}, ensure_ascii=False))
+        return FakeProc(0, "{}")
+
+    monkeypatch.setattr(bitable_lark, "_run", fake_run)
+
+    assert score_flow.ensure_columns("app", "tbl", "minimax") == 0
+    assert len([c for c in calls if "+field-list" in c]) == 2

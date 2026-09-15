@@ -117,47 +117,25 @@ def _batch_write(conf: WriteConf, chunk: list[dict[str, Any]], label: str) -> in
     return len(payload["update_records"]) if bitable_lark._ok(proc) else 0
 
 
-def _single_write(conf: WriteConf, row: dict[str, Any], label: str) -> bool:
-    """逐条回退（老 CLI 无批量动词）：`--json` 体 = `{"record_id": …, "fields": {…}}`（对齐 `bitable_backfill`）。"""
-    payload = {"record_id": str(row.get("record_id") or ""), "fields": _cell(row, label)}
-    with bitable_lark._json_arg(payload) as (jflag, jval):
-        proc = bitable_lark._run(
-            ["base", "+record-update", "--base-token", conf.app_token, "--table-id", conf.table_id, jflag, jval],
-            timeout=120,
-        )
-    return bitable_lark._ok(proc)
-
-
 def write_scores(conf: WriteConf, rows: list[dict[str, Any]], *, dry_run: bool) -> ScoreStats:
     """分块（≤100/批）只更新目标 2 列；失败批计入 `failed_writes`，**绝不触碰其它列**（§26.5）。
 
-    `dry_run=True` 零写调用；`+record-batch-update` 缺失时回退逐条 `+record-update`（§26.6 写失败只计数）。
+    `dry_run=True` 零写调用；写动词只用真实存在的 `+record-batch-update`（单条亦走此批接口，1..100
+    通用），缺少该动词即 raise（旧 `+record-update` 不存在，死分支已删除，#R9-15）。
     """
     stats = ScoreStats()
     rows = _dedupe(rows)
     stats.scored = len(rows)
     if dry_run or not rows:
         return stats
-    verb = bitable_lark._has_batch_verb()
-    if verb is None:
-        raise RuntimeError("lark-cli 无 +record-batch-update/+record-update，无法写表")
+    if bitable_lark._has_batch_verb() is None:
+        raise RuntimeError("lark-cli 无 +record-batch-update，无法写表")
     label = PROVIDER_LABELS[conf.provider]
     for i in range(0, len(rows), WRITE_CHUNK):
         chunk = rows[i : i + WRITE_CHUNK]
-        if verb == "+record-batch-update":
-            written = _batch_write(conf, chunk, label)
-            stats.written += written
-            if written < len(chunk):
-                log.warning("打分批量写入失败（第 %d 批 %d 条）", i // WRITE_CHUNK + 1, len(chunk))
-                stats.failed_writes += len(chunk) - written
-            continue
-        failed = 0
-        for row in chunk:
-            if _single_write(conf, row, label):
-                stats.written += 1
-            else:
-                failed += 1
-        if failed:
-            log.warning("打分逐条写入失败 %d 条", failed)
-            stats.failed_writes += failed
+        written = _batch_write(conf, chunk, label)
+        stats.written += written
+        if written < len(chunk):
+            log.warning("打分批量写入失败（第 %d 批 %d 条）", i // WRITE_CHUNK + 1, len(chunk))
+            stats.failed_writes += len(chunk) - written
     return stats

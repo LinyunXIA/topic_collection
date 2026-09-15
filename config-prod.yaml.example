@@ -70,3 +70,16 @@ extract:
       model: "deepseek-flash"
       base_url: "https://api.deepseek.com/v1"
       tool_label: "DS"
+
+score:
+  enabled: true
+  prompt_file: prompts/score.md
+  batch_size: 20
+  timeout_seconds: 600
+  provider: minimax
+  max_calls: 0
+  providers:
+    minimax:
+      api_key: "<minimax-key via MiniMax_Key env>"
+    deepseek:
+      api_key: "<deepseek-key via DEEPSEEK_API_KEY env>"

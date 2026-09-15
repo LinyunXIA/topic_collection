@@ -114,6 +114,7 @@ def refine_batches(
         prompt = build_prompt(template, batch, prior)
         items: list[dict[str, Any]] | None = None
         parsed_dropped = 0
+        dropped_keys: set[str] = set()
         limit_reached = False
         tried = False
         for attempt in (1, 2):
@@ -129,7 +130,7 @@ def refine_batches(
                 log.warning("第 %d/%d 批第 %d/2 次尝试失败（调用异常）: %s", no, len(batches), attempt, e)
                 continue
             try:
-                items, parsed_dropped = score_parse.parse_results(raw)
+                items, parsed_dropped, dropped_keys = score_parse.parse_results_full(raw)
                 break
             except ValueError as e:
                 log.warning("第 %d/%d 批第 %d/2 次尝试失败（契约解析失败）: %s", no, len(batches), attempt, e)
@@ -145,7 +146,7 @@ def refine_batches(
         if not items:
             empty += 1
             continue
-        normalized, dist, norm_dropped = score_parse.normalize_results(items, batch)
+        normalized, dist, norm_dropped = score_parse.normalize_results(items, batch, dropped_keys)
         dropped += parsed_dropped + norm_dropped
         if dist.violations:
             log.warning("第 %d/%d 批分布校验违规：%s", no, len(batches), "；".join(dist.violations))

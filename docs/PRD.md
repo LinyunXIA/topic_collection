@@ -374,12 +374,12 @@ feeds:
 
 ## 20. v0.7+ 增量（2026-09-14）— 项目文档三件套（F24–F27）
 
-仓库当前无 README，`docs/` 仅有 PRD/DESIGN/AUDIT（面向设计与审计），日常操作靠 `AGENTS.md` 命令速查，缺「按环境展开 + 带预期输出/退出码/错误码对照」的操作手册。本增量补齐**面向运维的项目文档三件套**，核心是**命令行详解**（8 命令 × dev/test/prod 三环境示例）。
+仓库当前无 README，`docs/` 仅有 PRD/DESIGN/AUDIT（面向设计与审计），日常操作靠 `AGENTS.md` 命令速查，缺「按环境展开 + 带预期输出/退出码/错误码对照」的操作手册。本增量补齐**面向运维的项目文档三件套**，核心是**命令行详解**（9 命令 × dev/test/prod 三环境示例）。
 
 | # | 特性 | 验收要点 | 优先级 |
 |---|---|---|---|
-| F24 | README 总览与快速上手 | 根 `README.md`：一句话定位 + 架构一句话（链 DESIGN §1）、运行环境（Python ≥3.12 / 仓库内 `.venv` / 外部 `lark-cli` 已登录）、安装、配置与凭据概览（三份 `config-{env}.yaml` + 覆盖顺序）、dev `--dry-run` 跑通 `tc-push` 的最小步骤、8 命令总览表（链 CLI.md 锚点）、目录导航 | P2 |
-| F25 | 命令行详解（8 命令） | `docs/CLI.md`：`tc-push`/`tc-salon`/`tc-purge`/`tc-extract`/`feedkicker.wiki_home`/`.bitable`/`.wiki`/`.topic` 逐命令分节——用途 + DESIGN 章节号、参数表（源码 argparse + `--help` 实跑）、dev/test/prod 环境差异、三环境示例（示意输出 + 退出码 + 副作用）、`--dry-run` 输出、注意/坑；附录错误码对照（11246/131005/>20KB） | P2 |
+| F24 | README 总览与快速上手 | 根 `README.md`：一句话定位 + 架构一句话（链 DESIGN §1）、运行环境（Python ≥3.12 / 仓库内 `.venv` / 外部 `lark-cli` 已登录）、安装、配置与凭据概览（三份 `config-{env}.yaml` + 覆盖顺序）、dev `--dry-run` 跑通 `tc-push` 的最小步骤、9 命令总览表（链 CLI.md 锚点）、目录导航 | P2 |
+| F25 | 命令行详解（9 命令） | `docs/CLI.md`：`tc-push`/`tc-salon`/`tc-purge`/`tc-extract`/`tc-score`/`feedkicker.wiki_home`/`.bitable`/`.wiki`/`.topic` 逐命令分节——用途 + DESIGN 章节号、参数表（源码 argparse + `--help` 实跑）、dev/test/prod 环境差异、三环境示例（示意输出 + 退出码 + 副作用）、`--dry-run` 输出、注意/坑；附录错误码对照（11246/131005/>20KB） | P2 |
 | F26 | 运维手册 | `docs/OPS.md`：配置（对齐 `config_models.py` dataclass + `.example` + 覆盖顺序 + db 分流）、凭据（`FEISHU_WEBHOOK`/`FEISHU_SECRET`/`MiniMax_Key`/`TC_SALON_TOKEN`；yaml gitignored；prod 与 dev/test 双 Base）、launchd 三个 plist（push 8:30/16:00、salon 周五 10:00、purge 每月 1 号 10:30 仅 dry-run）+ 重载步骤、飞书三坑、排障（症状→排查→处置）、环境分级纪律 | P2 |
 | F27 | 三件套一致性自检 | README/CLI/OPS 与代码行为一致（参数/默认值/退出码经 `--help` + 源码核对）、交叉引用有效、无真实凭据泄漏 | P3 |
 
@@ -486,7 +486,7 @@ feeds:
 3. 理由 **≤100 字**，必须引用**表内具体字段**作依据，禁止「较为相关」「有一定价值」这类空话；
 4. 信息不足填「**缺失**」而不是填 0。
 
-- **已知张力**：纪律①②要求全局横向对比，而「单次调用 ≤100 行」（`MAX_SCORE_BATCH=100`）会切批。切批时把**已打分行的（话题名, 分数）**作为**横向上文**注入下一批提示词，以尽量维持全局分布；当前清单 **85 行 = 1 批**，不触发切分。
+- **已知张力**：纪律①②要求全局横向对比，而「单次调用 ≤100 行」（`MAX_SCORE_BATCH=100`）会切批。切批时把**已打分行的（话题名, 分数）**作为**横向上文**注入下一批提示词，以尽量维持全局分布；当前清单 **85 行按默认批大小 20 = 5 批**，横向上文逐批生效（首批为空）。
 
 ### 22.8 列映射与写入格式
 
@@ -498,7 +498,7 @@ feeds:
 ### 22.9 CLI 契约（`tc-score`）
 
 ```
-tc-score [--apply | --dry-run(默认)] [--provider {minimax,deepseek}]
+tc-score [--apply | --dry-run(默认)] [--provider {minimax,deepseek}] [--force]
          [--limit N] [--max-calls N] [--env dev|test|prod] [--config PATH] [--db PATH]
 ```
 
@@ -507,11 +507,12 @@ tc-score [--apply | --dry-run(默认)] [--provider {minimax,deepseek}]
 | `--dry-run`（默认） | 只拉表、组批、调用 LLM、打印打分清单与统计，**零写调用** |
 | `--apply` | 真正写回 `打分`/`理由` 列 |
 | `--provider {minimax,deepseek}` | 决定调用方与目标列；缺省取配置，默认 `minimax` |
+| `--force` | 忽略既有打分，对全部命中行重算并覆盖 |
 | `--limit N` | 限制处理行数，`0` = 全部 |
-| `--max-calls N` | LLM 调用上限，`0` = 不限 |
+| `--max-calls N` | LLM 调用上限，`0` = 不限；缺省取 `score.max_calls` |
 | `--env` / `--config` / `--db` | 与既有命令同口径（覆盖顺序 `--db` > `TC_DB` > `--env` > `TC_APP_ENV` > prod） |
 
-- **单次调用 ≤100 行**（`MAX_SCORE_BATCH=100`），超出自动切批；默认批大小 `score.batch_size=20`（越小越不易读超时），单次读超时 `score.timeout_seconds=300`。
+- **单次调用 ≤100 行**（`MAX_SCORE_BATCH=100`），超出自动切批；默认批大小 `score.batch_size=20`（越小越不易读超时），单次读超时 `score.timeout_seconds=600`。
 - **幂等**：默认**只补空**（`打分` 列非空的行跳过；`理由` 有值但 `打分` 空视为未完成、重算补齐）；`--force` 覆盖重算。
 - **退出码**：`2` 配置/参数非法（含目标列缺失 rc2）；`1` 全失败；`0` 正常（含单行失败跳过并计数）。
 - **失败语义**：单行失败跳过并计数，不阻断其余行（对齐既有命令）。

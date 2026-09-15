@@ -34,16 +34,28 @@ def _non_negative_int(value: str) -> int:
 
 
 def _field_names(app_token: str, table_id: str) -> set[str]:
-    proc = bitable_lark._run(
-        ["base", "+field-list", "--base-token", app_token, "--table-id", table_id], timeout=60
-    )
-    if not bitable_lark._ok(proc):
-        raise RuntimeError("读取目标表字段列表失败，无法校验打分列")
-    data = bitable_lark._data(proc)
-    items = data.get("fields") or data.get("items") or []
-    if not isinstance(items, list) or not all(isinstance(f, dict) for f in items):
-        raise RuntimeError(f"field-list 响应 fields 非 list[dict]: {str(items)[:200]}")
-    return {str(f.get("field_name") or f.get("name") or "") for f in items}
+    names: set[str] = set()
+    offset = 0
+    prev_fp = ""
+    while True:
+        bitable_lark._guard_offset(offset)
+        bitable_lark.guard_pages(offset // bitable_lark._CHUNK + 1)
+        proc = bitable_lark._run(
+            ["base", "+field-list", "--base-token", app_token, "--table-id", table_id,
+             "--limit", str(bitable_lark._CHUNK), "--offset", str(offset)],
+            timeout=60,
+        )
+        if not bitable_lark._ok(proc):
+            raise RuntimeError("读取目标表字段列表失败，无法校验打分列")
+        data = bitable_lark._data(proc)
+        prev_fp = bitable_lark._page_guard(prev_fp, data)
+        items = data.get("fields") or data.get("items") or []
+        if not isinstance(items, list) or not all(isinstance(f, dict) for f in items):
+            raise RuntimeError(f"field-list 响应 fields 非 list[dict]: {str(items)[:200]}")
+        names |= {str(f.get("field_name") or f.get("name") or "") for f in items}
+        if len(items) < bitable_lark._CHUNK:
+            return names
+        offset += bitable_lark._CHUNK
 
 
 def ensure_columns(app_token: str, table_id: str, provider: str) -> int:
@@ -66,12 +78,11 @@ def run(
     max_calls: int = 0,
     force: bool = False,
 ) -> int:
-    """读全表 → 校验目标列 → 组批 → 逐批 LLM 打分 → dry-run 清单 / `--apply` 写入。
+    """读全表 → 校验目标列 → 组批 → LLM 打分 → dry-run 清单 / `--apply` 写入。
 
-    rc 2 配置/参数非法；prompt 文件缺失 / provider 缺 key / 目标列缺失均 rc2，且均在发起任何
-    lark/LLM 调用前判定。默认只补空：已有 `打分` 的行计入 skipped 并作为横向上文，不进入本批
-    （§26.7）。`max_calls` 为 0 时取 `score.max_calls`（CLI 覆盖配置，#379）；`--apply` 且有待打分
-    行却一条未写成（写失败或整批 LLM 失败）→ rc1（§26.6/#378）。
+    rc2：配置/参数非法、prompt 缺失、provider 缺 key、目标列缺失（均在 lark/LLM 调用前）。默认只补空
+    （`打分` 非空的行计入 skipped 并作横向上文）。`max_calls` 为 0 时取 `score.max_calls`（#379）；
+    `--apply` 有待打分行却一条未写成 → rc1（#378）。
     """
     provider = (provider or cfg.score.provider or "minimax").strip()
     if provider not in PROVIDER_COLUMNS:
@@ -104,16 +115,14 @@ def run(
     pending, skipped = score_source.plan_pending(rows, provider, force)
     batches = score_source.group_batches(pending, cfg.score.batch_size)
     sizes = [len(b) for b in batches]
-    print(f"tc-score dry-run 计划：总行数={len(rows)} 批数={len(batches)} 待打分={len(pending)} 跳过={len(skipped)}")
+    print(f"tc-score {'apply' if apply else 'dry-run'} 计划：总行数={len(rows)} 批数={len(batches)} 待打分={len(pending)} 跳过={len(skipped)}")
     log.info(
         "tc-score 运行计划：环境=%s db=%s 目标表=%s 模板=%s provider=%s（%s）总行数=%d 批数=%d 每批行数=%s 待打分=%d 跳过=%d 横向上文=%d max_calls=%s force=%s",
         cfg.app_env, cfg.db_path, table_id, cfg.score.prompt_file, provider, provider_conf.tool_label,
         len(rows), len(batches), sizes, len(pending), len(skipped), len(skipped), max_calls, force,
     )
     prior_scores = [
-        (str(row.get("话题名称") or ""), str(row.get("打分")))
-        for row in skipped
-        if row.get("打分") is not None and str(row.get("打分")).strip()
+        (str(r.get("话题名称") or ""), str(r.get("打分"))) for r in skipped if r.get("打分") and str(r.get("打分")).strip()
     ]
     result = score_llm.refine_batches(
         provider_conf, template, batches, prior_scores, max_calls, cfg.score.timeout_seconds
@@ -125,17 +134,11 @@ def run(
     written_stats = score_write.write_scores(write_conf, to_write, dry_run=not apply)
     score_report.print_summary(
         {
-            "mode": "apply" if apply else "dry-run",
-            "batches": len(batches),
-            "llm_calls": result.calls,
-            "rows": len(rows),
-            "scored": len(result.scored),
-            "skipped": len(skipped) + len(skipped_plan),
-            "written": written_stats.written,
-            "failed_writes": written_stats.failed_writes,
-            "failed_batches": result.failed,
-            "dropped": result.dropped,
-            "empty_batches": result.empty,
+            "mode": "apply" if apply else "dry-run", "batches": len(batches),
+            "llm_calls": result.calls, "rows": len(rows),
+            "scored": len(result.scored), "skipped": len(skipped) + len(skipped_plan),
+            "written": written_stats.written, "failed_writes": written_stats.failed_writes,
+            "failed_batches": result.failed, "dropped": result.dropped, "empty_batches": result.empty,
         }
     )
     if apply and pending and not written_stats.written and (

@@ -6,99 +6,18 @@ import logging
 from typing import Any
 
 from feedkicker.extract_parse import _load_json_obj
+from feedkicker.score_report import WEIGHTS as _WEIGHTS
 from feedkicker.score_report import DistCheck as DistCheck
 from feedkicker.score_report import check_distribution as check_distribution
+from feedkicker.score_report import dim as _dim
+from feedkicker.score_report import num as _num
+from feedkicker.score_report import weighted_total as weighted_total
 from feedkicker.score_source import name_key
 
 log = logging.getLogger(__name__)
 
-_WEIGHTS: dict[str, int] = {
-    "普适痛点强度": 28, "分层承载力": 22, "可演示性": 20,
-    "时效与稀缺": 12, "内容复用价值": 10, "讲解成本": 8,
-}
 _MISSING = "缺失"
 _REASON_LIMIT = 100
-
-
-def parse_results(raw: str) -> tuple[list[dict[str, Any]], int]:
-    """解析 LLM 原始文本 → `(scores, dropped)`，**权威口径 `scores`/`dimensions`/`gate: pass|zero`**
-    （DESIGN §26.4，兼容回退 `results` 主键与 `scores` 维度键）：非法 JSON / 顶层非对象 / 权威键非列表
-    → raise ValueError（调用方重试）；单条丢弃并计数：非对象 / 缺名 / 缺 `reason` / `gate=pass` 六维非
-    0–5 数值（含 0.5 档）或非 `"缺失"`（含越界/非数字/bool/乱字符串）。
-    """
-    obj = _load_json_obj(raw)
-    if obj is None:
-        raise ValueError("LLM 输出不是合法 JSON 对象")
-    items = obj.get("scores")
-    if not isinstance(items, list):
-        items = obj.get("results")
-    if not isinstance(items, list):
-        raise ValueError("scores 字段缺失或非列表")
-    parsed: list[dict[str, Any]] = []
-    dropped = 0
-    for item in items:
-        if not isinstance(item, dict):
-            dropped += 1
-            continue
-        name = str(item.get("话题名称") or "").strip()
-        if not name_key(name) or not str(item.get("reason") or "").strip() or not _dims_ok(item):
-            dropped += 1
-            continue
-        parsed.append({**item, "话题名称": name})
-    if dropped:
-        log.warning("丢弃 %d 条非法 scores 元素（非对象/缺名/缺 reason/六维非法）", dropped)
-    return parsed, dropped
-
-
-def parse_scores(raw: str) -> list[dict[str, Any]]:
-    """`parse_results` 的列表视图（公开契约，dropped 由 `parse_results` 计数）。"""
-    return parse_results(raw)[0]
-
-
-def _num(value: Any) -> float | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, (int, float)):
-        return float(value)
-    try:
-        return float(str(value).strip())
-    except (TypeError, ValueError):
-        return None
-
-
-def _dim(scores: dict[str, Any], key: str) -> tuple[float | None, bool]:
-    raw = scores.get(key)
-    if raw is None or (isinstance(raw, str) and raw.strip() == _MISSING):
-        return None, True
-    val = _num(raw)
-    return (val, False) if val is not None else (None, True)
-
-
-def weighted_total(
-    scores: dict[str, Any], missing_extra: Any = ()
-) -> tuple[float | None, list[str]]:
-    """缺失维剔除权重、其余按剩余权重归一后加权 round 到 1 位小数；全维缺失 → `(None, 全维)`；
-    `missing_extra` 与「值为 `"缺失"`」两种缺失表达一并归一（PRD §22.6）。"""
-    extra = {str(k) for k in missing_extra}
-    present: list[tuple[str, float]] = []
-    missing: list[str] = []
-    for key in _WEIGHTS:
-        val, is_missing = _dim(scores, key)
-        if is_missing or val is None or key in extra:
-            missing.append(key)
-        else:
-            present.append((key, val))
-    if not present:
-        return None, missing
-    total_w = sum(_WEIGHTS[k] for k, _ in present)
-    acc = sum(_WEIGHTS[k] * v for k, v in present)
-    return round(acc / total_w, 1), missing
-
-
-def _zero_gate(gate: Any) -> bool:
-    if isinstance(gate, (int, float)) and not isinstance(gate, bool):
-        return gate == 0
-    return str(gate).strip().lower() in ("zero", "0", "0.0")
 
 
 def _dims_ok(item: dict[str, Any]) -> bool:
@@ -118,6 +37,58 @@ def _dims_ok(item: dict[str, Any]) -> bool:
     return True
 
 
+def parse_results(raw: str) -> tuple[list[dict[str, Any]], int]:
+    """`parse_results_full` 的 `(合法项, dropped)` 视图（公开契约，#R9-09）。"""
+    parsed, dropped, _keys = parse_results_full(raw)
+    return parsed, dropped
+
+
+def parse_results_full(raw: str) -> tuple[list[dict[str, Any]], int, set[str]]:
+    """解析并返回 `(合法项, dropped, 被丢弃项的 name_key 集合)`（#R9-09 单点计数）。
+
+    **权威口径 `scores`/`dimensions`/`gate: pass|zero`**（DESIGN §26.4，兼容回退 `results` 主键与
+    `scores` 维度键）：非法 JSON / 顶层非对象 / 权威键非列表 → raise ValueError（调用方重试）；单条
+    丢弃并计数：非对象 / 缺名 / 缺 `reason` / `gate=pass` 六维非 0–5 数值（含 0.5 档）或非 `"缺失"`。
+    `dropped_keys` 供 `normalize_results` 避免把同一行二次计为「缺返回行」。
+    """
+    obj = _load_json_obj(raw)
+    if obj is None:
+        raise ValueError("LLM 输出不是合法 JSON 对象")
+    items = obj.get("scores")
+    if not isinstance(items, list):
+        items = obj.get("results")
+    if not isinstance(items, list):
+        raise ValueError("scores 字段缺失或非列表")
+    parsed: list[dict[str, Any]] = []
+    dropped = 0
+    dropped_keys: set[str] = set()
+    for item in items:
+        if not isinstance(item, dict):
+            dropped += 1
+            continue
+        name = str(item.get("话题名称") or "").strip()
+        if not name_key(name) or not str(item.get("reason") or "").strip() or not _dims_ok(item):
+            dropped += 1
+            if name_key(name):
+                dropped_keys.add(name_key(name))
+            continue
+        parsed.append({**item, "话题名称": name})
+    if dropped:
+        log.warning("丢弃 %d 条非法 scores 元素（非对象/缺名/缺 reason/六维非法）", dropped)
+    return parsed, dropped, dropped_keys
+
+
+def parse_scores(raw: str) -> list[dict[str, Any]]:
+    """`parse_results` 的列表视图（公开契约，dropped 由 `parse_results` 计数）。"""
+    return parse_results(raw)[0]
+
+
+def _zero_gate(gate: Any) -> bool:
+    if isinstance(gate, (int, float)) and not isinstance(gate, bool):
+        return gate == 0
+    return str(gate).strip().lower() in ("zero", "0", "0.0")
+
+
 def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]:
     scores = item.get("dimensions")
     if not isinstance(scores, dict):
@@ -133,13 +104,15 @@ def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]
     if total is not None and model_total is not None and abs(total - model_total) > 0.1:
         log.warning("话题 %s 总分重算=%s 与模型值=%s 偏差 >0.1", item.get("话题名称"), total, model_total)
     reason = str(item.get("reason") or "").strip()
-    if len(reason) > _REASON_LIMIT:
-        log.warning("话题 %s 理由超 %d 字，截断", item.get("话题名称"), _REASON_LIMIT)
-        reason = reason[:_REASON_LIMIT] + "…"
+    flags = ""
     if item.get("risk_flag") and "risk" not in reason:
-        reason += "｜risk"
+        flags += "｜risk"
     if item.get("source_flag") and "source" not in reason:
-        reason += "｜source"
+        flags += "｜source"
+    if len(reason) + len(flags) > _REASON_LIMIT:
+        log.warning("话题 %s 理由超 %d 字，截断", item.get("话题名称"), _REASON_LIMIT)
+        reason = reason[: max(0, _REASON_LIMIT - len(flags) - 1)] + "…"
+    reason += flags
     return {
         "record_id": row.get("record_id") or "",
         "话题名称": str(item.get("话题名称") or "").strip(),
@@ -156,7 +129,7 @@ def _normalize_item(item: dict[str, Any], row: dict[str, Any]) -> dict[str, Any]
 
 
 def normalize_results(
-    items: list[dict[str, Any]], rows: list[dict[str, Any]]
+    items: list[dict[str, Any]], rows: list[dict[str, Any]], dropped_keys: Any = ()
 ) -> tuple[list[dict[str, Any]], DistCheck, int]:
     """回填 `record_id` 并归类 → `(归一列表, 分布校验, dropped)`：优先用返回值 `record_id`，否则按
     `name_key` 消费式匹配所有同名未匹配行（使表内多行同名都能写到，#374）；未匹配/未返回均计 dropped。
@@ -186,9 +159,12 @@ def normalize_results(
         used.add(id(row))
         normalized.append(_normalize_item(item, row))
     for row in rows:
-        if id(row) not in used:
-            dropped += 1
-            log.warning("表内话题未被返回（缺返回行）：%s", row.get("话题名称"))
+        if id(row) in used:
+            continue
+        if name_key(row.get("话题名称")) in set(dropped_keys):
+            continue
+        dropped += 1
+        log.warning("表内话题未被返回（缺返回行）：%s", row.get("话题名称"))
     return normalized, check_distribution(normalized), dropped
 
 
