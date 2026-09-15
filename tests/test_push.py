@@ -584,7 +584,7 @@ def test_build_card_top_n_keeps_latest_n():
     assert all(f"标题{i}" in content for i in (5, 6, 7))
     assert all(f"标题{i}" not in content for i in range(5))
     assert content.index("标题5") < content.index("标题6") < content.index("标题7")
-    assert "还有 5 条，详情见多维表格" in content
+    assert "还有 5 条" in content and "详情见多维表格" not in content
 
 
 def test_build_card_top_n_keeps_latest_per_feed():
@@ -595,7 +595,7 @@ def test_build_card_top_n_keeps_latest_per_feed():
     for feed in ("A源", "B源"):
         assert f"{feed}标题3" in content and f"{feed}标题2" in content
         assert f"{feed}标题1" not in content and f"{feed}标题0" not in content
-    assert content.count("还有 2 条，详情见多维表格") == 2
+    assert content.count("还有 2 条") == 2 and "详情见多维表格" not in content
 
 
 def test_build_card_top_n_equal_keys_keep_original_order():
@@ -1499,3 +1499,19 @@ def test_bitable_backfill_filters_by_env(monkeypatch):
     n = bitable.backfill_empty_archive_dates("app", "tbl", env_name="dev", dry_run=False)
     assert n == 2
     assert set(captured[0]["update_records"]) == {"recDev", "recLegacy"}
+
+
+def test_build_card_hidden_note_includes_detail_url_when_present():
+    card = feishu.build_card(_timed_items("F", 8), 0, ["F"], top_n=3, detail_url="https://e.com/base")
+
+    content = card["card"]["elements"][0]["text"]["content"]
+    assert "还有 5 条，详情见多维表格" in content
+
+
+def test_build_card_skips_empty_url_link():
+    items = [{"feed_id": "F", "entry_key": "k", "title": "有标题", "url": "", "published_at": None}]
+
+    card = feishu.build_card(items, 0, ["F"])
+
+    content = card["card"]["elements"][0]["text"]["content"]
+    assert "[](" not in content and "有标题" in content

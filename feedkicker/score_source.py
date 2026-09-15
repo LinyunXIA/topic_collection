@@ -58,28 +58,24 @@ def read_rows(
     if not app_token or not table_id:
         raise ValueError("app_token 与 table_id 均不能为空")
     projection = fields or SCORE_FIELDS
-    rows: list[dict[str, Any]] = []
-    offset = 0
-    prev_fp = ""
-    while True:
-        bitable_lark._guard_offset(offset)
-        bitable_lark.guard_pages(offset // bitable_lark._CHUNK + 1)
+
+    def fetch(offset: int):
         args = ["base", "+record-list", "--base-token", app_token, "--table-id", table_id]
         for name in projection:
             args += ["--field-id", name]
         args += ["--limit", str(bitable_lark._CHUNK), "--offset", str(offset), "--json"]
-        proc = bitable_lark._run(args, timeout=120)
+        return bitable_lark._run(args, timeout=120)
+
+    rows: list[dict[str, Any]] = []
+    for proc, data in bitable_lark.iter_record_pages(fetch):
         if not bitable_lark._ok(proc):
             raise RuntimeError("拉取沙龙话题清单失败，中止打分以避免读半张表")
-        data = bitable_lark._data(proc)
-        prev_fp = bitable_lark._page_guard(prev_fp, data)
         records = _extract_records(data)
         rows.extend(_normalize(rec, projection) for rec in records)
         if limit and len(rows) >= limit:
             return rows[:limit]
         if len(records) < bitable_lark._CHUNK:
             break
-        offset += bitable_lark._CHUNK
     return rows
 
 

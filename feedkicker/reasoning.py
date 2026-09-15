@@ -18,9 +18,9 @@ def _tag_at(text: str, i: int) -> tuple[str, str, bool, int] | None:
     closing = j < len(text) and text[j] == "/"
     if closing:
         j += 1
-    low = text.lower()
     for name in _NAMES:
-        if not low.startswith(name, j):
+        seg = text[j : j + len(name)]
+        if len(seg) < len(name) or seg.lower() != name:
             continue
         k = j + len(name)
         if k < len(text) and (text[k].isalnum() or text[k] == "_"):

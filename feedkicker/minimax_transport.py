@@ -16,6 +16,23 @@ log = logging.getLogger(__name__)
 _RETRY_CODES = {1002, 1004, 1039, "1002", "1004", "1039"}
 
 
+def content_blocks_text(content: Any) -> str:
+    """content-blocks 数组 → 拼接各 block 的 `text`/`content`（extract/minimax 两处同口径，#R9-20）。"""
+    if isinstance(content, str):
+        return content
+    parts: list[str] = []
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            seg = block.get("text")
+            if not isinstance(seg, str):
+                seg = block.get("content")
+            if isinstance(seg, str):
+                parts.append(seg)
+    return "".join(parts)
+
+
 def _resolve_api_key(api_key: str | None) -> str:
     return api_key or os.environ.get("MiniMax_Key") or os.environ.get("MINIMAX_API_KEY") or ""
 

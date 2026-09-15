@@ -48,9 +48,13 @@ def _extract_records(data: Any) -> list[dict[str, Any]]:
     )
     if not has_container:
         raise RuntimeError(f"topic 响应无可识别容器键（无 records/items/fields+data）: {str(data)[:200]}")
+    for key in ("records", "items"):
+        raw = data.get(key)
+        if raw is not None and not isinstance(raw, list):
+            raise RuntimeError(f"topic {key} 非 list: {type(raw).__name__}")
     records = data.get("records") or data.get("items")
     if records:
-        if not isinstance(records, list) or not all(isinstance(r, dict) for r in records):
+        if not all(isinstance(r, dict) for r in records):
             raise RuntimeError(f"topic records 非 list[dict]: {type(records).__name__}")
         return list(records)
     fields_raw = data.get("fields")
@@ -73,7 +77,7 @@ def _extract_records(data: Any) -> list[dict[str, Any]]:
                 converted.append(
                     {
                         "record_id": rid,
-                        "fields": fds,
+                        "fields": fds if isinstance(fds, dict) else {},
                         **{
                             k: v
                             for k, v in r.items()
@@ -82,8 +86,9 @@ def _extract_records(data: Any) -> list[dict[str, Any]]:
                     }
                 )
             else:
-                rid = r.get("record_id") or r.get("id") or (rids[i] if i < len(rids) else "")
-                converted.append({"record_id": rid, "fields": r})
+                rid = r.get("record_id") or r.get("id") or r.get("recordId") or (rids[i] if i < len(rids) else "")
+                fds = {k: v for k, v in r.items() if k not in ("record_id", "recordId", "id")}
+                converted.append({"record_id": rid, "fields": fds})
         elif isinstance(r, list) and fields:
             d = {fields[idx]: r[idx] for idx in range(min(len(fields), len(r)))}
             rid = rids[i] if i < len(rids) else ""

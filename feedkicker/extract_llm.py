@@ -9,6 +9,7 @@ from typing import Any
 import httpx
 
 from feedkicker import minimax
+from feedkicker.minimax_transport import content_blocks_text
 from feedkicker.config_models import ExtractConf, ProviderConf, env_key_for
 from feedkicker.extract_parse import (
     build_batch_prompt as build_batch_prompt,
@@ -181,6 +182,9 @@ def _content_of(data: Any) -> str:
         content = msg.get("content")
         if isinstance(content, str) and content.strip():
             return content
+        blocks = content_blocks_text(content)
+        if blocks.strip():
+            return blocks
         reasoning = msg.get("reasoning_content")
         if isinstance(reasoning, str) and reasoning.strip():
             log.warning("LLM content 为空，回退 reasoning_content（thinking 模型）")

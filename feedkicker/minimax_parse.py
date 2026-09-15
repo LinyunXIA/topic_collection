@@ -6,7 +6,7 @@ import json
 import logging
 from typing import Any
 
-from feedkicker.minimax_transport import _norm_code
+from feedkicker.minimax_transport import _norm_code, content_blocks_text
 from feedkicker.reasoning import strip_reasoning
 
 log = logging.getLogger(__name__)
@@ -56,7 +56,9 @@ def parse_outline_from_response(data: Any) -> dict[str, Any]:
                         )
                     return args
         content = msg.get("content")
-        if not (isinstance(content, str) and content.strip()):
+        if not isinstance(content, str):
+            content = content_blocks_text(content)
+        if not content.strip():
             fallback = msg.get("reasoning_content")
             content = fallback if isinstance(fallback, str) else ""
         if content.strip():

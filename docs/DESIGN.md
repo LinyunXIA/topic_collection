@@ -211,7 +211,7 @@ published_at   = iso_utc(entry.published_parsed) 若存在，否则 None
 
 ### 6.2 canonicalize(url) / entry_key 规则
 
-- `canonicalize`：URL parse + `#` fragment 去掉 + host 转小写；保留 query（query 差异可能代表不同文章，不粗暴丢弃）。
+- `canonicalize`：URL parse + `#` fragment 去掉 + host 转小写；保留 query（query 差异可能代表不同文章，不粗暴丢弃）。**例外**：path 为空/根**且** fragment 形如 `#/…`（hash 路由站点）时保留 fragment 参与归一，避免 `/#/post/1` 与 `/#/post/2` 误并（#R9-24）；普通 `#section` 仍去 fragment。
 - `entry_key`：优先 `entry.guid`；无 guid 时用 canonicalize(link)；两 source 均无 → 用 title 规范化（strip、lower）作兜底，避免空 key 全部撞一条。
 
 ### 6.3 store.download 幂等

@@ -8,7 +8,7 @@ import re
 import unicodedata
 from typing import Any
 
-from feedkicker.fetch import is_url_token
+from feedkicker.fetch import is_url_token, trim_url
 from feedkicker.reasoning import strip_reasoning as strip_reasoning
 
 log = logging.getLogger(__name__)
@@ -106,14 +106,20 @@ def merge_topics(topics: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return list(merged.values())
 
 
+def _brace_candidates(text: str) -> list[str]:
+    """逐个 `{` 起点到最后一个 `}` 的候选（前置说明含花括号时仍能取到真 JSON，#R9-17）。"""
+    end = text.rfind("}")
+    if end < 0:
+        return []
+    return [text[i : end + 1] for i, ch in enumerate(text) if ch == "{"]
+
+
 def _load_json_obj(raw: str) -> dict[str, Any] | None:
-    """容忍 ```json 围栏与前后说明文字：先整体解析，失败再取最外层 {...} 重试。"""
+    """容忍围栏与前后说明：遍历所有 ``` 围栏候选（优先含 `topics`/`scores`），再逐个 `{` 起点兜底（#R9-17）。"""
     text = strip_reasoning((raw or "").strip())
-    m = _FENCE_RE.search(text)
-    if m:
-        text = m.group(1).strip()
-    braced = text[text.find("{") : text.rfind("}") + 1] if "{" in text and "}" in text else ""
-    for cand in (text, braced):
+    fences = [m.group(1).strip() for m in _FENCE_RE.finditer(text)]
+    fences.sort(key=lambda t: 0 if ('"topics"' in t or '"scores"' in t) else 1)
+    for cand in (*fences, text, *_brace_candidates(text)):
         if not cand:
             continue
         try:
@@ -173,4 +179,4 @@ def md_link_tokens(text: str) -> list[str]:
         rest.append(text[i:start])
         i = j
     tokens.extend("".join(rest).split())
-    return [t for t in tokens if is_url_token(t)]
+    return [t for t in (trim_url(x) for x in tokens) if is_url_token(t)]

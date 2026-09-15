@@ -136,7 +136,7 @@ def test_salon_flow_attempted_all_failed_still_warns(monkeypatch, caplog):
     from feedkicker import feishu
     monkeypatch.setattr(feishu, "send", lambda *a, **k: True)
     with caplog.at_level(logging.WARNING):
-        assert sf.run(cfg, conn, dry_run=False) == 0
+        assert sf.run(cfg, conn, dry_run=False) == 1
     assert any("全部失败" in r.getMessage() for r in caplog.records)
     conn.close()
 

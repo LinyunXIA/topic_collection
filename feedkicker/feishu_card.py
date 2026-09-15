@@ -106,7 +106,8 @@ def build_card(
                 return
             h = hidden_by_feed.get(feed_name, 0)
             if h and any(n == feed_name for n, _ in selected):
-                parts.append(escape_inline(f"… 还有 {h} 条，详情见多维表格"))
+                note = f"… 还有 {h} 条" + ("，详情见多维表格" if detail_url else "")
+                parts.append(escape_inline(note))
 
         def close_prev() -> None:
             if prev is not None:
@@ -118,11 +119,13 @@ def build_card(
                 close_prev()
                 parts.append(f"**{escape_inline(name)}**")
                 prev = name
-            display = escape_inline(it["title"]) or escape_inline(it["url"])
-            target = (
-                it["url"].replace(" ", "%20").replace("(", "%28").replace(")", "%29")
-            )
-            parts.append(f"[{display}]({target})")
+            url = str(it.get("url") or "")
+            display = escape_inline(it.get("title")) or escape_inline(url)
+            if url:
+                target = url.replace(" ", "%20").replace("(", "%28").replace(")", "%29")
+                parts.append(f"[{display}]({target})")
+            elif display:
+                parts.append(display)
             also = it.get("also_seen") or []
             if also:
                 parts.append(escape_inline(f"亦见 {' + '.join(also)}"))
